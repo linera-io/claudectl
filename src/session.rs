@@ -69,6 +69,7 @@ pub struct ClaudeSession {
     pub tty: String,
     pub status: SessionStatus,
     pub cpu_percent: f32,
+    pub cpu_history: Vec<f32>,   // Last N CPU readings for smoothing
     pub mem_mb: f64,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
@@ -81,11 +82,11 @@ pub struct ClaudeSession {
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
     pub cost_usd: f64,
-    pub context_tokens: u64,     // Last API call's input_tokens (= current context window size)
-    pub context_max: u64,        // Model's max context window
-    pub prev_cost_usd: f64,      // Cost at previous tick (for burn rate)
-    pub burn_rate_per_hr: f64,   // $/hr based on cost delta between ticks
-    pub subagent_count: usize,   // Number of sub-agent task .jsonl files
+    pub context_tokens: u64,
+    pub context_max: u64,
+    pub prev_cost_usd: f64,
+    pub burn_rate_per_hr: f64,
+    pub subagent_count: usize,
 }
 
 impl ClaudeSession {
@@ -114,6 +115,7 @@ impl ClaudeSession {
             tty: String::new(),
             status: SessionStatus::Idle,
             cpu_percent: 0.0,
+            cpu_history: Vec::new(),
             mem_mb: 0.0,
             total_input_tokens: 0,
             total_output_tokens: 0,

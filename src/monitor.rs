@@ -27,7 +27,6 @@ pub fn update_tokens(session: &mut ClaudeSession) {
     let reader = BufReader::new(&file);
     let mut last_type = String::new();
     let mut last_stop_reason = String::new();
-    let mut last_ts: u64 = 0;
     let mut is_waiting_for_task = false;
 
     for line in reader.lines() {
@@ -55,14 +54,6 @@ pub fn update_tokens(session: &mut ClaudeSession) {
         {
             last_type = "assistant".to_string();
             is_waiting_for_task = false;
-        }
-
-        // Extract timestamp from any typed message
-        if line.contains("\"timestamp\"") {
-            // Quick extraction: find "timestamp":"..." and parse ISO to epoch ms
-            if let Some(ts) = extract_timestamp(&line) {
-                last_ts = ts;
-            }
         }
 
         // Parse assistant messages for stop_reason and usage
@@ -123,8 +114,18 @@ pub fn update_tokens(session: &mut ClaudeSession) {
     }
 
     session.jsonl_offset = file_len;
-    if last_ts > 0 {
-        session.last_message_ts = last_ts;
+
+    // Use the JSONL file's mtime as "last activity" — reliable, no timestamp parsing needed
+    if let Some(ref path) = session.jsonl_path {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if let Ok(modified) = meta.modified() {
+                let mtime_ms = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                session.last_message_ts = mtime_ms;
+            }
+        }
     }
 
     // Set context window max based on model
@@ -242,55 +243,6 @@ fn model_context_max(model: &str) -> u64 {
     }
 }
 
-/// Extract epoch ms from a JSONL timestamp field like "2026-04-03T20:51:59.169Z"
-fn extract_timestamp(line: &str) -> Option<u64> {
-    let marker = "\"timestamp\":\"";
-    let start = line.find(marker)? + marker.len();
-    let end = line[start..].find('"')? + start;
-    let ts_str = &line[start..end];
-
-    // Parse ISO 8601: "2026-04-03T20:51:59.169Z"
-    let parts: Vec<&str> = ts_str.split('T').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|s| s.parse().ok()).collect();
-    if date_parts.len() != 3 {
-        return None;
-    }
-
-    let time_str = parts[1].trim_end_matches('Z');
-    let time_parts: Vec<&str> = time_str.split(':').collect();
-    if time_parts.len() != 3 {
-        return None;
-    }
-
-    let hour: u64 = time_parts[0].parse().ok()?;
-    let min: u64 = time_parts[1].parse().ok()?;
-    let sec_parts: Vec<&str> = time_parts[2].split('.').collect();
-    let sec: u64 = sec_parts[0].parse().ok()?;
-    let ms: u64 = if sec_parts.len() > 1 {
-        let frac = sec_parts[1];
-        let padded = format!("{:0<3}", &frac[..frac.len().min(3)]);
-        padded.parse().unwrap_or(0)
-    } else {
-        0
-    };
-
-    // Rough epoch calculation (good enough for age comparison)
-    let (y, m, d) = (date_parts[0], date_parts[1], date_parts[2]);
-    let days = (y - 1970) * 365 + (y - 1969) / 4 // leap years approx
-        + match m {
-            1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
-            7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, 12 => 334,
-            _ => 0,
-        }
-        + d - 1;
-    let epoch_ms = days * 86400 * 1000 + hour * 3600 * 1000 + min * 60 * 1000 + sec * 1000 + ms;
-
-    Some(epoch_ms)
-}
 
 fn shorten_model(model: &str) -> String {
     if model.contains("opus") {

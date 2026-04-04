@@ -324,23 +324,122 @@ fn switch_tmux(session: &ClaudeSession) -> Result<(), String> {
 // Send input to a session
 // ---------------------------------------------------------------------------
 
-/// Send a text string to a session's TTY device.
+/// Send text to a session by switching to its terminal and typing via System Events.
+/// Writing to /dev/ttysXXX goes to display output, not process input.
+/// The only reliable way is to use the terminal emulator's input mechanism.
 pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
-    if session.tty.is_empty() {
-        return Err("No TTY associated with this session".into());
-    }
+    let terminal = detect_terminal();
+    match terminal {
+        Terminal::Ghostty => {
+            // Ghostty has native AppleScript: `input text` sends to process stdin
+            let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!(
+                r#"
+                tell application "Ghostty"
+                    set matches to every terminal whose working directory contains "{cwd}"
+                    if (count of matches) > 0 then
+                        set t to item 1 of matches
+                        input text "{text}" to t
+                    end if
+                end tell
+                "#,
+                cwd = session.cwd.replace('"', "\\\""),
+                text = escaped,
+            );
+            run_osascript(&script)
+        }
+        Terminal::Kitty => {
+            // Kitty remote control: send-text
+            let output = std::process::Command::new("kitty")
+                .args(["@", "send-text", "--match", &format!("pid:{}", session.pid), text])
+                .output()
+                .map_err(|e| format!("kitty send-text failed: {e}"))?;
+            if output.status.success() { Ok(()) }
+            else { Err(String::from_utf8_lossy(&output.stderr).trim().to_string()) }
+        }
+        Terminal::Tmux => {
+            // tmux: send-keys to the pane
+            let output = std::process::Command::new("tmux")
+                .args(["list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"])
+                .output()
+                .map_err(|e| format!("tmux failed: {e}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                if parts.len() == 2 && parts[0].contains(&session.tty) {
+                    let _ = std::process::Command::new("tmux")
+                        .args(["send-keys", "-t", parts[1], text, ""])
+                        .output();
+                    return Ok(());
+                }
+            }
+            Err("TTY not found in tmux".into())
+        }
+        _ => {
+            // Warp, iTerm2, Terminal.app, WezTerm: switch to the tab, send keystroke, switch back
+            switch_to_terminal(session)?;
+            std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let tty_path = format!("/dev/{}", session.tty);
-    std::fs::write(&tty_path, text)
-        .map_err(|e| format!("Failed to write to {tty_path}: {e}"))
+            let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!(
+                r#"
+                tell application "System Events"
+                    tell process "stable"
+                        keystroke "{text}"
+                    end tell
+                end tell
+                "#,
+                text = escaped,
+            );
+            run_osascript(&script)
+        }
+    }
 }
 
-/// Approve a pending permission prompt by sending Enter (selects default "Yes").
-/// Claude Code's permission dialog is a TUI selection menu — the default option
-/// "1. Yes" is pre-selected, so Enter (\r in raw mode) approves it.
+/// Approve a pending permission prompt by sending Enter.
+/// Claude Code's permission dialog has "1. Yes" pre-selected — Enter approves it.
 pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
-    // \r = carriage return = what Enter key produces in raw mode terminals
-    send_input(session, "\r")
+    let terminal = detect_terminal();
+    match terminal {
+        Terminal::Ghostty => {
+            let script = format!(
+                r#"
+                tell application "Ghostty"
+                    set matches to every terminal whose working directory contains "{cwd}"
+                    if (count of matches) > 0 then
+                        set t to item 1 of matches
+                        send key "enter" to t
+                    end if
+                end tell
+                "#,
+                cwd = session.cwd.replace('"', "\\\""),
+            );
+            run_osascript(&script)
+        }
+        Terminal::Kitty => {
+            let output = std::process::Command::new("kitty")
+                .args(["@", "send-text", "--match", &format!("pid:{}", session.pid), "\r"])
+                .output()
+                .map_err(|e| format!("kitty send-text failed: {e}"))?;
+            if output.status.success() { Ok(()) }
+            else { Err(String::from_utf8_lossy(&output.stderr).trim().to_string()) }
+        }
+        Terminal::Tmux => {
+            send_input(session, "Enter")
+        }
+        _ => {
+            // Warp, iTerm2, Terminal.app: switch to tab, press Enter, switch back
+            switch_to_terminal(session)?;
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            run_osascript(r#"
+                tell application "System Events"
+                    tell process "stable"
+                        key code 36
+                    end tell
+                end tell
+            "#)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -132,19 +132,16 @@ fn infer_status(
     last_stop_reason: &str,
     is_waiting_for_task: bool,
 ) {
-    // NeedsInput: waiting_for_task event or permission prompt
-    // Processing: high CPU, or tool_use in progress, or user message pending
-    // Waiting:    end_turn + recent (done, needs user's next prompt)
-    // Idle:       stale or no data
-
-    // NeedsInput takes priority — Claude is blocked on user confirmation
-    if is_waiting_for_task {
-        session.status = SessionStatus::NeedsInput;
+    // CPU is the strongest real-time signal — if the process is burning CPU,
+    // it's processing regardless of what the JSONL says (JSONL can lag).
+    if session.cpu_percent > 5.0 {
+        session.status = SessionStatus::Processing;
         return;
     }
 
-    if session.cpu_percent > 5.0 {
-        session.status = SessionStatus::Processing;
+    // NeedsInput: JSONL says waiting_for_task and CPU is low (confirmed idle)
+    if is_waiting_for_task {
+        session.status = SessionStatus::NeedsInput;
         return;
     }
 

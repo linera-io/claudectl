@@ -4,6 +4,8 @@ A fast, lightweight TUI for monitoring and managing multiple [Claude Code](https
 
 Built in Rust. ~1MB binary. Sub-50ms startup.
 
+![claudectl demo](demo.gif)
+
 ## Features
 
 - **Live dashboard** — PID, project, status, model, TTY, elapsed time, CPU%, memory, token counts, estimated cost

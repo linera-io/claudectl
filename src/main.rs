@@ -101,7 +101,15 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
 
     loop {
         terminal.draw(|frame| {
-            ui::table::render(frame, frame.area(), &app.sessions, &mut app.table_state, &app.status_msg);
+            ui::table::render(
+                frame,
+                frame.area(),
+                &app.sessions,
+                &mut app.table_state,
+                &app.status_msg,
+                app.input_mode,
+                &app.input_buffer,
+            );
         })?;
 
         let timeout = tick_rate
@@ -110,6 +118,41 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                // Input mode: capture text for sending to a session
+                if app.input_mode {
+                    match key.code {
+                        KeyCode::Enter => {
+                            if let Some(pid) = app.input_target_pid {
+                                if let Some(session) = app.sessions.iter().find(|s| s.pid == pid) {
+                                    let text = format!("{}\n", app.input_buffer);
+                                    match action::send_input(session, &text) {
+                                        Ok(()) => app.status_msg = format!("Sent to {}", session.display_name()),
+                                        Err(e) => app.status_msg = format!("Error: {e}"),
+                                    }
+                                }
+                            }
+                            app.input_mode = false;
+                            app.input_buffer.clear();
+                            app.input_target_pid = None;
+                        }
+                        KeyCode::Esc => {
+                            app.input_mode = false;
+                            app.input_buffer.clear();
+                            app.input_target_pid = None;
+                            app.status_msg = "Input cancelled".into();
+                        }
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.input_buffer.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Normal mode
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
                         app.should_quit = true;
@@ -118,9 +161,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
                         app.should_quit = true;
                     }
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+                        app.cancel_pending_kill();
                         app.next();
                     }
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+                        app.cancel_pending_kill();
                         app.previous();
                     }
                     (KeyCode::Char('r'), _) => {
@@ -129,6 +174,31 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
                     }
                     (KeyCode::Char('d'), _) | (KeyCode::Char('x'), _) => {
                         app.handle_kill();
+                    }
+                    (KeyCode::Char('y'), _) => {
+                        // Quick approve: send "y" to Paused sessions
+                        app.cancel_pending_kill();
+                        if let Some(session) = app.selected_session() {
+                            if session.status == session::SessionStatus::Paused {
+                                match action::approve_session(session) {
+                                    Ok(()) => app.status_msg = format!("Approved {}", session.display_name()),
+                                    Err(e) => app.status_msg = format!("Error: {e}"),
+                                }
+                            } else {
+                                app.status_msg = "Session is not paused".into();
+                            }
+                        }
+                    }
+                    (KeyCode::Char('i'), _) => {
+                        // Enter input mode to send text to a session
+                        app.cancel_pending_kill();
+                        let info = app.selected_session().map(|s| (s.pid, s.display_name().to_string()));
+                        if let Some((pid, name)) = info {
+                            app.input_mode = true;
+                            app.input_buffer.clear();
+                            app.input_target_pid = Some(pid);
+                            app.status_msg = format!("Input to {name} (Enter to send, Esc to cancel): ");
+                        }
                     }
                     (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
                         app.cancel_pending_kill();

@@ -321,6 +321,27 @@ fn switch_tmux(session: &ClaudeSession) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Send input to a session
+// ---------------------------------------------------------------------------
+
+/// Send a text string to a session's TTY device.
+/// Used for quick approve ("y") and general input.
+pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
+    if session.tty.is_empty() {
+        return Err("No TTY associated with this session".into());
+    }
+
+    let tty_path = format!("/dev/{}", session.tty);
+    std::fs::write(&tty_path, text)
+        .map_err(|e| format!("Failed to write to {tty_path}: {e}"))
+}
+
+/// Send "y\n" to approve a pending tool use on a Paused session.
+pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
+    send_input(session, "y\n")
+}
+
+// ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
 

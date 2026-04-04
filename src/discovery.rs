@@ -42,19 +42,54 @@ pub fn scan_sessions() -> Vec<ClaudeSession> {
             Err(_) => continue,
         };
 
-        let mut session = ClaudeSession::from_raw(raw);
-
-        // Resolve JSONL path — find the most recently modified .jsonl in the project dir.
-        // For --resume sessions, the JSONL is under the resumed session's UUID,
-        // not the current session's UUID.
-        let slug = cwd_to_slug(&session.cwd);
-        let project_dir = projects_dir().join(&slug);
-        session.jsonl_path = find_latest_jsonl(&project_dir);
-
-        sessions.push(session);
+        // JSONL path resolved later by resolve_jsonl_paths() after command_args are populated
+        sessions.push(ClaudeSession::from_raw(raw));
     }
 
     sessions
+}
+
+/// Resolve JSONL paths for sessions. Must be called AFTER command_args are populated
+/// (i.e., after fetch_ps_data), so we can use --resume UUIDs for correct mapping.
+pub fn resolve_jsonl_paths(sessions: &mut [ClaudeSession]) {
+    for session in sessions.iter_mut() {
+        let slug = cwd_to_slug(&session.cwd);
+        let project_dir = projects_dir().join(&slug);
+
+        // Priority 1: Try the session's own ID
+        let own_path = project_dir.join(format!("{}.jsonl", session.session_id));
+        if own_path.exists() {
+            session.jsonl_path = Some(own_path);
+            continue;
+        }
+
+        // Priority 2: Try the --resume UUID from command args
+        if let Some(resume_id) = extract_resume_uuid(&session.command_args) {
+            let resume_path = project_dir.join(format!("{resume_id}.jsonl"));
+            if resume_path.exists() {
+                session.jsonl_path = Some(resume_path);
+                continue;
+            }
+        }
+
+        // Priority 3: Fall back to most recently modified .jsonl
+        session.jsonl_path = find_latest_jsonl(&project_dir);
+    }
+}
+
+/// Extract the UUID from a --resume argument in command args.
+fn extract_resume_uuid(command_args: &str) -> Option<String> {
+    let marker = "--resume ";
+    let start = command_args.find(marker)? + marker.len();
+    let rest = &command_args[start..];
+    // Take until whitespace — could be a UUID or a named session
+    let token: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    if token.is_empty() {
+        return None;
+    }
+    // Strip surrounding quotes
+    let token = token.trim_matches('"').trim_matches('\'');
+    Some(token.to_string())
 }
 
 /// Find the most recently modified .jsonl file in a project directory.
@@ -76,8 +111,6 @@ fn find_latest_jsonl(dir: &PathBuf) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
-/// Convert a cwd like `/Users/barada/Sandbox/Mason/foo` to the slug
-/// format Claude uses: `-Users-barada-Sandbox-Mason-foo`
 fn cwd_to_slug(cwd: &str) -> String {
     cwd.replace('/', "-")
 }

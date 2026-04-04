@@ -11,7 +11,10 @@ pub struct App {
     pub should_quit: bool,
     pub process_monitor: ProcessMonitor,
     pub status_msg: String,
-    pub pending_kill: Option<u32>, // PID awaiting second `d` press to confirm
+    pub pending_kill: Option<u32>,
+    pub input_mode: bool,
+    pub input_buffer: String,
+    pub input_target_pid: Option<u32>,
 }
 
 impl Default for App {
@@ -29,6 +32,9 @@ impl App {
             process_monitor: ProcessMonitor::new(),
             status_msg: String::new(),
             pending_kill: None,
+            input_mode: false,
+            input_buffer: String::new(),
+            input_target_pid: None,
         };
         app.refresh();
         // Select first row if sessions exist
@@ -45,6 +51,9 @@ impl App {
         self.process_monitor.refresh();
         self.process_monitor.enrich(&mut sessions);
         self.process_monitor.fetch_ps_data(&mut sessions);
+
+        // Resolve JSONL paths AFTER ps data (needs command_args for --resume UUID)
+        discovery::resolve_jsonl_paths(&mut sessions);
 
         // Read JSONL for tokens + status
         for session in &mut sessions {

@@ -14,8 +14,11 @@ pub fn render(
     sessions: &[ClaudeSession],
     table_state: &mut TableState,
     status_msg: &str,
+    input_mode: bool,
+    input_buffer: &str,
 ) {
-    let chunks = if status_msg.is_empty() {
+    let has_status = !status_msg.is_empty() || input_mode;
+    let chunks = if !has_status {
         vec![area]
     } else {
         Layout::default()
@@ -94,7 +97,7 @@ pub fn render(
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            "  q:quit  j/k:nav  Tab:go  d:kill  r:refresh",
+            "  q:quit  j/k:nav  Tab:go  y:approve  i:input  d:kill  r:refresh",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -117,17 +120,26 @@ pub fn render(
 
     frame.render_stateful_widget(table, area, table_state);
 
-    // Status message bar
-    if !status_msg.is_empty() && chunks.len() > 1 {
-        let color = if status_msg.starts_with("Error") {
-            Color::Red
-        } else {
-            Color::Green
-        };
-        let msg = Paragraph::new(Span::styled(
-            format!(" {status_msg}"),
-            Style::default().fg(color),
-        ));
-        frame.render_widget(msg, chunks[1]);
+    // Status / input bar
+    if chunks.len() > 1 {
+        if input_mode {
+            let msg = Paragraph::new(Line::from(vec![
+                Span::styled(" > ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(input_buffer, Style::default().fg(Color::White)),
+                Span::styled("_", Style::default().fg(Color::DarkGray)),
+            ]));
+            frame.render_widget(msg, chunks[1]);
+        } else if !status_msg.is_empty() {
+            let color = if status_msg.starts_with("Error") {
+                Color::Red
+            } else {
+                Color::Green
+            };
+            let msg = Paragraph::new(Span::styled(
+                format!(" {status_msg}"),
+                Style::default().fg(color),
+            ));
+            frame.render_widget(msg, chunks[1]);
+        }
     }
 }

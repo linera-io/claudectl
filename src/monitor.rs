@@ -166,8 +166,21 @@ fn infer_status(
     }
 
     if last_msg_type == "assistant" && last_stop_reason == "tool_use" {
-        // Claude called a tool — still processing
-        session.status = SessionStatus::Processing;
+        // Claude called a tool. If CPU is low and some time has passed,
+        // it's likely waiting for user to approve/deny the tool (permission prompt).
+        // The permission prompt doesn't emit waiting_for_task — detect via CPU + age.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let age_secs = (now_ms.saturating_sub(session.last_message_ts)) / 1000;
+
+        if session.cpu_percent < 2.0 && age_secs > 5 {
+            // Low CPU + tool_use was >5s ago = stuck on permission prompt
+            session.status = SessionStatus::Paused;
+        } else {
+            session.status = SessionStatus::Processing;
+        }
         return;
     }
 

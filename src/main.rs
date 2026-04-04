@@ -20,7 +20,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use app::App;
 
 #[derive(Parser)]
-#[command(name = "claudectl", about = "Monitor and manage Claude Code CLI agents")]
+#[command(name = "claudectl", version, about = "Monitor and manage Claude Code CLI agents")]
 struct Cli {
     /// Refresh interval in milliseconds
     #[arg(short, long, default_value_t = 2000)]

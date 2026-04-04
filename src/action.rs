@@ -14,15 +14,10 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
         Terminal::ITerm2 => switch_iterm2(session),
         Terminal::Kitty => switch_kitty(session),
         Terminal::WezTerm => switch_wezterm(session),
-        Terminal::TerminalApp => switch_terminal_app(session),
+        Terminal::Apple => switch_terminal_app(session),
         Terminal::Tmux => switch_tmux(session),
         Terminal::Unknown(name) => Err(format!("Unsupported terminal: {name}. Supported: Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux")),
     }
-}
-
-/// Public search term accessor for --list debug output.
-pub fn warp_search_term(session: &ClaudeSession) -> String {
-    build_warp_search_term(session)
 }
 
 enum Terminal {
@@ -31,7 +26,7 @@ enum Terminal {
     ITerm2,
     Kitty,
     WezTerm,
-    TerminalApp,
+    Apple,
     Tmux,
     Unknown(String),
 }
@@ -48,7 +43,7 @@ fn detect_terminal() -> Terminal {
         Ok("iTerm.app") => Terminal::ITerm2,
         Ok("kitty") => Terminal::Kitty,
         Ok("WezTerm") => Terminal::WezTerm,
-        Ok("Apple_Terminal") => Terminal::TerminalApp,
+        Ok("Apple_Terminal") => Terminal::Apple,
         Ok(other) => Terminal::Unknown(other.to_string()),
         Err(_) => Terminal::Unknown("unknown".to_string()),
     }

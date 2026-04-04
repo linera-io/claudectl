@@ -1,11 +1,15 @@
-use std::collections::HashMap;
-
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::session::{ClaudeSession, SessionStatus};
 
 pub struct ProcessMonitor {
     system: System,
+}
+
+impl Default for ProcessMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProcessMonitor {
@@ -35,7 +39,7 @@ impl ProcessMonitor {
     pub fn enrich(&self, sessions: &mut Vec<ClaudeSession>) {
         sessions.retain_mut(|session| {
             let pid = Pid::from_u32(session.pid);
-            let Some(proc) = self.system.process(pid) else {
+            let Some(_proc) = self.system.process(pid) else {
                 session.status = SessionStatus::Finished;
                 return false;
             };

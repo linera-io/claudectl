@@ -205,12 +205,10 @@ fn estimate_cost(session: &ClaudeSession) -> f64 {
             (15.0, 75.0, 1.875, 18.75)
         };
 
-    let cost = (plain_input as f64 / 1_000_000.0) * input_per_m
+    (plain_input as f64 / 1_000_000.0) * input_per_m
         + (session.total_output_tokens as f64 / 1_000_000.0) * output_per_m
         + (session.cache_read_tokens as f64 / 1_000_000.0) * cache_read_per_m
-        + (session.cache_write_tokens as f64 / 1_000_000.0) * cache_write_per_m;
-
-    cost
+        + (session.cache_write_tokens as f64 / 1_000_000.0) * cache_write_per_m
 }
 
 /// Extract epoch ms from a JSONL timestamp field like "2026-04-03T20:51:59.169Z"

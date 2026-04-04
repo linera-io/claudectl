@@ -60,6 +60,7 @@ pub struct RawSession {
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
     pub pid: u32,
+    #[allow(dead_code)]
     pub session_id: String,
     pub cwd: String,
     pub project_name: String,

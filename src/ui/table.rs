@@ -94,7 +94,7 @@ pub fn render(
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            "  q:quit  j/k:nav  Tab:switch  d:kill  ?:help",
+            "  q:quit  j/k:nav  Tab:go  d:kill  r:refresh",
             Style::default().fg(Color::DarkGray),
         ),
     ]);

@@ -14,6 +14,12 @@ pub struct App {
     pub pending_kill: Option<u32>, // PID awaiting second `d` press to confirm
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let mut app = Self {

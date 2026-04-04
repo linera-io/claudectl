@@ -325,7 +325,6 @@ fn switch_tmux(session: &ClaudeSession) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Send a text string to a session's TTY device.
-/// Used for quick approve ("y") and general input.
 pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
     if session.tty.is_empty() {
         return Err("No TTY associated with this session".into());
@@ -336,9 +335,12 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to write to {tty_path}: {e}"))
 }
 
-/// Send "y\n" to approve a pending tool use on a Paused session.
+/// Approve a pending permission prompt by sending Enter (selects default "Yes").
+/// Claude Code's permission dialog is a TUI selection menu — the default option
+/// "1. Yes" is pre-selected, so Enter (\r in raw mode) approves it.
 pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
-    send_input(session, "y\n")
+    // \r = carriage return = what Enter key produces in raw mode terminals
+    send_input(session, "\r")
 }
 
 // ---------------------------------------------------------------------------

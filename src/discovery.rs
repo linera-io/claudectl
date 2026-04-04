@@ -111,6 +111,45 @@ fn find_latest_jsonl(dir: &PathBuf) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
+/// Feature #29: Scan for subagent task .jsonl files.
+/// Claude Code spawns sub-agents whose files live in:
+///   /tmp/claude-{uid}/{project_slug}/{sessionId}/tasks/
+pub fn scan_subagents(sessions: &mut [ClaudeSession]) {
+    let uid = unsafe { libc::getuid() };
+    let tmp_base = PathBuf::from(format!("/tmp/claude-{uid}"));
+
+    if !tmp_base.exists() {
+        return;
+    }
+
+    for session in sessions.iter_mut() {
+        let slug = cwd_to_slug(&session.cwd);
+        let tasks_dir = tmp_base
+            .join(&slug)
+            .join(&session.session_id)
+            .join("tasks");
+
+        if !tasks_dir.exists() {
+            continue;
+        }
+
+        let count = match fs::read_dir(&tasks_dir) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        == Some("jsonl")
+                })
+                .count(),
+            Err(_) => 0,
+        };
+
+        session.subagent_count = count;
+    }
+}
+
 fn cwd_to_slug(cwd: &str) -> String {
     cwd.replace('/', "-")
 }

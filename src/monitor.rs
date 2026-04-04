@@ -236,11 +236,8 @@ fn model_context_max(model: &str) -> u64 {
     if model.contains("opus") {
         // Opus 4.6 with extended thinking supports up to 1M
         1_000_000
-    } else if model.contains("sonnet") {
-        200_000
-    } else if model.contains("haiku") {
-        200_000
     } else {
+        // Sonnet, Haiku, and other models default to 200k
         200_000
     }
 }

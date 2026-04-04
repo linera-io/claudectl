@@ -29,10 +29,22 @@ struct Cli {
     /// Print session list to stdout and exit (no TUI)
     #[arg(short, long)]
     list: bool,
+
+    /// Enable desktop notifications on NeedsInput transitions
+    #[arg(long)]
+    notify: bool,
+
+    /// Print JSON array of sessions and exit
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+
+    if cli.json {
+        return print_json();
+    }
 
     if cli.list {
         return print_list();
@@ -48,7 +60,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run app
-    let result = run(&mut terminal, tick_rate);
+    let result = run(&mut terminal, tick_rate, cli.notify);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -56,6 +68,15 @@ fn main() -> io::Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+fn print_json() -> io::Result<()> {
+    let app = App::new();
+    let values: Vec<serde_json::Value> = app.sessions.iter().map(|s| s.to_json_value()).collect();
+    let json = serde_json::to_string_pretty(&values)
+        .unwrap_or_else(|_| "[]".to_string());
+    println!("{json}");
+    Ok(())
 }
 
 fn print_list() -> io::Result<()> {
@@ -95,21 +116,18 @@ fn print_list() -> io::Result<()> {
     Ok(())
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duration) -> io::Result<()> {
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    tick_rate: Duration,
+    notify: bool,
+) -> io::Result<()> {
     let mut app = App::new();
+    app.notify = notify;
     let mut last_tick = Instant::now();
 
     loop {
         terminal.draw(|frame| {
-            ui::table::render(
-                frame,
-                frame.area(),
-                &app.sessions,
-                &mut app.table_state,
-                &app.status_msg,
-                app.input_mode,
-                &app.input_buffer,
-            );
+            ui::table::render(frame, frame.area(), &app);
         })?;
 
         let timeout = tick_rate
@@ -118,6 +136,12 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                // Help overlay: any key dismisses
+                if app.show_help {
+                    app.show_help = false;
+                    continue;
+                }
+
                 // Input mode: capture text for sending to a session
                 if app.input_mode {
                     match key.code {
@@ -162,22 +186,27 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
                     }
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                         app.next();
                     }
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                         app.previous();
                     }
                     (KeyCode::Char('r'), _) => {
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                         app.refresh();
                     }
                     (KeyCode::Char('d'), _) | (KeyCode::Char('x'), _) => {
+                        app.cancel_pending_auto_approve();
                         app.handle_kill();
                     }
                     (KeyCode::Char('y'), _) => {
                         // Quick approve: send Enter to NeedsInput sessions
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                         if let Some(session) = app.selected_session() {
                             if session.status == session::SessionStatus::NeedsInput {
                                 match action::approve_session(session) {
@@ -192,6 +221,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
                     (KeyCode::Char('i'), _) => {
                         // Enter input mode to send text to a session
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                         let info = app.selected_session().map(|s| (s.pid, s.display_name().to_string()));
                         if let Some((pid, name)) = info {
                             app.input_mode = true;
@@ -200,8 +230,26 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
                             app.status_msg = format!("Input to {name} (Enter to send, Esc to cancel): ");
                         }
                     }
+                    // Feature #26: Help overlay
+                    (KeyCode::Char('?'), _) => {
+                        app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
+                        app.show_help = !app.show_help;
+                    }
+                    // Feature #28: Sort by column
+                    (KeyCode::Char('s'), _) => {
+                        app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
+                        app.cycle_sort();
+                    }
+                    // Feature #33: Auto-approve toggle
+                    (KeyCode::Char('a'), _) => {
+                        app.cancel_pending_kill();
+                        app.handle_auto_approve();
+                    }
                     (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                         if let Some(session) = app.selected_session() {
                             match action::switch_to_terminal(session) {
                                 Ok(()) => {
@@ -217,6 +265,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tick_rate: Duratio
                     }
                     _ => {
                         app.cancel_pending_kill();
+                        app.cancel_pending_auto_approve();
                     }
                 }
             }

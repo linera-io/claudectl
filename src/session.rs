@@ -85,6 +85,7 @@ pub struct ClaudeSession {
     pub context_max: u64,        // Model's max context window
     pub prev_cost_usd: f64,      // Cost at previous tick (for burn rate)
     pub burn_rate_per_hr: f64,   // $/hr based on cost delta between ticks
+    pub subagent_count: usize,   // Number of sub-agent task .jsonl files
 }
 
 impl ClaudeSession {
@@ -129,6 +130,7 @@ impl ClaudeSession {
             context_max: 0,
             prev_cost_usd: 0.0,
             burn_rate_per_hr: 0.0,
+            subagent_count: 0,
         }
     }
 
@@ -203,6 +205,24 @@ impl ClaudeSession {
         let filled = ((pct / 100.0) * width as f64).round() as usize;
         let empty = width.saturating_sub(filled);
         format!("{}{} {}%", "█".repeat(filled), "░".repeat(empty), pct as u32)
+    }
+
+    /// Produce a JSON-serializable value for --json export.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pid": self.pid,
+            "project": self.display_name(),
+            "status": self.status.to_string(),
+            "context_pct": (self.context_percent() * 100.0).round() / 100.0,
+            "cost_usd": (self.cost_usd * 10000.0).round() / 10000.0,
+            "burn_rate": (self.burn_rate_per_hr * 10000.0).round() / 10000.0,
+            "elapsed_secs": self.elapsed.as_secs(),
+            "cpu": self.cpu_percent,
+            "mem_mb": (self.mem_mb * 100.0).round() / 100.0,
+            "tokens_in": self.total_input_tokens,
+            "tokens_out": self.total_output_tokens,
+            "subagents": self.subagent_count,
+        })
     }
 
     pub fn format_burn_rate(&self) -> String {

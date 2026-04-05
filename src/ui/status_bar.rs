@@ -9,7 +9,19 @@ use ratatui::{
 use crate::app::App;
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    if app.input_mode {
+    if app.launch_mode {
+        let msg = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " new> ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(&*app.launch_buffer, Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::DarkGray)),
+        ]));
+        frame.render_widget(msg, area);
+    } else if app.input_mode {
         let msg = Paragraph::new(Line::from(vec![
             Span::styled(
                 " > ",

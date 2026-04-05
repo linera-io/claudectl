@@ -27,6 +27,59 @@ pub struct App {
     pub auto_approve: HashSet<u32>,
     pub pending_auto_approve: Option<u32>,
     pub finished_at: HashMap<u32, std::time::Instant>, // When PIDs were first seen as Finished
+    pub debug: bool,
+    pub debug_timings: DebugTimings,
+    pub grouped_view: bool,
+    pub detail_panel: bool, // Show expanded detail for selected session
+    pub webhook_url: Option<String>,
+    pub webhook_filter: Option<Vec<String>>, // Only fire on these status names
+    pub launch_mode: bool,  // Capturing directory path for new session
+    pub launch_buffer: String,
+    pub budget_usd: Option<f64>,     // Per-session budget
+    pub kill_on_budget: bool,         // Auto-kill when budget exceeded
+    pub budget_warned: HashSet<u32>,  // PIDs that have been warned at 80%
+    pub budget_killed: HashSet<u32>,  // PIDs that have been killed
+}
+
+#[derive(Default, Clone)]
+pub struct DebugTimings {
+    pub scan_ms: f64,
+    pub ps_ms: f64,
+    pub jsonl_ms: f64,
+    pub total_ms: f64,
+    // Rolling averages (last 10 ticks)
+    history: Vec<(f64, f64, f64, f64)>,
+}
+
+impl DebugTimings {
+    pub fn record(&mut self, scan: f64, ps: f64, jsonl: f64, total: f64) {
+        self.scan_ms = scan;
+        self.ps_ms = ps;
+        self.jsonl_ms = jsonl;
+        self.total_ms = total;
+        self.history.push((scan, ps, jsonl, total));
+        if self.history.len() > 10 {
+            self.history.remove(0);
+        }
+    }
+
+    pub fn avg_total_ms(&self) -> f64 {
+        if self.history.is_empty() {
+            return 0.0;
+        }
+        self.history.iter().map(|h| h.3).sum::<f64>() / self.history.len() as f64
+    }
+
+    pub fn format(&self) -> String {
+        format!(
+            "tick: {:.1}ms (avg {:.1}ms) | scan: {:.1}ms | ps: {:.1}ms | jsonl: {:.1}ms",
+            self.total_ms,
+            self.avg_total_ms(),
+            self.scan_ms,
+            self.ps_ms,
+            self.jsonl_ms,
+        )
+    }
 }
 
 impl Default for App {
@@ -53,6 +106,18 @@ impl App {
             auto_approve: HashSet::new(),
             pending_auto_approve: None,
             finished_at: HashMap::new(),
+            debug: false,
+            debug_timings: DebugTimings::default(),
+            grouped_view: false,
+            detail_panel: false,
+            webhook_url: None,
+            webhook_filter: None,
+            launch_mode: false,
+            launch_buffer: String::new(),
+            budget_usd: None,
+            kill_on_budget: false,
+            budget_warned: HashSet::new(),
+            budget_killed: HashSet::new(),
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -62,8 +127,12 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
+        let tick_start = std::time::Instant::now();
+
         // Discover which PIDs have session files
+        let scan_start = std::time::Instant::now();
         let discovered = discovery::scan_sessions();
+        let scan_elapsed = scan_start.elapsed();
 
         // Build a map of existing sessions by PID for state preservation
         let mut existing: HashMap<u32, ClaudeSession> = self
@@ -91,7 +160,9 @@ impl App {
             .collect();
 
         // Enrich with ps data (CPU, MEM, TTY, command args) + filter dead PIDs
+        let ps_start = std::time::Instant::now();
         process::fetch_and_enrich(&mut sessions);
+        let ps_elapsed = ps_start.elapsed();
 
         // Resolve JSONL paths (only for sessions that don't have one yet)
         for session in &mut sessions {
@@ -109,9 +180,11 @@ impl App {
         }
 
         // Read JSONL incrementally (only new bytes since last offset)
+        let jsonl_start = std::time::Instant::now();
         for session in &mut sessions {
             monitor::update_tokens(session);
         }
+        let jsonl_elapsed = jsonl_start.elapsed();
 
         // Compute burn rate from cost delta (skip first tick where prev_cost is 0)
         for session in &mut sessions {
@@ -127,6 +200,60 @@ impl App {
                     }
                 }
             }
+        }
+
+        // Budget enforcement
+        if let Some(budget) = self.budget_usd {
+            for session in &sessions {
+                let pct = session.cost_usd / budget * 100.0;
+
+                // Warn at 80%
+                if pct >= 80.0 && pct < 100.0 && !self.budget_warned.contains(&session.pid) {
+                    self.budget_warned.insert(session.pid);
+                    self.status_msg = format!(
+                        "BUDGET WARNING: {} at {:.0}% (${:.2}/${:.2})",
+                        session.display_name(),
+                        pct,
+                        session.cost_usd,
+                        budget
+                    );
+                    fire_notification(&format!(
+                        "{} budget {:.0}%",
+                        session.display_name(),
+                        pct
+                    ));
+                }
+
+                // Kill at 100%
+                if pct >= 100.0 && !self.budget_killed.contains(&session.pid) {
+                    self.budget_killed.insert(session.pid);
+                    if self.kill_on_budget {
+                        let _ = kill_process(session.pid);
+                        self.status_msg = format!(
+                            "BUDGET EXCEEDED: Killed {} (${:.2}/${:.2})",
+                            session.display_name(),
+                            session.cost_usd,
+                            budget
+                        );
+                    } else {
+                        self.status_msg = format!(
+                            "BUDGET EXCEEDED: {} at ${:.2}/{:.2} — use --kill-on-budget to auto-kill",
+                            session.display_name(),
+                            session.cost_usd,
+                            budget
+                        );
+                    }
+                    fire_notification(&format!(
+                        "{} exceeded budget!",
+                        session.display_name()
+                    ));
+                }
+            }
+        }
+
+        // Record activity for sparkline
+        for session in &mut sessions {
+            session.record_activity();
         }
 
         // Track when sessions first appear as Finished, remove after 30s
@@ -163,15 +290,33 @@ impl App {
         // Sort
         self.apply_sort(&mut sessions);
 
-        // Notifications: check for NeedsInput transitions
-        if self.notify {
-            for session in &sessions {
-                let prev = self.prev_statuses.get(&session.pid).copied();
-                if session.status == SessionStatus::NeedsInput
-                    && prev != Some(SessionStatus::NeedsInput)
-                    && prev.is_some()
-                {
-                    fire_notification(&session.project_name);
+        // Notifications and webhooks: check for status transitions
+        for session in &sessions {
+            let prev = self.prev_statuses.get(&session.pid).copied();
+            let changed = prev.is_some() && prev != Some(session.status);
+
+            if !changed {
+                continue;
+            }
+
+            // Desktop notification on NeedsInput
+            if self.notify && session.status == SessionStatus::NeedsInput {
+                fire_notification(&session.project_name);
+            }
+
+            // Webhook on status change
+            if let Some(ref url) = self.webhook_url {
+                let new_status = session.status.to_string();
+                let should_fire = match &self.webhook_filter {
+                    Some(filter) => filter.iter().any(|f| f.eq_ignore_ascii_case(&new_status)),
+                    None => true,
+                };
+                if should_fire {
+                    fire_webhook(
+                        url,
+                        session,
+                        prev.map(|p| p.to_string()).unwrap_or_default(),
+                    );
                 }
             }
         }
@@ -189,6 +334,17 @@ impl App {
             if sel >= len {
                 self.table_state.select(Some(len - 1));
             }
+        }
+
+        // Record debug timings
+        if self.debug {
+            let total_elapsed = tick_start.elapsed();
+            self.debug_timings.record(
+                scan_elapsed.as_secs_f64() * 1000.0,
+                ps_elapsed.as_secs_f64() * 1000.0,
+                jsonl_elapsed.as_secs_f64() * 1000.0,
+                total_elapsed.as_secs_f64() * 1000.0,
+            );
         }
     }
 
@@ -350,6 +506,12 @@ impl App {
             return true;
         }
 
+        // Launch mode: capture directory for new session
+        if self.launch_mode {
+            self.handle_launch_key(key);
+            return true;
+        }
+
         // Input mode: capture text for sending to a session
         if self.input_mode {
             self.handle_input_key(key);
@@ -447,7 +609,29 @@ impl App {
                 self.cancel_pending_kill();
                 self.handle_auto_approve();
             }
-            (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
+            (KeyCode::Char('n'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.launch_mode = true;
+                self.launch_buffer.clear();
+                self.status_msg = "New session — enter directory path (Enter to launch, Esc to cancel): ".into();
+            }
+            (KeyCode::Char('g'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.grouped_view = !self.grouped_view;
+                self.status_msg = if self.grouped_view {
+                    "Grouped by project".into()
+                } else {
+                    "Flat view".into()
+                };
+            }
+            (KeyCode::Enter, _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.detail_panel = !self.detail_panel;
+            }
+            (KeyCode::Tab, _) => {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
                 self.handle_switch_terminal();
@@ -456,6 +640,53 @@ impl App {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
             }
+        }
+    }
+
+    fn handle_launch_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let dir = if self.launch_buffer.is_empty() {
+                    ".".to_string()
+                } else {
+                    self.launch_buffer.clone()
+                };
+
+                let cwd_path = std::path::Path::new(&dir)
+                    .canonicalize()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&dir));
+
+                match std::process::Command::new("claude")
+                    .current_dir(&cwd_path)
+                    .spawn()
+                {
+                    Ok(child) => {
+                        self.status_msg = format!(
+                            "Launched session (PID {}) in {}",
+                            child.id(),
+                            cwd_path.display()
+                        );
+                    }
+                    Err(e) => {
+                        self.status_msg = format!("Launch failed: {e}");
+                    }
+                }
+
+                self.launch_mode = false;
+                self.launch_buffer.clear();
+            }
+            KeyCode::Esc => {
+                self.launch_mode = false;
+                self.launch_buffer.clear();
+                self.status_msg = "Launch cancelled".into();
+            }
+            KeyCode::Backspace => {
+                self.launch_buffer.pop();
+            }
+            KeyCode::Char(c) => {
+                self.launch_buffer.push(c);
+            }
+            _ => {}
         }
     }
 
@@ -498,6 +729,156 @@ impl App {
             self.status_msg = "No session selected".into();
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectGroup {
+    pub name: String,
+    pub session_count: usize,
+    pub active_count: usize,
+    pub total_cost: f64,
+    pub avg_context_pct: f64,
+}
+
+impl App {
+    pub fn project_groups(&self) -> Vec<ProjectGroup> {
+        let mut groups: HashMap<String, Vec<&ClaudeSession>> = HashMap::new();
+        for s in &self.sessions {
+            groups
+                .entry(s.project_name.clone())
+                .or_default()
+                .push(s);
+        }
+
+        let mut result: Vec<ProjectGroup> = groups
+            .into_iter()
+            .map(|(name, sessions)| {
+                let active_count = sessions
+                    .iter()
+                    .filter(|s| {
+                        matches!(
+                            s.status,
+                            SessionStatus::Processing | SessionStatus::NeedsInput
+                        )
+                    })
+                    .count();
+                let total_cost: f64 = sessions.iter().map(|s| s.cost_usd).sum();
+                let avg_context_pct = if sessions.is_empty() {
+                    0.0
+                } else {
+                    sessions.iter().map(|s| s.context_percent()).sum::<f64>()
+                        / sessions.len() as f64
+                };
+                ProjectGroup {
+                    name,
+                    session_count: sessions.len(),
+                    active_count,
+                    total_cost,
+                    avg_context_pct,
+                }
+            })
+            .collect();
+
+        result.sort_by(|a, b| {
+            b.total_cost
+                .partial_cmp(&a.total_cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        result
+    }
+}
+
+fn fire_webhook(url: &str, session: &ClaudeSession, old_status: String) {
+    let payload = serde_json::json!({
+        "event": "status_change",
+        "session": {
+            "pid": session.pid,
+            "project": session.display_name(),
+            "old_status": old_status,
+            "new_status": session.status.to_string(),
+            "cost_usd": (session.cost_usd * 100.0).round() / 100.0,
+            "context_pct": (session.context_percent() * 100.0).round() / 100.0,
+            "elapsed_secs": session.elapsed.as_secs(),
+        },
+        "timestamp": chrono_now_iso(),
+    });
+
+    let body = serde_json::to_string(&payload).unwrap_or_default();
+    let url = url.to_string();
+
+    // Non-blocking: spawn a thread to POST
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                &body,
+                "--max-time",
+                "5",
+                &url,
+            ])
+            .output();
+    });
+}
+
+fn chrono_now_iso() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    // Simple ISO-8601 without pulling in chrono crate
+    let days_since_epoch = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Approximate date calculation (doesn't handle leap years perfectly but good enough for timestamps)
+    let mut y = 1970;
+    let mut remaining_days = days_since_epoch;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0;
+    for &md in &month_days {
+        if remaining_days < md {
+            break;
+        }
+        remaining_days -= md;
+        m += 1;
+    }
+    let d = remaining_days + 1;
+    m += 1;
+
+    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 fn fire_notification(project: &str) {

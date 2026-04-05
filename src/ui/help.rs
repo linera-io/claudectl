@@ -28,7 +28,11 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::raw("  Navigate sessions"),
         ]),
         Line::from(vec![
-            Span::styled("  Tab/Enter      ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Enter          ", Style::default().fg(Color::Yellow)),
+            Span::raw("  Toggle detail panel for selected session"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Tab            ", Style::default().fg(Color::Yellow)),
             Span::raw("  Switch to session terminal"),
         ]),
         Line::from(vec![
@@ -50,6 +54,14 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  a              ", Style::default().fg(Color::Yellow)),
             Span::raw("  Toggle auto-approve (double-tap)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  n              ", Style::default().fg(Color::Yellow)),
+            Span::raw("  Launch new Claude session"),
+        ]),
+        Line::from(vec![
+            Span::styled("  g              ", Style::default().fg(Color::Yellow)),
+            Span::raw("  Toggle grouped view by project"),
         ]),
         Line::from(vec![
             Span::styled("  r              ", Style::default().fg(Color::Yellow)),

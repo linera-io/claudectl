@@ -87,6 +87,7 @@ pub struct ClaudeSession {
     pub prev_cost_usd: f64,
     pub burn_rate_per_hr: f64,
     pub subagent_count: usize,
+    pub activity_history: Vec<u8>, // Ring buffer of status levels (0-7) for sparkline, one per tick
 }
 
 impl ClaudeSession {
@@ -133,7 +134,36 @@ impl ClaudeSession {
             prev_cost_usd: 0.0,
             burn_rate_per_hr: 0.0,
             subagent_count: 0,
+            activity_history: Vec::new(),
         }
+    }
+
+    /// Record current status into the activity sparkline ring buffer.
+    /// Max 15 entries (one per tick, at 2s default = 30s of history).
+    pub fn record_activity(&mut self) {
+        let level = match self.status {
+            SessionStatus::Processing => 7,
+            SessionStatus::NeedsInput => 4,
+            SessionStatus::WaitingInput => 2,
+            SessionStatus::Idle => 1,
+            SessionStatus::Finished => 0,
+        };
+        self.activity_history.push(level);
+        if self.activity_history.len() > 15 {
+            self.activity_history.remove(0);
+        }
+    }
+
+    /// Render the sparkline as unicode block characters.
+    pub fn format_sparkline(&self) -> String {
+        const BLOCKS: &[char] = &[' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+        if self.activity_history.is_empty() {
+            return String::from("-");
+        }
+        self.activity_history
+            .iter()
+            .map(|&level| BLOCKS[level.min(8) as usize])
+            .collect()
     }
 
     pub fn display_name(&self) -> &str {

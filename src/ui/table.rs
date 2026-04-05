@@ -9,25 +9,35 @@ use ratatui::{
 use crate::app::{App, SORT_COLUMNS};
 use crate::session::SessionStatus;
 
+use super::detail::render_detail_panel;
 use super::help::render_help_overlay;
 use super::status_bar::render_status_bar;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let has_status = !app.status_msg.is_empty() || app.input_mode;
-    let chunks = if has_status {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(1)])
-            .split(area)
-            .to_vec()
+    let has_status = !app.status_msg.is_empty() || app.input_mode || app.launch_mode;
+    let show_detail = app.detail_panel && app.selected_session().is_some();
+
+    let mut constraints = Vec::new();
+    if show_detail {
+        constraints.push(Constraint::Percentage(55)); // table
+        constraints.push(Constraint::Percentage(45)); // detail
     } else {
-        vec![area]
-    };
+        constraints.push(Constraint::Min(3));
+    }
+    if has_status {
+        constraints.push(Constraint::Length(1));
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area)
+        .to_vec();
 
     // Build header with sort indicator
     let header_names = [
         "PID", "Project", "Status", "Context", "Cost", "$/hr", "Elapsed", "CPU%", "MEM",
-        "In/Out",
+        "In/Out", "Activity",
     ];
 
     // Map sort_column index to header index:
@@ -56,54 +66,42 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let header = Row::new(header_cells).height(1);
 
-    let rows = app.sessions.iter().map(|s| {
-        let status_style = Style::default().fg(s.status.color());
+    let rows: Vec<Row> = if app.grouped_view {
+        let groups = app.project_groups();
+        let mut rows = Vec::new();
+        for group in &groups {
+            // Group header row
+            let cost_str = if group.total_cost < 1.0 {
+                format!("${:.2}", group.total_cost)
+            } else {
+                format!("${:.1}", group.total_cost)
+            };
+            let header_text = format!(
+                "{} ({} sessions, {} active, {}, ctx {:.0}%)",
+                group.name, group.session_count, group.active_count, cost_str, group.avg_context_pct
+            );
+            let mut cells: Vec<Cell> = vec![
+                Cell::from(""),
+                Cell::from(header_text).style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            for _ in 2..11 {
+                cells.push(Cell::from(""));
+            }
+            rows.push(Row::new(cells));
 
-        // Status text with auto-approve indicator
-        let status_text = if app.auto_approve.contains(&s.pid) {
-            format!("{}*", s.status)
-        } else {
-            s.status.to_string()
-        };
-
-        // Project name with subagent badge
-        let project_text = if s.subagent_count > 0 {
-            format!("{} +{}", s.display_name(), s.subagent_count)
-        } else {
-            s.display_name().to_string()
-        };
-
-        // Color context bar based on usage
-        let ctx_pct = s.context_percent();
-        let ctx_color = if ctx_pct > 80.0 {
-            Color::Red
-        } else if ctx_pct > 50.0 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-
-        let burn_color = if s.burn_rate_per_hr > 10.0 {
-            Color::Red
-        } else if s.burn_rate_per_hr > 1.0 {
-            Color::Yellow
-        } else {
-            Color::DarkGray
-        };
-
-        Row::new(vec![
-            Cell::from(s.pid.to_string()),
-            Cell::from(project_text),
-            Cell::from(status_text).style(status_style),
-            Cell::from(s.format_context_bar(6)).style(Style::default().fg(ctx_color)),
-            Cell::from(s.format_cost()).style(Style::default().fg(Color::Yellow)),
-            Cell::from(s.format_burn_rate()).style(Style::default().fg(burn_color)),
-            Cell::from(s.format_elapsed()),
-            Cell::from(format!("{:.1}", s.cpu_percent)),
-            Cell::from(s.format_mem()),
-            Cell::from(s.format_tokens()),
-        ])
-    });
+            // Session rows under this group
+            for s in app.sessions.iter().filter(|s| s.project_name == group.name) {
+                rows.push(session_row(s, app));
+            }
+        }
+        rows
+    } else {
+        app.sessions.iter().map(|s| session_row(s, app)).collect()
+    };
 
     let widths = [
         Constraint::Length(7),  // PID
@@ -116,6 +114,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(6),  // CPU%
         Constraint::Length(5),  // MEM
         Constraint::Length(14), // Tokens
+        Constraint::Length(16), // Activity sparkline
     ];
 
     let count = app.sessions.len();
@@ -135,7 +134,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let sort_name = SORT_COLUMNS[app.sort_column];
 
-    let footer = Line::from(vec![
+    let mut footer_spans = vec![
         Span::styled(
             format!(" {count} sessions ({active} active) "),
             Style::default().fg(Color::DarkGray),
@@ -145,13 +144,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             format!("[{selected}/{count}]"),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
+    ];
+
+    if app.debug {
+        footer_spans.push(Span::styled(
+            format!("  {}", app.debug_timings.format()),
+            Style::default().fg(Color::Cyan),
+        ));
+    } else {
+        footer_spans.push(Span::styled(
             format!(
                 "  q:quit j/k:nav Tab:go y:approve i:input d:kill s:sort({sort_name}) a:auto ?:help"
             ),
             Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+        ));
+    }
+
+    let footer = Line::from(footer_spans);
 
     let block = Block::default()
         .title(" claudectl ")
@@ -171,13 +180,85 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_stateful_widget(table, chunks[0], &mut app.table_state.clone());
 
+    // Detail panel
+    let mut next_chunk = 1;
+    if show_detail {
+        if let Some(session) = app.selected_session() {
+            render_detail_panel(frame, chunks[next_chunk], session);
+        }
+        next_chunk += 1;
+    }
+
     // Status / input bar
-    if chunks.len() > 1 {
-        render_status_bar(frame, chunks[1], app);
+    if has_status && next_chunk < chunks.len() {
+        render_status_bar(frame, chunks[next_chunk], app);
     }
 
     // Help overlay
     if app.show_help {
         render_help_overlay(frame, area);
     }
+}
+
+fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a> {
+    let status_style = Style::default().fg(s.status.color());
+
+    let status_text = if app.auto_approve.contains(&s.pid) {
+        format!("{}*", s.status)
+    } else {
+        s.status.to_string()
+    };
+
+    let project_text = if s.subagent_count > 0 {
+        format!("{} +{}", s.display_name(), s.subagent_count)
+    } else {
+        s.display_name().to_string()
+    };
+
+    let ctx_pct = s.context_percent();
+    let ctx_color = if ctx_pct > 80.0 {
+        Color::Red
+    } else if ctx_pct > 50.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    let burn_color = if s.burn_rate_per_hr > 10.0 {
+        Color::Red
+    } else if s.burn_rate_per_hr > 1.0 {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
+    // Cost cell with budget indicator
+    let (cost_text, cost_color) = if let Some(budget) = app.budget_usd {
+        let pct = s.cost_usd / budget * 100.0;
+        let text = format!("{} {:.0}%", s.format_cost(), pct);
+        let color = if pct >= 100.0 {
+            Color::Red
+        } else if pct >= 80.0 {
+            Color::LightRed
+        } else {
+            Color::Yellow
+        };
+        (text, color)
+    } else {
+        (s.format_cost(), Color::Yellow)
+    };
+
+    Row::new(vec![
+        Cell::from(s.pid.to_string()),
+        Cell::from(project_text),
+        Cell::from(status_text).style(status_style),
+        Cell::from(s.format_context_bar(6)).style(Style::default().fg(ctx_color)),
+        Cell::from(cost_text).style(Style::default().fg(cost_color)),
+        Cell::from(s.format_burn_rate()).style(Style::default().fg(burn_color)),
+        Cell::from(s.format_elapsed()),
+        Cell::from(format!("{:.1}", s.cpu_percent)),
+        Cell::from(s.format_mem()),
+        Cell::from(s.format_tokens()),
+        Cell::from(s.format_sparkline()).style(Style::default().fg(Color::Blue)),
+    ])
 }

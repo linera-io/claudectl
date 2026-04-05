@@ -20,7 +20,6 @@ pub enum Terminal {
 }
 
 pub fn detect_terminal() -> Terminal {
-    // Check tmux first — it runs inside another terminal
     if std::env::var("TMUX").is_ok() {
         return Terminal::Tmux;
     }
@@ -37,7 +36,18 @@ pub fn detect_terminal() -> Terminal {
     }
 }
 
-/// Switch to the terminal tab/pane running the given session.
+/// The macOS process name System Events uses to target each terminal.
+fn system_events_process_name() -> &'static str {
+    match std::env::var("TERM_PROGRAM").as_deref() {
+        Ok("WarpTerminal") => "stable",
+        Ok("iTerm.app") => "iTerm2",
+        Ok("Apple_Terminal") => "Terminal",
+        Ok("WezTerm") => "WezTerm",
+        Ok("ghostty") => "ghostty",
+        _ => "frontmost application",
+    }
+}
+
 pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
     if session.tty.is_empty() {
         return Err("No TTY associated with this session".into());
@@ -57,55 +67,52 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
     }
 }
 
-/// Send text to a session by switching to its terminal and typing via System Events.
-/// Writing to /dev/ttysXXX goes to display output, not process input.
-/// The only reliable way is to use the terminal emulator's input mechanism.
 pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
     match detect_terminal() {
         Terminal::Ghostty => ghostty::send_input(session, text),
         Terminal::Kitty => kitty::send_input(session, text),
         Terminal::Tmux => tmux::send_input(session, text),
         _ => {
-            // Warp, iTerm2, Terminal.app, WezTerm: switch to the tab, send keystroke, switch back
+            // Switch to the tab first, then type via System Events
             switch_to_terminal(session)?;
             std::thread::sleep(std::time::Duration::from_millis(200));
 
+            let proc = system_events_process_name();
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             let script = format!(
                 r#"
                 tell application "System Events"
-                    tell process "stable"
-                        keystroke "{text}"
+                    tell process "{proc}"
+                        keystroke "{escaped}"
                     end tell
                 end tell
                 "#,
-                text = escaped,
             );
             run_osascript(&script)
         }
     }
 }
 
-/// Approve a pending permission prompt by sending Enter.
-/// Claude Code's permission dialog has "1. Yes" pre-selected — Enter approves it.
 pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
     match detect_terminal() {
         Terminal::Ghostty => ghostty::approve(session),
         Terminal::Kitty => kitty::approve(session),
         Terminal::Tmux => send_input(session, "Enter"),
         _ => {
-            // Warp, iTerm2, Terminal.app: switch to tab, press Enter, switch back
             switch_to_terminal(session)?;
             std::thread::sleep(std::time::Duration::from_millis(200));
-            run_osascript(
+
+            let proc = system_events_process_name();
+            let script = format!(
                 r#"
                 tell application "System Events"
-                    tell process "stable"
+                    tell process "{proc}"
                         key code 36
                     end tell
                 end tell
-            "#,
-            )
+                "#,
+            );
+            run_osascript(&script)
         }
     }
 }

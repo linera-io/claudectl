@@ -215,9 +215,9 @@ impl ClaudeSession {
             "pid": self.pid,
             "project": self.display_name(),
             "status": self.status.to_string(),
-            "context_pct": (self.context_percent() * 100.0).round() / 100.0,
-            "cost_usd": (self.cost_usd * 10000.0).round() / 10000.0,
-            "burn_rate": (self.burn_rate_per_hr * 10000.0).round() / 10000.0,
+            "context_pct": (self.context_percent() * 100.0).round() / 100.0, // 0-100 range, 2 decimal places
+            "cost_usd": (self.cost_usd * 100.0).round() / 100.0,
+            "burn_rate_per_hr": (self.burn_rate_per_hr * 100.0).round() / 100.0,
             "elapsed_secs": self.elapsed.as_secs(),
             "cpu": self.cpu_percent,
             "mem_mb": (self.mem_mb * 100.0).round() / 100.0,

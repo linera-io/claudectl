@@ -77,8 +77,14 @@ pub fn fetch_and_enrich(sessions: &mut Vec<ClaudeSession>) {
         }
     }
 
-    // Remove sessions whose PIDs are dead
-    sessions.retain(|s| alive_pids.contains(&s.pid));
+    // Mark dead PIDs as Finished instead of removing them immediately.
+    // They'll be displayed briefly so the user can see what exited.
+    for session in sessions.iter_mut() {
+        if !alive_pids.contains(&session.pid) {
+            session.status = crate::session::SessionStatus::Finished;
+            session.cpu_percent = 0.0;
+        }
+    }
 }
 
 fn extract_session_meta(cmd: &[&str], session: &mut ClaudeSession) {

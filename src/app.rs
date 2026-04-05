@@ -26,6 +26,7 @@ pub struct App {
     pub sort_column: usize,
     pub auto_approve: HashSet<u32>,
     pub pending_auto_approve: Option<u32>,
+    pub finished_at: HashMap<u32, std::time::Instant>, // When PIDs were first seen as Finished
 }
 
 impl Default for App {
@@ -51,6 +52,7 @@ impl App {
             sort_column: 0,
             auto_approve: HashSet::new(),
             pending_auto_approve: None,
+            finished_at: HashMap::new(),
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -126,6 +128,25 @@ impl App {
                 }
             }
         }
+
+        // Track when sessions first appear as Finished, remove after 30s
+        let now = std::time::Instant::now();
+        for session in &sessions {
+            if session.status == SessionStatus::Finished {
+                self.finished_at.entry(session.pid).or_insert(now);
+            }
+        }
+        sessions.retain(|s| {
+            if s.status == SessionStatus::Finished {
+                if let Some(&t) = self.finished_at.get(&s.pid) {
+                    return now.duration_since(t).as_secs() < 30;
+                }
+            }
+            true
+        });
+        // Clean up old finished_at entries
+        self.finished_at
+            .retain(|_, t| now.duration_since(*t).as_secs() < 60);
 
         // Sort
         self.apply_sort(&mut sessions);

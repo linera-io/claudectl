@@ -502,8 +502,13 @@ impl App {
 
 fn fire_notification(project: &str) {
     let safe = project.replace('"', "'").replace('\\', "");
+    #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("osascript")
         .args(["-e", &format!("display notification \"{safe} needs input\" with title \"claudectl\"")])
+        .spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("notify-send")
+        .args(["claudectl", &format!("{safe} needs input")])
         .spawn();
 }
 

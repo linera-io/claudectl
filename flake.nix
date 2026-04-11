@@ -14,7 +14,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "claudectl";
-          version = "0.7.0";
+          version = "0.8.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 

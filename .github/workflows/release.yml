@@ -57,17 +57,18 @@ jobs:
 
       - name: Package
         run: |
+          TAG=${GITHUB_REF#refs/tags/}
           cd target/${{ matrix.target }}/release
-          tar czf ../../../claudectl-${{ matrix.target }}.tar.gz claudectl
+          tar czf ../../../claudectl-${TAG}-${{ matrix.target }}.tar.gz claudectl
           cd ../../..
-          shasum -a 256 claudectl-${{ matrix.target }}.tar.gz > claudectl-${{ matrix.target }}.tar.gz.sha256
+          shasum -a 256 claudectl-${TAG}-${{ matrix.target }}.tar.gz > claudectl-${TAG}-${{ matrix.target }}.tar.gz.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: claudectl-${{ matrix.target }}
           path: |
-            claudectl-${{ matrix.target }}.tar.gz
-            claudectl-${{ matrix.target }}.tar.gz.sha256
+            claudectl-*.tar.gz
+            claudectl-*.tar.gz.sha256
 
   release:
     name: Release

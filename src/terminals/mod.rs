@@ -95,9 +95,20 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
         Terminal::Ghostty => ghostty::send_input(session, text),
         Terminal::Kitty => kitty::send_input(session, text),
         Terminal::Tmux => tmux::send_input(session, text),
-        // For Warp and other terminals: write directly to the TTY device.
-        // This works in the background without switching focus.
-        _ => write_to_tty(session, text),
+        #[cfg(target_os = "macos")]
+        Terminal::Warp => warp::send_input(session, text),
+        #[cfg(target_os = "macos")]
+        _ => {
+            // iTerm2, Apple Terminal, etc: switch + System Events keystroke
+            switch_to_terminal(session)?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+            run_osascript(&format!(
+                r#"tell application "System Events" to keystroke "{escaped}""#,
+            ))
+        }
+        #[cfg(not(target_os = "macos"))]
+        _ => Err("Input injection not supported for this terminal".into()),
     }
 }
 
@@ -107,37 +118,18 @@ pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
         Terminal::Ghostty => ghostty::approve(session),
         Terminal::Kitty => kitty::approve(session),
         Terminal::Tmux => tmux::send_input(session, "\r"),
-        // For Warp and other terminals: send Enter via TTY device.
-        // No focus switch needed.
-        _ => write_to_tty(session, "\n"),
+        #[cfg(target_os = "macos")]
+        Terminal::Warp => warp::approve(session),
+        #[cfg(target_os = "macos")]
+        _ => {
+            // iTerm2, Apple Terminal, etc: switch + press Enter
+            switch_to_terminal(session)?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            run_osascript(r#"tell application "System Events" to key code 36"#)
+        }
+        #[cfg(not(target_os = "macos"))]
+        _ => Err("Input injection not supported for this terminal".into()),
     }
-}
-
-/// Write text directly to a session's TTY device.
-/// Works in the background without switching terminal focus.
-/// Requires the process to share the same user (same uid).
-fn write_to_tty(session: &ClaudeSession, text: &str) -> Result<(), String> {
-    if session.tty.is_empty() {
-        return Err("No TTY associated with this session".into());
-    }
-
-    let tty_path = format!("/dev/{}", session.tty);
-
-    crate::logger::log(
-        "DEBUG",
-        &format!("writing to TTY {} for {}", tty_path, session.display_name()),
-    );
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&tty_path)
-        .map_err(|e| format!("Cannot open {tty_path}: {e}"))?;
-
-    use std::io::Write;
-    file.write_all(text.as_bytes())
-        .map_err(|e| format!("Write to {tty_path} failed: {e}"))?;
-
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]

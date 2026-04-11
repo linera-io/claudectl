@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod discovery;
 mod monitor;
 mod process;
@@ -96,10 +97,49 @@ struct Cli {
     /// Auto-kill sessions that exceed the budget (requires --budget)
     #[arg(long)]
     kill_on_budget: bool,
+
+    /// Show resolved configuration and exit
+    #[arg(long)]
+    config: bool,
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+
+    // Load config from files, then let CLI flags override
+    let mut cfg = config::Config::load();
+
+    // CLI flags override config file values (only override if explicitly set)
+    if cli.interval != 2000 {
+        cfg.interval = cli.interval;
+    }
+    if cli.notify {
+        cfg.notify = true;
+    }
+    if cli.debug {
+        cfg.debug = true;
+    }
+    if cli.budget.is_some() {
+        cfg.budget = cli.budget;
+    }
+    if cli.kill_on_budget {
+        cfg.kill_on_budget = true;
+    }
+    if cli.webhook.is_some() {
+        cfg.webhook = cli.webhook.clone();
+    }
+    if cli.webhook_on.is_some() {
+        cfg.webhook_on = cli.webhook_on.as_deref().map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .collect::<Vec<_>>()
+        });
+    }
+
+    if cli.config {
+        cfg.print_resolved();
+        return Ok(());
+    }
 
     if cli.new_session {
         return launch_session(&cli.cwd, cli.prompt.as_deref(), cli.resume.as_deref());
@@ -118,10 +158,10 @@ fn main() -> io::Result<()> {
     }
 
     if cli.watch {
-        return run_watch(Duration::from_millis(cli.interval), cli.json, &cli.format);
+        return run_watch(Duration::from_millis(cfg.interval), cli.json, &cli.format);
     }
 
-    let tick_rate = Duration::from_millis(cli.interval);
+    let tick_rate = Duration::from_millis(cfg.interval);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -131,20 +171,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run app
-    let result = run(
-        &mut terminal,
-        tick_rate,
-        cli.notify,
-        cli.debug,
-        cli.webhook.clone(),
-        cli.webhook_on.as_deref().map(|s| {
-            s.split(',')
-                .map(|t| t.trim().to_string())
-                .collect::<Vec<_>>()
-        }),
-        cli.budget,
-        cli.kill_on_budget,
-    );
+    let result = run(&mut terminal, tick_rate, &cfg);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -427,24 +454,19 @@ fn format_session(fmt: &str, s: &session::ClaudeSession) -> String {
         .replace("{context}", &format!("{}", s.context_percent() as u32))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     tick_rate: Duration,
-    notify: bool,
-    debug: bool,
-    webhook: Option<String>,
-    webhook_filter: Option<Vec<String>>,
-    budget: Option<f64>,
-    kill_on_budget: bool,
+    cfg: &config::Config,
 ) -> io::Result<()> {
     let mut app = App::new();
-    app.notify = notify;
-    app.debug = debug;
-    app.webhook_url = webhook;
-    app.webhook_filter = webhook_filter;
-    app.budget_usd = budget;
-    app.kill_on_budget = kill_on_budget;
+    app.notify = cfg.notify;
+    app.debug = cfg.debug;
+    app.webhook_url = cfg.webhook.clone();
+    app.webhook_filter = cfg.webhook_on.clone();
+    app.budget_usd = cfg.budget;
+    app.kill_on_budget = cfg.kill_on_budget;
+    app.grouped_view = cfg.grouped;
     let mut last_tick = Instant::now();
 
     loop {

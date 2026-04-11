@@ -1,4 +1,5 @@
 pub mod app;
+pub mod config;
 pub mod discovery;
 pub mod monitor;
 pub mod process;

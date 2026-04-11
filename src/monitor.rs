@@ -137,7 +137,7 @@ pub fn update_tokens(session: &mut ClaudeSession) {
     infer_status(session, &last_type, &last_stop_reason, is_waiting_for_task);
 }
 
-fn infer_status(
+pub fn infer_status(
     session: &mut ClaudeSession,
     last_msg_type: &str,
     last_stop_reason: &str,
@@ -207,7 +207,7 @@ fn infer_status(
 }
 
 /// Estimate USD cost based on token usage and model.
-fn estimate_cost(session: &ClaudeSession) -> f64 {
+pub fn estimate_cost(session: &ClaudeSession) -> f64 {
     // Plain input tokens = total_input - cache_read - cache_write
     let plain_input = session
         .total_input_tokens
@@ -233,7 +233,7 @@ fn estimate_cost(session: &ClaudeSession) -> f64 {
 }
 
 /// Max context window tokens by model.
-fn model_context_max(model: &str) -> u64 {
+pub fn model_context_max(model: &str) -> u64 {
     if model.contains("opus") {
         // Opus 4.6 with extended thinking supports up to 1M
         1_000_000
@@ -243,7 +243,7 @@ fn model_context_max(model: &str) -> u64 {
     }
 }
 
-fn shorten_model(model: &str) -> String {
+pub fn shorten_model(model: &str) -> String {
     if model.contains("opus") {
         if model.contains("4-6") {
             "opus-4.6".into()

@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod discovery;
+mod history;
 mod logger;
 mod monitor;
 mod process;
@@ -111,6 +112,14 @@ struct Cli {
     /// Write diagnostic logs to a file (for debugging/bug reports)
     #[arg(long)]
     log: Option<String>,
+
+    /// Show history of completed sessions and exit
+    #[arg(long)]
+    history: bool,
+
+    /// Show aggregated session statistics and exit
+    #[arg(long)]
+    stats: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -155,6 +164,16 @@ fn main() -> io::Result<()> {
 
     if cli.config {
         cfg.print_resolved();
+        return Ok(());
+    }
+
+    if cli.history {
+        history::print_history(&cli.since);
+        return Ok(());
+    }
+
+    if cli.stats {
+        history::print_stats(&cli.since);
         return Ok(());
     }
 

@@ -25,6 +25,11 @@ pub fn log(level: &str, message: &str) {
 }
 
 /// Format current time as ISO 8601 without external crate.
+/// Get the current timestamp as ISO 8601 string.
+pub fn timestamp_now() -> String {
+    chrono_now()
+}
+
 fn chrono_now() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

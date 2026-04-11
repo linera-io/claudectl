@@ -252,8 +252,12 @@ impl App {
         // Track when sessions first appear as Finished, remove after 30s
         let now = std::time::Instant::now();
         for session in &sessions {
-            if session.status == SessionStatus::Finished {
-                self.finished_at.entry(session.pid).or_insert(now);
+            if session.status == SessionStatus::Finished
+                && !self.finished_at.contains_key(&session.pid)
+            {
+                self.finished_at.insert(session.pid, now);
+                // Record to history on first Finished detection
+                crate::history::record_session(session);
             }
         }
         sessions.retain(|s| {

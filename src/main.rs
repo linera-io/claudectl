@@ -5,6 +5,7 @@ mod monitor;
 mod process;
 mod session;
 mod terminals;
+mod theme;
 mod ui;
 
 use std::io;
@@ -101,6 +102,10 @@ struct Cli {
     /// Show resolved configuration and exit
     #[arg(long)]
     config: bool,
+
+    /// Color theme: dark, light, or none (respects NO_COLOR env var)
+    #[arg(long)]
+    theme: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -170,8 +175,12 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Detect theme
+    let theme_mode = theme::ThemeMode::detect(cli.theme.as_deref());
+    let app_theme = theme::Theme::from_mode(theme_mode);
+
     // Run app
-    let result = run(&mut terminal, tick_rate, &cfg);
+    let result = run(&mut terminal, tick_rate, &cfg, app_theme);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -458,6 +467,7 @@ fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     tick_rate: Duration,
     cfg: &config::Config,
+    app_theme: theme::Theme,
 ) -> io::Result<()> {
     let mut app = App::new();
     app.notify = cfg.notify;
@@ -467,6 +477,7 @@ fn run(
     app.budget_usd = cfg.budget;
     app.kill_on_budget = cfg.kill_on_budget;
     app.grouped_view = cfg.grouped;
+    app.theme = app_theme;
     let mut last_tick = Instant::now();
 
     loop {

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -9,16 +9,15 @@ use ratatui::{
 use crate::app::App;
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
     if app.launch_mode {
         let msg = Paragraph::new(Line::from(vec![
             Span::styled(
                 " new> ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(t.success).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&*app.launch_buffer, Style::default().fg(Color::White)),
-            Span::styled("_", Style::default().fg(Color::DarkGray)),
+            Span::styled(&*app.launch_buffer, Style::default().fg(t.text_primary)),
+            Span::styled("_", Style::default().fg(t.text_muted)),
         ]));
         frame.render_widget(msg, area);
     } else if app.input_mode {
@@ -26,18 +25,18 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 " > ",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(t.input_accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&*app.input_buffer, Style::default().fg(Color::White)),
-            Span::styled("_", Style::default().fg(Color::DarkGray)),
+            Span::styled(&*app.input_buffer, Style::default().fg(t.text_primary)),
+            Span::styled("_", Style::default().fg(t.text_muted)),
         ]));
         frame.render_widget(msg, area);
     } else if !app.status_msg.is_empty() {
         let color = if app.status_msg.starts_with("Error") {
-            Color::Red
+            t.error
         } else {
-            Color::Green
+            t.success
         };
         let msg = Paragraph::new(Span::styled(
             format!(" {}", app.status_msg),

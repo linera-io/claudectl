@@ -1,13 +1,16 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
+use crate::app::App;
+
 /// Render a centered help popup showing all keybindings and status colors.
-pub fn render_help_overlay(frame: &mut Frame, area: Rect) {
+pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
     let popup = centered_rect(60, 70, area);
 
     // Clear the area behind the popup
@@ -16,120 +19,114 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_lines = vec![
         Line::from(Span::styled(
             " Keybindings",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  j/k ", Style::default().fg(Color::Yellow)),
+            Span::styled("  j/k ", Style::default().fg(t.highlight_key)),
             Span::raw("or "),
-            Span::styled("Up/Down ", Style::default().fg(Color::Yellow)),
+            Span::styled("Up/Down ", Style::default().fg(t.highlight_key)),
             Span::raw("  Navigate sessions"),
         ]),
         Line::from(vec![
-            Span::styled("  Enter          ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Enter          ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle detail panel for selected session"),
         ]),
         Line::from(vec![
-            Span::styled("  Tab            ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Tab            ", Style::default().fg(t.highlight_key)),
             Span::raw("  Switch to session terminal"),
         ]),
         Line::from(vec![
-            Span::styled("  y              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  y              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Approve (send Enter to NeedsInput)"),
         ]),
         Line::from(vec![
-            Span::styled("  i              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  i              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Input mode (type text to session)"),
         ]),
         Line::from(vec![
-            Span::styled("  d/x            ", Style::default().fg(Color::Yellow)),
+            Span::styled("  d/x            ", Style::default().fg(t.highlight_key)),
             Span::raw("  Kill session (double-tap to confirm)"),
         ]),
         Line::from(vec![
-            Span::styled("  s              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  s              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Cycle sort column"),
         ]),
         Line::from(vec![
-            Span::styled("  a              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  a              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle auto-approve (double-tap)"),
         ]),
         Line::from(vec![
-            Span::styled("  n              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  n              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Launch new Claude session"),
         ]),
         Line::from(vec![
-            Span::styled("  g              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  g              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle grouped view by project"),
         ]),
         Line::from(vec![
-            Span::styled("  r              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  r              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Force refresh"),
         ]),
         Line::from(vec![
-            Span::styled("  ?              ", Style::default().fg(Color::Yellow)),
+            Span::styled("  ?              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle this help"),
         ]),
         Line::from(vec![
-            Span::styled("  q/Esc          ", Style::default().fg(Color::Yellow)),
+            Span::styled("  q/Esc          ", Style::default().fg(t.highlight_key)),
             Span::raw("  Quit"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             " Status Colors",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Needs Input ", Style::default().fg(Color::Magenta)),
+            Span::styled("  Needs Input ", Style::default().fg(t.status_needs_input)),
             Span::raw("  Blocked on user approval/input"),
         ]),
         Line::from(vec![
-            Span::styled("  Processing  ", Style::default().fg(Color::Green)),
+            Span::styled("  Processing  ", Style::default().fg(t.status_processing)),
             Span::raw("  Actively generating or running tools"),
         ]),
         Line::from(vec![
-            Span::styled("  Waiting     ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Waiting     ", Style::default().fg(t.status_waiting)),
             Span::raw("  Done responding, awaiting next prompt"),
         ]),
         Line::from(vec![
-            Span::styled("  Idle        ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Idle        ", Style::default().fg(t.status_idle)),
             Span::raw("  No recent activity"),
         ]),
         Line::from(vec![
-            Span::styled("  Finished    ", Style::default().fg(Color::Red)),
+            Span::styled("  Finished    ", Style::default().fg(t.status_finished)),
             Span::raw("  Process exited"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             " Indicators",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  *  ", Style::default().fg(Color::Yellow)),
+            Span::styled("  *  ", Style::default().fg(t.highlight_key)),
             Span::raw("after status = auto-approve enabled"),
         ]),
         Line::from(vec![
-            Span::styled("  +N ", Style::default().fg(Color::Yellow)),
+            Span::styled("  +N ", Style::default().fg(t.highlight_key)),
             Span::raw("after project = N sub-agents running"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  Press any key to dismiss",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.text_muted),
         )),
     ];
 
     let block = Block::default()
         .title(" Help ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(t.header));
 
     let paragraph = Paragraph::new(help_lines)
         .block(block)

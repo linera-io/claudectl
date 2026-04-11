@@ -1,14 +1,17 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::app::App;
 use crate::session::ClaudeSession;
+use crate::theme::Theme;
 
-pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSession) {
+pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSession, app: &App) {
+    let t = &app.theme;
     let pid = session.pid.to_string();
     let status = session.status.to_string();
     let elapsed = session.format_elapsed();
@@ -47,45 +50,41 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
     let subagents = session.subagent_count.to_string();
 
     let lines = vec![
-        detail_line("PID", &pid),
-        detail_line("Session ID", &session.session_id),
-        detail_line("CWD", &session.cwd),
-        detail_line("Project", &session.project_name),
-        detail_line("Model", &model),
-        detail_line("Status", &status),
-        detail_line("TTY", &tty),
-        detail_line("Elapsed", &elapsed),
+        detail_line("PID", &pid, t),
+        detail_line("Session ID", &session.session_id, t),
+        detail_line("CWD", &session.cwd, t),
+        detail_line("Project", &session.project_name, t),
+        detail_line("Model", &model, t),
+        detail_line("Status", &status, t),
+        detail_line("TTY", &tty, t),
+        detail_line("Elapsed", &elapsed, t),
         Line::from(""),
         Line::from(Span::styled(
             " Tokens",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
         )),
-        detail_line("  Input", &input_tok),
-        detail_line("  Output", &output_tok),
-        detail_line("  Cache Read", &cache_read),
-        detail_line("  Cache Write", &cache_write),
-        detail_line("  Context", &context_str),
+        detail_line("  Input", &input_tok, t),
+        detail_line("  Output", &output_tok, t),
+        detail_line("  Cache Read", &cache_read, t),
+        detail_line("  Cache Write", &cache_write, t),
+        detail_line("  Context", &context_str, t),
         Line::from(""),
         Line::from(Span::styled(
             " Cost",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
         )),
-        detail_line("  Total", &cost),
-        detail_line("  Burn Rate", &burn_rate),
+        detail_line("  Total", &cost, t),
+        detail_line("  Burn Rate", &burn_rate, t),
         Line::from(""),
-        detail_line("Command", &command),
-        detail_line("JSONL", &jsonl),
-        detail_line("Subagents", &subagents),
+        detail_line("Command", &command, t),
+        detail_line("JSONL", &jsonl, t),
+        detail_line("Subagents", &subagents, t),
     ];
 
     let block = Block::default()
         .title(" Session Detail ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.border));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -94,13 +93,10 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
     frame.render_widget(paragraph, area);
 }
 
-fn detail_line(label: &str, value: &str) -> Line<'static> {
+fn detail_line(label: &str, value: &str, t: &Theme) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!(" {label:<15}"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(value.to_string(), Style::default().fg(Color::White)),
+        Span::styled(format!(" {label:<15}"), Style::default().fg(t.text_muted)),
+        Span::styled(value.to_string(), Style::default().fg(t.text_primary)),
     ])
 }
 

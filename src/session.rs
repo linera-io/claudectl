@@ -26,16 +26,6 @@ impl fmt::Display for SessionStatus {
 }
 
 impl SessionStatus {
-    pub fn color(&self) -> ratatui::style::Color {
-        match self {
-            Self::NeedsInput => ratatui::style::Color::Magenta,
-            Self::Processing => ratatui::style::Color::Green,
-            Self::WaitingInput => ratatui::style::Color::Yellow,
-            Self::Idle => ratatui::style::Color::DarkGray,
-            Self::Finished => ratatui::style::Color::Red,
-        }
-    }
-
     pub fn sort_key(&self) -> u8 {
         match self {
             Self::NeedsInput => 0,

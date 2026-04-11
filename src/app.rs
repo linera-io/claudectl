@@ -8,6 +8,7 @@ use crate::monitor;
 use crate::process;
 use crate::session::{ClaudeSession, SessionStatus};
 use crate::terminals;
+use crate::theme::Theme;
 
 pub const SORT_COLUMNS: &[&str] = &["Status", "Context", "Cost", "$/hr", "Elapsed"];
 
@@ -39,6 +40,7 @@ pub struct App {
     pub kill_on_budget: bool,        // Auto-kill when budget exceeded
     pub budget_warned: HashSet<u32>, // PIDs that have been warned at 80%
     pub budget_killed: HashSet<u32>, // PIDs that have been killed
+    pub theme: Theme,
 }
 
 #[derive(Default, Clone)]
@@ -118,6 +120,7 @@ impl App {
             kill_on_budget: false,
             budget_warned: HashSet::new(),
             budget_killed: HashSet::new(),
+            theme: Theme::from_mode(crate::theme::ThemeMode::Dark),
         };
         app.refresh();
         if !app.sessions.is_empty() {

@@ -5,4 +5,5 @@ pub mod monitor;
 pub mod process;
 pub mod session;
 pub mod terminals;
+pub mod theme;
 pub mod ui;

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
@@ -14,6 +14,7 @@ use super::help::render_help_overlay;
 use super::status_bar::render_status_bar;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
     let has_status = !app.status_msg.is_empty() || app.input_mode || app.launch_mode;
     let show_detail = app.detail_panel && app.selected_session().is_some();
 
@@ -42,50 +43,45 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(Span::styled(
                 "No active Claude Code sessions found.",
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(t.text_muted)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  Press ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Press ", Style::default().fg(t.text_muted)),
                 Span::styled(
                     "n",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(t.highlight_key)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     " to launch a new session, or start ",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(t.text_muted),
                 ),
                 Span::styled(
                     "claude",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(t.success).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    " in another terminal.",
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(" in another terminal.", Style::default().fg(t.text_muted)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  Press ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Press ", Style::default().fg(t.text_muted)),
                 Span::styled(
                     "?",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(t.highlight_key)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" for help.", Style::default().fg(Color::DarkGray)),
+                Span::styled(" for help.", Style::default().fg(t.text_muted)),
             ]),
         ];
 
         let block = Block::default()
             .title(" claudectl ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(Style::default().fg(t.border));
 
         let empty_widget = Paragraph::new(empty_lines)
             .block(block)
@@ -98,7 +94,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         if app.show_help {
-            render_help_overlay(frame, area);
+            render_help_overlay(frame, area, app);
         }
         return;
     }
@@ -126,11 +122,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             (*h).to_string()
         };
-        Cell::from(label).style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
+        Cell::from(label).style(Style::default().fg(t.header).add_modifier(Modifier::BOLD))
     });
 
     let header = Row::new(header_cells).height(1);
@@ -155,11 +147,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             );
             let mut cells: Vec<Cell> = vec![
                 Cell::from(""),
-                Cell::from(header_text).style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Cell::from(header_text)
+                    .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
             ];
             for _ in 2..11 {
                 cells.push(Cell::from(""));
@@ -215,19 +204,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let mut footer_spans = vec![
         Span::styled(
             format!(" {count} sessions ({active} active) "),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.footer),
         ),
-        Span::styled(format!("{cost_str} "), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("{cost_str} "), Style::default().fg(t.cost)),
         Span::styled(
             format!("[{selected}/{count}]"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.footer),
         ),
     ];
 
     if app.debug {
         footer_spans.push(Span::styled(
             format!("  {}", app.debug_timings.format()),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(t.header),
         ));
     } else {
         // Contextual hints based on selected session state
@@ -241,7 +230,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 )
             }
         };
-        footer_spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+        footer_spans.push(Span::styled(hint, Style::default().fg(t.footer)));
     }
 
     let footer = Line::from(footer_spans);
@@ -250,7 +239,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .title(" claudectl ")
         .title_bottom(footer)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.border));
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -258,7 +247,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .row_highlight_style(
             Style::default()
                 .add_modifier(Modifier::REVERSED)
-                .fg(Color::White),
+                .fg(t.text_primary),
         )
         .highlight_symbol("\u{25b6} "); // ▶
 
@@ -268,7 +257,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let mut next_chunk = 1;
     if show_detail {
         if let Some(session) = app.selected_session() {
-            render_detail_panel(frame, chunks[next_chunk], session);
+            render_detail_panel(frame, chunks[next_chunk], session, app);
         }
         next_chunk += 1;
     }
@@ -280,12 +269,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     // Help overlay
     if app.show_help {
-        render_help_overlay(frame, area);
+        render_help_overlay(frame, area, app);
     }
 }
 
 fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a> {
-    let status_style = Style::default().fg(s.status.color());
+    let t = &app.theme;
+    let status_style = Style::default().fg(t.status_color(&s.status));
 
     let status_text = if app.auto_approve.contains(&s.pid) {
         format!("{}*", s.status)
@@ -301,19 +291,19 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
 
     let ctx_pct = s.context_percent();
     let ctx_color = if ctx_pct > 80.0 {
-        Color::Red
+        t.context_danger
     } else if ctx_pct > 50.0 {
-        Color::Yellow
+        t.context_warning
     } else {
-        Color::Green
+        t.context_ok
     };
 
     let burn_color = if s.burn_rate_per_hr > 10.0 {
-        Color::Red
+        t.burn_rate_high
     } else if s.burn_rate_per_hr > 1.0 {
-        Color::Yellow
+        t.burn_rate_mid
     } else {
-        Color::DarkGray
+        t.burn_rate_low
     };
 
     // Cost cell with budget indicator
@@ -321,15 +311,15 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
         let pct = s.cost_usd / budget * 100.0;
         let text = format!("{} {:.0}%", s.format_cost(), pct);
         let color = if pct >= 100.0 {
-            Color::Red
+            t.cost_danger
         } else if pct >= 80.0 {
-            Color::LightRed
+            t.cost_warning
         } else {
-            Color::Yellow
+            t.cost
         };
         (text, color)
     } else {
-        (s.format_cost(), Color::Yellow)
+        (s.format_cost(), t.cost)
     };
 
     Row::new(vec![
@@ -343,6 +333,6 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
         Cell::from(format!("{:.1}", s.cpu_percent)),
         Cell::from(s.format_mem()),
         Cell::from(s.format_tokens()),
-        Cell::from(s.format_sparkline()).style(Style::default().fg(Color::Blue)),
+        Cell::from(s.format_sparkline()).style(Style::default().fg(t.sparkline)),
     ])
 }

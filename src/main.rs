@@ -1,4 +1,9 @@
-#![allow(clippy::collapsible_if)]
+#![allow(unknown_lints)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::manual_is_multiple_of,
+    clippy::io_other_error
+)]
 
 mod app;
 mod config;

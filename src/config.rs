@@ -14,6 +14,8 @@ pub struct Config {
     pub kill_on_budget: bool,
     pub webhook: Option<String>,
     pub webhook_on: Option<Vec<String>>,
+    pub daily_limit: Option<f64>,
+    pub weekly_limit: Option<f64>,
 }
 
 impl Default for Config {
@@ -28,6 +30,8 @@ impl Default for Config {
             kill_on_budget: false,
             webhook: None,
             webhook_on: None,
+            daily_limit: None,
+            weekly_limit: None,
         }
     }
 }
@@ -44,6 +48,8 @@ struct RawConfig {
     kill_on_budget: Option<bool>,
     webhook_url: Option<String>,
     webhook_events: Option<Vec<String>>,
+    daily_limit: Option<f64>,
+    weekly_limit: Option<f64>,
 }
 
 impl Config {
@@ -95,6 +101,12 @@ impl Config {
         if let Some(v) = raw.webhook_events {
             self.webhook_on = Some(v);
         }
+        if let Some(v) = raw.daily_limit {
+            self.daily_limit = Some(v);
+        }
+        if let Some(v) = raw.weekly_limit {
+            self.weekly_limit = Some(v);
+        }
     }
 
     /// Show resolved config and file locations (for `claudectl config`).
@@ -143,6 +155,18 @@ impl Config {
                 .as_ref()
                 .map(|v| v.join(", "))
                 .unwrap_or_else(|| "all".into())
+        );
+        println!(
+            "  daily_limit:    {}",
+            self.daily_limit
+                .map(|b| format!("${b:.2}"))
+                .unwrap_or_else(|| "none".into())
+        );
+        println!(
+            "  weekly_limit:   {}",
+            self.weekly_limit
+                .map(|b| format!("${b:.2}"))
+                .unwrap_or_else(|| "none".into())
         );
     }
 }
@@ -214,6 +238,12 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
             }
             ("webhook", "events") => {
                 raw.webhook_events = Some(parse_string_array(value));
+            }
+            ("budget", "daily_limit") => {
+                raw.daily_limit = value.parse().ok();
+            }
+            ("budget", "weekly_limit") => {
+                raw.weekly_limit = value.parse().ok();
             }
             _ => {} // Ignore unknown keys
         }

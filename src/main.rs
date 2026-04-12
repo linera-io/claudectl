@@ -545,6 +545,8 @@ fn run(
     app.grouped_view = cfg.grouped;
     app.theme = app_theme;
     app.hooks = hook_registry;
+    app.daily_limit = cfg.daily_limit;
+    app.weekly_limit = cfg.weekly_limit;
     let mut last_tick = Instant::now();
 
     loop {

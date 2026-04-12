@@ -45,6 +45,10 @@ pub struct App {
     pub weekly_summary: crate::history::WeeklySummary,
     pub weekly_summary_tick: u32, // Refresh every N ticks
     pub hooks: HookRegistry,
+    pub daily_limit: Option<f64>,
+    pub weekly_limit: Option<f64>,
+    pub daily_alert_fired: bool, // Prevent repeated alerts per app session
+    pub weekly_alert_fired: bool,
 }
 
 #[derive(Default, Clone)]
@@ -128,6 +132,10 @@ impl App {
             weekly_summary: crate::history::weekly_summary(),
             weekly_summary_tick: 0,
             hooks: HookRegistry::new(),
+            daily_limit: None,
+            weekly_limit: None,
+            daily_alert_fired: false,
+            weekly_alert_fired: false,
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -457,6 +465,61 @@ impl App {
         if self.weekly_summary_tick >= 15 {
             self.weekly_summary_tick = 0;
             self.weekly_summary = crate::history::weekly_summary();
+            self.check_aggregate_budgets();
+        }
+    }
+
+    fn check_aggregate_budgets(&mut self) {
+        let ws = &self.weekly_summary;
+
+        // Also include cost from currently live sessions (not yet in history)
+        let live_cost: f64 = self.sessions.iter().map(|s| s.cost_usd).sum();
+
+        // Daily limit check
+        if let Some(daily_limit) = self.daily_limit {
+            let today_total = ws.today_cost_usd + live_cost;
+            let pct = today_total / daily_limit * 100.0;
+
+            if pct >= 80.0 && !self.daily_alert_fired {
+                self.daily_alert_fired = true;
+                self.status_msg = format!(
+                    "DAILY BUDGET: ${:.2}/${:.2} ({:.0}%)",
+                    today_total, daily_limit, pct
+                );
+                fire_notification(&format!("Daily budget at {:.0}%", pct));
+
+                // Fire hooks with a synthetic session containing aggregate data
+                let mut dummy = create_aggregate_session(today_total, daily_limit, "daily");
+                self.hooks.fire(HookEvent::BudgetWarning, &dummy);
+
+                if pct >= 100.0 {
+                    dummy.cost_usd = today_total;
+                    self.hooks.fire(HookEvent::BudgetExceeded, &dummy);
+                }
+            }
+        }
+
+        // Weekly limit check
+        if let Some(weekly_limit) = self.weekly_limit {
+            let week_total = ws.cost_usd + live_cost;
+            let pct = week_total / weekly_limit * 100.0;
+
+            if pct >= 80.0 && !self.weekly_alert_fired {
+                self.weekly_alert_fired = true;
+                self.status_msg = format!(
+                    "WEEKLY BUDGET: ${:.2}/${:.2} ({:.0}%)",
+                    week_total, weekly_limit, pct
+                );
+                fire_notification(&format!("Weekly budget at {:.0}%", pct));
+
+                let mut dummy = create_aggregate_session(week_total, weekly_limit, "weekly");
+                self.hooks.fire(HookEvent::BudgetWarning, &dummy);
+
+                if pct >= 100.0 {
+                    dummy.cost_usd = week_total;
+                    self.hooks.fire(HookEvent::BudgetExceeded, &dummy);
+                }
+            }
         }
     }
 
@@ -992,4 +1055,21 @@ fn kill_process(pid: u32) -> Result<(), String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
+}
+
+/// Create a synthetic session for aggregate budget hook firing.
+/// Uses {project} = "daily"/"weekly", {cost} = total spend.
+fn create_aggregate_session(total_cost: f64, limit: f64, period: &str) -> ClaudeSession {
+    use crate::session::RawSession;
+    let raw = RawSession {
+        pid: 0,
+        session_id: format!("{period}-budget"),
+        cwd: String::new(),
+        started_at: 0,
+    };
+    let mut s = ClaudeSession::from_raw(raw);
+    s.project_name = format!("{period}-budget");
+    s.cost_usd = total_cost;
+    s.model = format!("limit=${limit:.2}");
+    s
 }

@@ -113,6 +113,56 @@ url = "https://hooks.slack.com/..."
 events = ["NeedsInput", "Finished"]
 ```
 
+## Event Hooks
+
+Run shell commands automatically when session events occur. Add hooks to your config file:
+
+```toml
+# ~/.config/claudectl/config.toml
+
+[hooks.on_needs_input]
+run = "say 'Claude needs your attention'"
+
+[hooks.on_finished]
+run = "terminal-notifier -title 'claudectl' -message '{project} finished (${cost})'"
+
+[hooks.on_session_start]
+run = "echo '{pid},{project},{model}' >> ~/claude-sessions.csv"
+
+[hooks.on_status_change]
+run = "echo '[{project}] {old_status} → {new_status}' >> ~/claude-activity.log"
+```
+
+### Events
+
+| Event | Trigger |
+|-------|---------|
+| `on_session_start` | New session discovered |
+| `on_status_change` | Any status transition |
+| `on_needs_input` | Session needs user approval/input |
+| `on_finished` | Session process exited |
+| `on_budget_warning` | Session hit 80% of budget |
+| `on_budget_exceeded` | Session hit 100% of budget |
+| `on_idle` | Session went idle (>10 min) |
+
+### Template variables
+
+`{pid}`, `{project}`, `{status}`, `{cost}`, `{model}`, `{cwd}`, `{tokens_in}`, `{tokens_out}`, `{elapsed}`, `{session_id}`, `{old_status}`, `{new_status}`
+
+Use `claudectl --hooks` to verify your configured hooks.
+
+### Verified Hooks
+
+We maintain a curated set of officially verified hooks at [mercurialsolo/claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks). Only verified hooks are endorsed for production use.
+
+**To submit a hook for verification**, open an issue on the [claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks/issues) repository with:
+- Hook name and description
+- The `[hooks.*]` config snippet
+- What problem it solves
+- Any dependencies (e.g., `terminal-notifier`, `jq`)
+
+Submitted hooks are reviewed for security, reliability, and usefulness before being added to the verified collection.
+
 ## Task Orchestration
 
 Run multiple Claude sessions with dependency ordering:

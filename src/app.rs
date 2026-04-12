@@ -41,6 +41,8 @@ pub struct App {
     pub budget_warned: HashSet<u32>, // PIDs that have been warned at 80%
     pub budget_killed: HashSet<u32>, // PIDs that have been killed
     pub theme: Theme,
+    pub weekly_summary: crate::history::WeeklySummary,
+    pub weekly_summary_tick: u32, // Refresh every N ticks
 }
 
 #[derive(Default, Clone)]
@@ -121,6 +123,8 @@ impl App {
             budget_warned: HashSet::new(),
             budget_killed: HashSet::new(),
             theme: Theme::from_mode(crate::theme::ThemeMode::Dark),
+            weekly_summary: crate::history::weekly_summary(),
+            weekly_summary_tick: 0,
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -414,6 +418,13 @@ impl App {
 
         self.refresh();
         self.run_auto_approve();
+
+        // Refresh weekly summary every ~30s (15 ticks at 2s interval)
+        self.weekly_summary_tick += 1;
+        if self.weekly_summary_tick >= 15 {
+            self.weekly_summary_tick = 0;
+            self.weekly_summary = crate::history::weekly_summary();
+        }
     }
 
     fn run_auto_approve(&mut self) {

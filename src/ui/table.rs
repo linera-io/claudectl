@@ -191,6 +191,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         })
         .count();
     let total_cost: f64 = app.sessions.iter().map(|s| s.cost_usd).sum();
+    let total_tokens: u64 = app
+        .sessions
+        .iter()
+        .map(|s| s.total_input_tokens + s.total_output_tokens)
+        .sum();
     let selected = app.table_state.selected().map(|i| i + 1).unwrap_or(0);
 
     let cost_str = if total_cost < 1.0 {
@@ -198,6 +203,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("${total_cost:.1}")
     };
+
+    let tokens_str = format_token_count(total_tokens);
 
     let sort_name = SORT_COLUMNS[app.sort_column];
 
@@ -207,6 +214,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(t.footer),
         ),
         Span::styled(format!("{cost_str} "), Style::default().fg(t.cost)),
+        Span::styled(format!("{tokens_str} "), Style::default().fg(t.footer)),
         Span::styled(
             format!("[{selected}/{count}]"),
             Style::default().fg(t.footer),
@@ -235,8 +243,29 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let footer = Line::from(footer_spans);
 
+    // Title with weekly summary
+    let ws = &app.weekly_summary;
+    let title = if ws.cost_usd > 0.0 {
+        let week_cost = if ws.cost_usd < 1.0 {
+            format!("${:.2}", ws.cost_usd)
+        } else {
+            format!("${:.1}", ws.cost_usd)
+        };
+        let today_cost = if ws.today_cost_usd < 1.0 {
+            format!("${:.2}", ws.today_cost_usd)
+        } else {
+            format!("${:.1}", ws.today_cost_usd)
+        };
+        let week_tokens = format_token_count(ws.total_tokens);
+        format!(
+            " claudectl \u{2502} week: {week_cost} ({week_tokens}) \u{2502} today: {today_cost} "
+        )
+    } else {
+        " claudectl ".to_string()
+    };
+
     let block = Block::default()
-        .title(" claudectl ")
+        .title(title)
         .title_bottom(footer)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.border));
@@ -335,4 +364,17 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
         Cell::from(s.format_tokens()),
         Cell::from(s.format_sparkline()).style(Style::default().fg(t.sparkline)),
     ])
+}
+
+fn format_token_count(n: u64) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    if n >= 1_000_000 {
+        format!("{:.1}M tok", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}k tok", n as f64 / 1_000.0)
+    } else {
+        format!("{n} tok")
+    }
 }

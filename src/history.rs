@@ -319,6 +319,34 @@ pub fn print_stats(since: &str) {
     }
 }
 
+/// Weekly usage summary for the TUI title bar.
+#[derive(Debug, Clone, Default)]
+pub struct WeeklySummary {
+    pub cost_usd: f64,
+    pub total_tokens: u64,
+    #[allow(dead_code)]
+    pub session_count: usize,
+    pub today_cost_usd: f64,
+}
+
+/// Compute weekly and daily cost/token summary from history.
+pub fn weekly_summary() -> WeeklySummary {
+    let week_secs = 7 * 86400;
+    let day_secs = 86400;
+    let week_records = load_history(Some(week_secs));
+    let day_records = load_history(Some(day_secs));
+
+    WeeklySummary {
+        cost_usd: week_records.iter().map(|r| r.cost_usd).sum(),
+        total_tokens: week_records
+            .iter()
+            .map(|r| r.input_tokens + r.output_tokens)
+            .sum(),
+        session_count: week_records.len(),
+        today_cost_usd: day_records.iter().map(|r| r.cost_usd).sum(),
+    }
+}
+
 /// Parse a duration string like "24h", "30m", "7d" into seconds.
 pub fn parse_duration(s: &str) -> Option<u64> {
     let s = s.trim();

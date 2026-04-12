@@ -213,6 +213,70 @@ Status is inferred from multiple signals:
 - [Claude Code CLI](https://claude.ai/claude-code) installed and running
 - Rust 2024 edition (to build from source)
 
+## Issues & Feature Requests
+
+Found a bug or have an idea? [Open an issue](https://github.com/mercurialsolo/claudectl/issues/new).
+
+**Bug reports** — please include:
+- `claudectl --version` output
+- Your terminal (`echo $TERM_PROGRAM`) and OS
+- Steps to reproduce
+- If possible, attach a log file: `claudectl --log /tmp/claudectl-debug.log` and reproduce the issue
+
+**Feature requests** — describe the use case, not just the solution. What are you trying to accomplish? Knowing the "why" helps us find the best approach.
+
+## Contributing
+
+Contributions are welcome! Here's how to get started:
+
+### Setup
+
+```bash
+git clone https://github.com/mercurialsolo/claudectl.git
+cd claudectl
+cargo build
+cargo test --all-targets
+```
+
+### Development workflow
+
+1. **Check existing issues** — look for `good first issue` or comment on something you'd like to work on
+2. **Fork and branch** — create a feature branch from `main`
+3. **Write tests** — new functionality should include tests in `tests/integration_tests.rs` or as module-level `#[cfg(test)]` tests
+4. **Pass all checks** before submitting:
+   ```bash
+   cargo test --all-targets
+   cargo clippy --all-targets -- -D warnings
+   cargo fmt --all -- --check
+   ```
+5. **Open a PR** — describe what changed and why. Link to any related issues.
+
+### Architecture
+
+The codebase is organized into focused modules:
+
+| Module | Purpose |
+|--------|---------|
+| `session.rs` | Session data structures and formatting |
+| `discovery.rs` | Session file scanning and JSONL path resolution |
+| `monitor.rs` | JSONL parsing, token counting, status inference |
+| `process.rs` | Process introspection via `ps` |
+| `app.rs` | Core app state, refresh loop, event handling |
+| `config.rs` | TOML config file loading and layering |
+| `theme.rs` | Color palette and theme modes |
+| `history.rs` | Session history persistence and analytics |
+| `orchestrator.rs` | Multi-session task runner |
+| `logger.rs` | Diagnostic file logging |
+| `terminals/` | Terminal-specific switching and input injection |
+| `ui/` | TUI rendering (table, detail, help, status bar) |
+
+### Guidelines
+
+- **No new dependencies** without strong justification — the project stays lightweight
+- **Test behavior, not implementation** — focus on what the code does, not how
+- **Match existing patterns** — look at similar code in the repo before writing new code
+- **Keep commits atomic** — one logical change per commit with a clear message
+
 ## License
 
 MIT

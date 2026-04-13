@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.13.1] - 2026-04-13
+
+### Changed
+- README updated with all v0.13.0 features in feature list, usage section, and architecture table
+
 ## [0.13.0] - 2026-04-13
 
 ### Added

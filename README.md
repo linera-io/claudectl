@@ -25,6 +25,13 @@ Built in Rust. ~1MB binary. Sub-50ms startup.
 - **Configuration file** — Persistent settings via `~/.config/claudectl/config.toml`
 - **Theme system** — Dark, light, and monochrome themes (`--theme`, `NO_COLOR` support)
 - **Task orchestration** — Run multiple Claude sessions with dependency ordering (`--run`)
+- **Session highlight reels** — Press `R` to record a supercut of any session as a shareable GIF
+- **Remote compaction** — Press `c` to send `/compact` to an idle session
+- **Conflict detection** — Warns when 2+ sessions share the same git worktree (`!!` indicator)
+- **Context alerts** — `on_context_high` hook when context window crosses threshold
+- **Permission wait time** — Shows how long sessions have been waiting, sorted by longest first
+- **Session cleanup** — `claudectl --clean` to remove old session data and free disk space
+- **Demo mode** — `--demo` for deterministic fake sessions (screenshots, content creation)
 - **Diagnostic logging** — Structured debug output for troubleshooting (`--log`)
 
 ## Install
@@ -90,6 +97,10 @@ claudectl --log /tmp/claudectl.log
 
 # Run multiple tasks from a file
 claudectl --run tasks.json --parallel
+
+# Clean up old session data
+claudectl --clean --older-than 7d --dry-run
+claudectl --clean --finished
 
 # Show resolved configuration
 claudectl --config
@@ -358,7 +369,11 @@ The codebase is organized into focused modules:
 | `theme.rs` | Color palette and theme modes |
 | `history.rs` | Session history persistence and analytics |
 | `orchestrator.rs` | Multi-session task runner |
+| `hooks.rs` | Event hooks system and execution |
 | `logger.rs` | Diagnostic file logging |
+| `demo.rs` | Deterministic fake sessions for demo mode |
+| `recorder.rs` | Asciicast recording with tee writer |
+| `session_recorder.rs` | Per-session highlight reel generator |
 | `terminals/` | Terminal-specific switching and input injection |
 | `ui/` | TUI rendering (table, detail, help, status bar) |
 

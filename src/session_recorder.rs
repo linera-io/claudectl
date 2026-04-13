@@ -173,20 +173,10 @@ impl SessionRecorder {
         Ok(())
     }
 
-    fn write_stats_header(&mut self) -> std::io::Result<()> {
-        // Claude Code style: compact status line
-        let error_str = if self.errors > 0 {
-            format!("  \x1b[31m{} errors\x1b[0m", self.errors)
-        } else {
-            String::new()
-        };
-        let stats = format!(
-            "\x1b[2J\x1b[H\x1b[90m  ── \x1b[0m\x1b[1;37m{}\x1b[0m\x1b[90m ──\x1b[0m  \
-             \x1b[32m{} edits\x1b[0m  \x1b[33m{} commands\x1b[0m{error_str}\r\n\r\n",
-            self.session_name, self.edits, self.commands,
-        );
-        self.write_frame(&stats)?;
-        self.virtual_time += 0.3;
+    fn write_separator(&mut self) -> std::io::Result<()> {
+        // Thin separator between event groups, no screen clear
+        self.write_frame("\r\n")?;
+        self.virtual_time += 0.2;
         Ok(())
     }
 
@@ -204,7 +194,7 @@ impl SessionRecorder {
                     text.clone()
                 };
                 // Claude Code style: bullet point with text
-                self.write_stats_header()?;
+                self.write_separator()?;
                 let frame = format!(
                     "  \x1b[36m●\x1b[0m \x1b[1;37m{}\x1b[0m\r\n\r\n",
                     truncated.replace('\n', "\r\n    ")
@@ -231,7 +221,7 @@ impl SessionRecorder {
                     _ => {}
                 }
 
-                self.write_stats_header()?;
+                self.write_separator()?;
 
                 // Claude Code style rendering per tool type
                 match tool.as_str() {
@@ -327,7 +317,7 @@ impl SessionRecorder {
             String::new()
         };
         let summary = format!(
-            "\x1b[2J\x1b[H\r\n\
+            "\r\n\r\n\
              \x1b[1;37m  ╭─ {} ── complete ──────────────────────╮\x1b[0m\r\n\
              \x1b[1;37m  │                                       │\x1b[0m\r\n\
              \x1b[1;37m  │\x1b[0m  \x1b[32m{} edits\x1b[0m  \x1b[33m{} commands\x1b[0m{error_str}\x1b[1;37m        │\x1b[0m\r\n\

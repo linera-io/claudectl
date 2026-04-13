@@ -157,7 +157,10 @@ fn expand_template(template: &str, session: &ClaudeSession) -> String {
         .replace("{tokens_out}", &session.total_output_tokens.to_string())
         .replace("{elapsed}", &session.format_elapsed())
         .replace("{session_id}", &session.session_id)
-        .replace("{context_pct}", &format!("{:.0}", session.context_percent()))
+        .replace(
+            "{context_pct}",
+            &format!("{:.0}", session.context_percent()),
+        )
 }
 
 #[cfg(test)]

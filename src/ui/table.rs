@@ -259,8 +259,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let week_tokens = format_token_count(ws.total_tokens);
         let eta_str = match app.budget_eta() {
             Some((spent, limit, eta, _urgency)) => {
-                let spent_str = if spent < 1.0 { format!("${spent:.2}") } else { format!("${spent:.1}") };
-                let limit_str = if limit < 1.0 { format!("${limit:.2}") } else { format!("${limit:.1}") };
+                let spent_str = if spent < 1.0 {
+                    format!("${spent:.2}")
+                } else {
+                    format!("${spent:.1}")
+                };
+                let limit_str = if limit < 1.0 {
+                    format!("${limit:.2}")
+                } else {
+                    format!("${limit:.1}")
+                };
                 format!(" \u{2502} {spent_str}/{limit_str} (ETA: {eta})")
             }
             None => String::new(),
@@ -314,10 +322,7 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
     let t = &app.theme;
     // Color escalation for NeedsInput based on wait time
     let status_style = if s.status == SessionStatus::NeedsInput {
-        let wait_secs = app
-            .wait_duration(s.pid)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let wait_secs = app.wait_duration(s.pid).map(|d| d.as_secs()).unwrap_or(0);
         let color = if wait_secs >= 300 {
             t.cost_danger // Red after 5 min
         } else if wait_secs >= 60 {

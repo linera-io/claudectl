@@ -425,7 +425,10 @@ fn run_clean(older_than: Option<&str>, finished_only: bool, dry_run: bool) -> io
                     // Check if any active session is using this JSONL
                     let app = App::new();
                     let is_active = app.sessions.iter().any(|s| {
-                        s.jsonl_path.as_ref().map(|p| p == &file_path).unwrap_or(false)
+                        s.jsonl_path
+                            .as_ref()
+                            .map(|p| p == &file_path)
+                            .unwrap_or(false)
                     });
                     if is_active {
                         continue;

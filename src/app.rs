@@ -49,10 +49,10 @@ pub struct App {
     pub weekly_limit: Option<f64>,
     pub daily_alert_fired: bool, // Prevent repeated alerts per app session
     pub weekly_alert_fired: bool,
-    pub context_warn_threshold: u8,  // 0-100, fires on_context_high hook
+    pub context_warn_threshold: u8, // 0-100, fires on_context_high hook
     pub context_warned: HashSet<u32>, // PIDs that have been warned (reset if context drops below threshold)
     pub needs_input_since: HashMap<u32, std::time::Instant>, // When each PID entered NeedsInput
-    pub conflict_pids: HashSet<u32>,   // PIDs that share a working directory with another session
+    pub conflict_pids: HashSet<u32>,  // PIDs that share a working directory with another session
     pub conflict_alerted: HashSet<String>, // cwds that have already triggered a conflict alert
 }
 
@@ -421,7 +421,9 @@ impl App {
         for session in &sessions {
             if session.status == SessionStatus::NeedsInput {
                 // Record when it first entered NeedsInput
-                self.needs_input_since.entry(session.pid).or_insert(now_instant);
+                self.needs_input_since
+                    .entry(session.pid)
+                    .or_insert(now_instant);
             } else {
                 // Clear if no longer NeedsInput
                 self.needs_input_since.remove(&session.pid);
@@ -429,14 +431,18 @@ impl App {
         }
         // Clean up entries for sessions that no longer exist
         let active_pids: HashSet<u32> = sessions.iter().map(|s| s.pid).collect();
-        self.needs_input_since.retain(|pid, _| active_pids.contains(pid));
+        self.needs_input_since
+            .retain(|pid, _| active_pids.contains(pid));
 
         // Conflict detection: find sessions sharing the same working directory
         self.conflict_pids.clear();
         let mut cwd_sessions: HashMap<&str, Vec<u32>> = HashMap::new();
         for session in &sessions {
             if session.status != SessionStatus::Finished {
-                cwd_sessions.entry(&session.cwd).or_default().push(session.pid);
+                cwd_sessions
+                    .entry(&session.cwd)
+                    .or_default()
+                    .push(session.pid);
             }
         }
         for (cwd, pids) in &cwd_sessions {
@@ -452,11 +458,8 @@ impl App {
                         .find(|s| s.cwd == *cwd)
                         .map(|s| s.display_name())
                         .unwrap_or("unknown");
-                    self.status_msg = format!(
-                        "CONFLICT: {} sessions sharing {}",
-                        pids.len(),
-                        project
-                    );
+                    self.status_msg =
+                        format!("CONFLICT: {} sessions sharing {}", pids.len(), project);
                     fire_notification(&format!("{} sessions in {}", pids.len(), project));
                     // Fire hook on first session in the conflict group
                     if let Some(session) = sessions.iter().find(|s| s.pid == pids[0]) {
@@ -503,19 +506,16 @@ impl App {
     fn apply_sort(&self, sessions: &mut [ClaudeSession]) {
         match self.sort_column {
             0 => sessions.sort_by(|a, b| {
-                a.status
-                    .sort_key()
-                    .cmp(&b.status.sort_key())
-                    .then_with(|| {
-                        // Within NeedsInput, sort by longest waiting first
-                        if a.status == SessionStatus::NeedsInput {
-                            let a_wait = self.wait_duration(a.pid).unwrap_or_default();
-                            let b_wait = self.wait_duration(b.pid).unwrap_or_default();
-                            b_wait.cmp(&a_wait)
-                        } else {
-                            b.elapsed.cmp(&a.elapsed)
-                        }
-                    })
+                a.status.sort_key().cmp(&b.status.sort_key()).then_with(|| {
+                    // Within NeedsInput, sort by longest waiting first
+                    if a.status == SessionStatus::NeedsInput {
+                        let a_wait = self.wait_duration(a.pid).unwrap_or_default();
+                        let b_wait = self.wait_duration(b.pid).unwrap_or_default();
+                        b_wait.cmp(&a_wait)
+                    } else {
+                        b.elapsed.cmp(&a.elapsed)
+                    }
+                })
             }),
             1 => sessions.sort_by(|a, b| {
                 b.context_percent()
@@ -600,7 +600,9 @@ impl App {
         } else if let Some(budget) = self.budget_usd {
             // For per-session budget, show the session closest to limit
             if let Some(session) = self.sessions.iter().max_by(|a, b| {
-                (a.cost_usd / budget).partial_cmp(&(b.cost_usd / budget)).unwrap_or(std::cmp::Ordering::Equal)
+                (a.cost_usd / budget)
+                    .partial_cmp(&(b.cost_usd / budget))
+                    .unwrap_or(std::cmp::Ordering::Equal)
             }) {
                 (session.cost_usd, budget)
             } else {
@@ -626,7 +628,13 @@ impl App {
             format!("{}m", mins_left)
         };
 
-        let urgency = if mins_left <= 30 { 2 } else if mins_left <= 120 { 1 } else { 0 };
+        let urgency = if mins_left <= 30 {
+            2
+        } else if mins_left <= 120 {
+            1
+        } else {
+            0
+        };
         Some((spent, limit, eta_str, urgency))
     }
 
@@ -1011,8 +1019,7 @@ impl App {
                 SessionStatus::WaitingInput | SessionStatus::Idle => {
                     match terminals::send_input(session, "/compact\n") {
                         Ok(()) => {
-                            self.status_msg =
-                                format!("Sent /compact to {}", session.display_name())
+                            self.status_msg = format!("Sent /compact to {}", session.display_name())
                         }
                         Err(e) => self.status_msg = format!("Compact error: {e}"),
                     }

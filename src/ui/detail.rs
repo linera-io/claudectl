@@ -91,7 +91,11 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         let mut tools: Vec<_> = session.tool_usage.iter().collect();
         tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls));
         for (name, stats) in tools.iter().take(10) {
-            lines.push(detail_line(&format!("  {name}"), &format!("{} calls", stats.calls), t));
+            lines.push(detail_line(
+                &format!("  {name}"),
+                &format!("{} calls", stats.calls),
+                t,
+            ));
         }
     }
 
@@ -116,7 +120,11 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
             lines.push(detail_line("", &format!("{short}{suffix}"), t));
         }
         if files.len() > 10 {
-            lines.push(detail_line("", &format!("  ... and {} more", files.len() - 10), t));
+            lines.push(detail_line(
+                "",
+                &format!("  ... and {} more", files.len() - 10),
+                t,
+            ));
         }
     }
 

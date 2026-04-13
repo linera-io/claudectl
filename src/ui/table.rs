@@ -243,9 +243,34 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let footer = Line::from(footer_spans);
 
-    // Title with weekly summary
+    // Title with weekly summary + recording indicator
     let ws = &app.weekly_summary;
-    let title = if ws.cost_usd > 0.0 {
+    let rec_indicator = if !app.session_recordings.is_empty() {
+        let count = app.session_recordings.len();
+        if count == 1 {
+            " \u{25cf} REC ".to_string()
+        } else {
+            format!(" \u{25cf} REC {count} ")
+        }
+    } else {
+        String::new()
+    };
+
+    let mut title_spans: Vec<Span> = vec![Span::styled(
+        " claudectl ",
+        Style::default().fg(t.text_primary),
+    )];
+
+    if !rec_indicator.is_empty() {
+        title_spans.push(Span::styled(
+            rec_indicator,
+            Style::default()
+                .fg(ratatui::style::Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if ws.cost_usd > 0.0 {
         let week_cost = if ws.cost_usd < 1.0 {
             format!("${:.2}", ws.cost_usd)
         } else {
@@ -273,12 +298,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             }
             None => String::new(),
         };
-        format!(
-            " claudectl \u{2502} week: {week_cost} ({week_tokens}) \u{2502} today: {today_cost}{eta_str} "
-        )
-    } else {
-        " claudectl ".to_string()
-    };
+        title_spans.push(Span::styled(
+            format!(
+                "\u{2502} week: {week_cost} ({week_tokens}) \u{2502} today: {today_cost}{eta_str} "
+            ),
+            Style::default().fg(t.footer),
+        ));
+    }
+
+    let title = Line::from(title_spans);
 
     let block = Block::default()
         .title(title)

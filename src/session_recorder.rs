@@ -340,60 +340,60 @@ fn parse_events(line: &str) -> Vec<SessionEvent> {
         None => return events,
     };
 
-    let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    // Real Claude Code JSONL uses message.role ("assistant"/"user"), not message.type
+    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
     let content = msg.get("content").and_then(|c| c.as_array());
 
-    if msg_type == "assistant" {
-        if let Some(blocks) = content {
-            for block in blocks {
-                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if let Some(blocks) = content {
+        for block in blocks {
+            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-                match block_type {
-                    "text" => {
-                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                            let trimmed = text.trim();
-                            if !trimmed.is_empty() && trimmed.len() > 20 {
-                                events.push(SessionEvent::AssistantText(trimmed.to_string()));
-                            }
+            match block_type {
+                "text" if role == "assistant" => {
+                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() && trimmed.len() > 20 {
+                            events.push(SessionEvent::AssistantText(trimmed.to_string()));
                         }
                     }
-                    "tool_use" => {
-                        let tool = block
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-
-                        let summary = summarize_tool_use(&tool, block.get("input"));
-                        events.push(SessionEvent::ToolUse { tool, summary });
-                    }
-                    "tool_result" => {
-                        let is_error = block
-                            .get("is_error")
-                            .and_then(|e| e.as_bool())
-                            .unwrap_or(false);
-                        let output = block
-                            .get("content")
-                            .and_then(|c| {
-                                if let Some(s) = c.as_str() {
-                                    Some(s.to_string())
-                                } else if let Some(arr) = c.as_array() {
-                                    arr.first()
-                                        .and_then(|b| b.get("text"))
-                                        .and_then(|t| t.as_str())
-                                        .map(|s| s.to_string())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_default();
-
-                        if !output.is_empty() {
-                            events.push(SessionEvent::ToolResult { output, is_error });
-                        }
-                    }
-                    _ => {}
                 }
+                "tool_use" if role == "assistant" => {
+                    let tool = block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let summary = summarize_tool_use(&tool, block.get("input"));
+                    events.push(SessionEvent::ToolUse { tool, summary });
+                }
+                // tool_result comes in "user" role messages (Claude API convention)
+                "tool_result" if role == "user" => {
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(false);
+                    let output = block
+                        .get("content")
+                        .and_then(|c| {
+                            if let Some(s) = c.as_str() {
+                                Some(s.to_string())
+                            } else if let Some(arr) = c.as_array() {
+                                arr.first()
+                                    .and_then(|b| b.get("text"))
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    if !output.is_empty() {
+                        events.push(SessionEvent::ToolResult { output, is_error });
+                    }
+                }
+                _ => {}
             }
         }
     }

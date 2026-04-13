@@ -199,20 +199,29 @@ Run multiple Claude sessions with dependency ordering:
 claudectl --run tasks.json --parallel
 ```
 
-## Session Recording
+## Session Recording & Highlight Reels
 
-Record live Claude Code sessions as shareable animated GIFs:
+### Per-Session Highlight Reel (press `R`)
+
+Select any running session and press `R` to start recording a supercut:
+
+- **What's captured**: file edits (path + diff size), bash commands (+ output), errors (red ✗), successes (green ✓)
+- **What's skipped**: file reads, grep/glob searches, verbose explanations, idle time
+- **Output**: title card → paced events → final summary with edit/command/error tally
+- **Multiple recordings**: press `R` on different sessions to record them all simultaneously
+- **Passive**: records in background while you keep using claudectl
+- **Works in split terminals**: reads JSONL on disk, not terminal output
+
+Table shows `REC` prefix on recorded sessions. Status bar shows `REC 2 sessions: a, b (R to stop)`.
+
+### TUI Recording (--record)
+
+Record the full claudectl dashboard as a shareable GIF:
 
 ```bash
-# Record straight to GIF (requires agg: cargo install agg)
-claudectl --record session.gif
-
-# Or record as asciicast for maximum flexibility
-claudectl --record session.cast
-asciinema play session.cast
+claudectl --record session.gif           # Direct GIF (requires agg: cargo install agg)
+claudectl --record session.cast          # Raw asciicast v2
 ```
-
-Specify `.gif` and claudectl automatically converts via [`agg`](https://github.com/asciinema/agg). Specify `.cast` to save raw asciicast v2 format. The recording captures pixel-perfect ANSI output — colors, sparklines, everything you see live.
 
 ### Demo Mode
 
@@ -239,6 +248,8 @@ claudectl --demo --json                  # Export as JSON
 | `n` | Launch new Claude session |
 | `g` | Toggle grouped view by project |
 | `s` | Cycle sort column (Status, Context, Cost, $/hr, Elapsed) |
+| `c` | Send /compact to session (when idle) |
+| `R` | Record session highlight reel (toggle) |
 | `r` | Force refresh |
 | `?` | Toggle help overlay |
 | `q`/`Esc` | Quit |

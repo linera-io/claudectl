@@ -618,13 +618,19 @@ fn session_recorder_produces_highlight_reel() {
         lines.len()
     );
 
-    // Should contain the Edit tool (it's a highlight event)
+    // Should contain the Edit tool rendered as Claude Code style "Update(file)"
     let full = content.to_string();
-    assert!(full.contains("Edit"), "Should contain Edit tool event");
+    assert!(
+        full.contains("Update"),
+        "Should contain Update event for Edit tool"
+    );
     assert!(full.contains("auth.rs"), "Should contain edited file name");
 
-    // Should contain the Bash tool
-    assert!(full.contains("Bash"), "Should contain Bash tool event");
+    // Should contain the Bash command rendered Claude Code style
+    assert!(
+        full.contains("bash command"),
+        "Should contain bash command indicator"
+    );
     assert!(full.contains("cargo test"), "Should contain bash command");
 
     // Read events should appear as brief gray context lines (not full highlight frames)

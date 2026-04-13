@@ -24,7 +24,9 @@ pub struct SessionRecorder {
     final_path: PathBuf,
     is_gif: bool,
     virtual_time: f64, // Synthetic clock for paced playback
+    #[allow(dead_code)]
     width: u16,
+    #[allow(dead_code)]
     height: u16,
     title_written: bool,
     session_name: String,
@@ -152,20 +154,16 @@ impl SessionRecorder {
     }
 
     fn write_title_card(&mut self) -> std::io::Result<()> {
-        let w = self.width as usize;
-        let h = self.height as usize;
-        let sep = "═".repeat(w.min(60));
-        let pad_top = "\r\n".repeat(h / 3);
         let name = &self.session_name;
-
+        // Compact title card matching Claude Code's style
         let card = format!(
-            "\x1b[2J\x1b[H{pad_top}\
-             \x1b[1;36m  {sep}\x1b[0m\r\n\
-             \x1b[1;37m  {name:^width$}\x1b[0m\r\n\
-             \x1b[1;36m  {sep}\x1b[0m\r\n\
-             \r\n\
-             \x1b[90m  Recorded with claudectl\x1b[0m\r\n",
-            width = w.min(60)
+            "\x1b[2J\x1b[H\r\n\
+             \x1b[1;37m  ╭─ {name} ─────────────────────────────╮\x1b[0m\r\n\
+             \x1b[1;37m  │                                       │\x1b[0m\r\n\
+             \x1b[1;37m  │\x1b[0m  \x1b[36mSession recording\x1b[0m\x1b[1;37m                │\x1b[0m\r\n\
+             \x1b[1;37m  │\x1b[0m  \x1b[90mRecorded with claudectl\x1b[0m\x1b[1;37m          │\x1b[0m\r\n\
+             \x1b[1;37m  │                                       │\x1b[0m\r\n\
+             \x1b[1;37m  ╰───────────────────────────────────────╯\x1b[0m\r\n\r\n"
         );
         self.write_frame(&card)?;
         self.virtual_time += TITLE_HOLD;
@@ -173,25 +171,16 @@ impl SessionRecorder {
     }
 
     fn write_stats_header(&mut self) -> std::io::Result<()> {
+        // Claude Code style: compact status line
+        let error_str = if self.errors > 0 {
+            format!("  \x1b[31m{} errors\x1b[0m", self.errors)
+        } else {
+            String::new()
+        };
         let stats = format!(
-            "\x1b[2J\x1b[H\x1b[1;36m {} \x1b[0m\x1b[90m│\x1b[0m \
-             \x1b[32m{} edits\x1b[0m \x1b[90m│\x1b[0m \
-             \x1b[33m{} commands\x1b[0m\
-             {}\r\n\
-             \x1b[90m{}\x1b[0m\r\n",
-            self.session_name,
-            self.edits,
-            self.commands,
-            if self.errors > 0 {
-                format!(" \x1b[90m│\x1b[0m \x1b[31m{} errors\x1b[0m", self.errors)
-            } else {
-                String::new()
-            },
-            "─"
-                .repeat(self.width as usize)
-                .chars()
-                .take(80)
-                .collect::<String>()
+            "\x1b[2J\x1b[H\x1b[90m  ── \x1b[0m\x1b[1;37m{}\x1b[0m\x1b[90m ──\x1b[0m  \
+             \x1b[32m{} edits\x1b[0m  \x1b[33m{} commands\x1b[0m{error_str}\r\n\r\n",
+            self.session_name, self.edits, self.commands,
         );
         self.write_frame(&stats)?;
         self.virtual_time += 0.3;
@@ -211,10 +200,11 @@ impl SessionRecorder {
                 } else {
                     text.clone()
                 };
+                // Claude Code style: bullet point with text
                 self.write_stats_header()?;
                 let frame = format!(
-                    "\x1b[37m  {}\x1b[0m\r\n\r\n",
-                    truncated.replace('\n', "\r\n  ")
+                    "  \x1b[36m●\x1b[0m \x1b[1;37m{}\x1b[0m\r\n\r\n",
+                    truncated.replace('\n', "\r\n    ")
                 );
                 self.write_frame(&frame)?;
                 self.virtual_time += FRAME_PACE;
@@ -230,13 +220,7 @@ impl SessionRecorder {
                     "Edit" | "Write" | "NotebookEdit" => self.edits += 1,
                     "Bash" => self.commands += 1,
                     "Read" | "Grep" | "Glob" => {
-                        // Show as brief context line, don't count in tally
-                        let icon = match tool.as_str() {
-                            "Read" => "📖",
-                            "Grep" => "🔍",
-                            _ => "📂",
-                        };
-                        let frame = format!("\x1b[90m  {icon} {tool} {summary}\x1b[0m\r\n");
+                        let frame = format!("  \x1b[90m│ {tool}({summary})\x1b[0m\r\n");
                         self.write_frame(&frame)?;
                         self.virtual_time += 0.4;
                         return Ok(true);
@@ -244,44 +228,65 @@ impl SessionRecorder {
                     _ => {}
                 }
 
-                let icon = match tool.as_str() {
-                    "Edit" => "✏️ ",
-                    "Write" => "📝",
-                    "Bash" => "⚡",
-                    "Agent" => "🤖",
-                    _ => "🔧",
-                };
-
                 self.write_stats_header()?;
-                let mut frame = format!(
-                    "\x1b[1;33m  {icon} {tool}\x1b[0m\r\n\
-                     \x1b[37m  {summary}\x1b[0m\r\n"
-                );
 
-                // Show diff content for Edit events
-                if let Some(diff_content) = diff {
-                    frame.push_str("\x1b[90m  ────────\x1b[0m\r\n");
-                    for line in diff_content.lines().take(MAX_DIFF_LINES) {
-                        let colored = if line.starts_with('+') {
-                            format!("\x1b[32m  {line}\x1b[0m\r\n")
-                        } else if line.starts_with('-') {
-                            format!("\x1b[31m  {line}\x1b[0m\r\n")
-                        } else {
-                            format!("\x1b[90m  {line}\x1b[0m\r\n")
-                        };
-                        frame.push_str(&colored);
+                // Claude Code style rendering per tool type
+                match tool.as_str() {
+                    "Edit" | "Write" | "NotebookEdit" => {
+                        let action = if tool == "Write" { "Create" } else { "Update" };
+                        let mut frame =
+                            format!("  \x1b[32m●\x1b[0m \x1b[1;37m{action}({summary})\x1b[0m\r\n");
+                        if let Some(diff_content) = diff {
+                            let old_count =
+                                diff_content.lines().filter(|l| l.starts_with('-')).count();
+                            let new_count =
+                                diff_content.lines().filter(|l| l.starts_with('+')).count();
+                            frame.push_str(&format!(
+                                "    \x1b[90mAdded \x1b[1;37m{new_count}\x1b[0m\x1b[90m lines, removed \x1b[1;37m{old_count}\x1b[0m\x1b[90m lines\x1b[0m\r\n"
+                            ));
+                            let mut line_num = 1u32;
+                            for line in diff_content.lines().take(MAX_DIFF_LINES) {
+                                let colored = if let Some(content) = line.strip_prefix('+') {
+                                    format!("    \x1b[42;30m{line_num:>3} +{content}\x1b[0m\r\n")
+                                } else if let Some(content) = line.strip_prefix('-') {
+                                    format!("    \x1b[41;37m{line_num:>3} -{content}\x1b[0m\r\n")
+                                } else {
+                                    format!("    \x1b[90m{line_num:>3}  {line}\x1b[0m\r\n")
+                                };
+                                line_num += 1;
+                                frame.push_str(&colored);
+                            }
+                            let total = diff_content.lines().count();
+                            if total > MAX_DIFF_LINES {
+                                frame.push_str(&format!(
+                                    "    \x1b[90m... +{} more lines\x1b[0m\r\n",
+                                    total - MAX_DIFF_LINES
+                                ));
+                            }
+                        }
+                        frame.push_str("\r\n");
+                        self.write_frame(&frame)?;
                     }
-                    let total_lines = diff_content.lines().count();
-                    if total_lines > MAX_DIFF_LINES {
-                        frame.push_str(&format!(
-                            "\x1b[90m  ... +{} more lines\x1b[0m\r\n",
-                            total_lines - MAX_DIFF_LINES
-                        ));
+                    "Bash" => {
+                        let frame = format!(
+                            "  \x1b[33m●\x1b[0m \x1b[90mRunning\x1b[0m \x1b[1;37m1\x1b[0m \x1b[90mbash command...\x1b[0m\r\n\
+                             \x1b[90m    └\x1b[0m \x1b[37m$ {summary}\x1b[0m\r\n\r\n"
+                        );
+                        self.write_frame(&frame)?;
+                    }
+                    "Agent" => {
+                        let frame = format!(
+                            "  \x1b[35m●\x1b[0m \x1b[1;37mAgent\x1b[0m \x1b[90m{summary}\x1b[0m\r\n\r\n"
+                        );
+                        self.write_frame(&frame)?;
+                    }
+                    _ => {
+                        let frame = format!(
+                            "  \x1b[36m●\x1b[0m \x1b[37m{tool}\x1b[0m \x1b[90m{summary}\x1b[0m\r\n\r\n"
+                        );
+                        self.write_frame(&frame)?;
                     }
                 }
-
-                frame.push_str("\r\n");
-                self.write_frame(&frame)?;
                 self.virtual_time += FRAME_PACE;
                 Ok(true)
             }
@@ -294,15 +299,17 @@ impl SessionRecorder {
                     self.errors += 1;
                 }
 
-                let color = if *is_error { "1;31" } else { "32" };
                 let truncated = if output.len() > MAX_BASH_OUTPUT {
                     format!("{}...", truncate_str(output, MAX_BASH_OUTPUT))
                 } else {
                     output.clone()
                 };
-                let display = truncated.replace('\n', "\r\n  ");
-                let prefix = if *is_error { "  ✗ " } else { "  ✓ " };
-                let frame = format!("\x1b[{color}m{prefix}{display}\x1b[0m\r\n\r\n");
+                let display = truncated.replace('\n', "\r\n    ");
+                let frame = if *is_error {
+                    format!("    \x1b[1;31m✗ Error:\x1b[0m\r\n    \x1b[31m{display}\x1b[0m\r\n\r\n")
+                } else {
+                    format!("    \x1b[90m{display}\x1b[0m\r\n\r\n")
+                };
                 self.write_frame(&frame)?;
                 self.virtual_time += RESULT_HOLD;
                 Ok(true)
@@ -311,19 +318,20 @@ impl SessionRecorder {
     }
 
     pub fn finish(&mut self) -> std::io::Result<()> {
-        // Final stats card
-        let w = self.width as usize;
-        let sep = "═".repeat(w.min(60));
+        let error_str = if self.errors > 0 {
+            format!("  \x1b[31m{} errors\x1b[0m", self.errors)
+        } else {
+            String::new()
+        };
         let summary = format!(
             "\x1b[2J\x1b[H\r\n\
-             \x1b[1;36m  {sep}\x1b[0m\r\n\
-             \x1b[1;37m  {} — complete\x1b[0m\r\n\
-             \x1b[1;36m  {sep}\x1b[0m\r\n\r\n\
-             \x1b[32m  {} edits\x1b[0m  \
-             \x1b[33m{} commands\x1b[0m  \
-             \x1b[31m{} errors\x1b[0m\r\n\r\n\
-             \x1b[90m  claudectl — github.com/mercurialsolo/claudectl\x1b[0m\r\n",
-            self.session_name, self.edits, self.commands, self.errors
+             \x1b[1;37m  ╭─ {} ── complete ──────────────────────╮\x1b[0m\r\n\
+             \x1b[1;37m  │                                       │\x1b[0m\r\n\
+             \x1b[1;37m  │\x1b[0m  \x1b[32m{} edits\x1b[0m  \x1b[33m{} commands\x1b[0m{error_str}\x1b[1;37m        │\x1b[0m\r\n\
+             \x1b[1;37m  │                                       │\x1b[0m\r\n\
+             \x1b[1;37m  │\x1b[0m  \x1b[90mclaudectl\x1b[0m\x1b[1;37m                            │\x1b[0m\r\n\
+             \x1b[1;37m  ╰───────────────────────────────────────╯\x1b[0m\r\n",
+            self.session_name, self.edits, self.commands
         );
         self.write_frame(&summary)?;
         self.virtual_time += TITLE_HOLD;

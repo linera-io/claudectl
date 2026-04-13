@@ -17,6 +17,7 @@ pub mod orchestrator;
 pub mod process;
 pub mod recorder;
 pub mod session;
+pub mod session_recorder;
 pub mod terminals;
 pub mod theme;
 pub mod ui;

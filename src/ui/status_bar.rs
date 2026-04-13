@@ -32,6 +32,19 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("_", Style::default().fg(t.text_muted)),
         ]));
         frame.render_widget(msg, area);
+    } else if app.session_recording.is_some() && app.status_msg.is_empty() {
+        let (pid, path) = app.session_recording.as_ref().unwrap();
+        let name = app
+            .sessions
+            .iter()
+            .find(|s| s.pid == *pid)
+            .map(|s| s.display_name())
+            .unwrap_or("?");
+        let msg = Paragraph::new(Span::styled(
+            format!(" REC {name} → {path}  (R to stop)"),
+            Style::default().fg(t.error).add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(msg, area);
     } else if !app.status_msg.is_empty() {
         let color = if app.status_msg.starts_with("Error") {
             t.error

@@ -56,6 +56,7 @@ pub struct App {
     pub conflict_alerted: HashSet<String>, // cwds that have already triggered a conflict alert
     pub demo_mode: bool,
     pub demo_tick: u32,
+    pub session_recording: Option<(u32, String)>, // (pid, output_path) if recording a specific session
 }
 
 #[derive(Default, Clone)]
@@ -150,6 +151,7 @@ impl App {
             conflict_alerted: HashSet::new(),
             demo_mode: false,
             demo_tick: 0,
+            session_recording: None,
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -948,6 +950,11 @@ impl App {
                 self.cancel_pending_auto_approve();
                 self.refresh();
             }
+            (KeyCode::Char('R'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.toggle_session_recording();
+            }
             (KeyCode::Char('d'), _) | (KeyCode::Char('x'), _) => {
                 self.cancel_pending_auto_approve();
                 self.handle_kill();
@@ -1073,6 +1080,34 @@ impl App {
             } else {
                 self.status_msg = "Session is not waiting for input".into();
             }
+        }
+    }
+
+    fn toggle_session_recording(&mut self) {
+        if self.session_recording.is_some() {
+            // Stop recording
+            let (pid, path) = self.session_recording.take().unwrap();
+            let name = self
+                .sessions
+                .iter()
+                .find(|s| s.pid == pid)
+                .map(|s| s.display_name().to_string())
+                .unwrap_or_else(|| pid.to_string());
+            self.status_msg = format!("Recording stopped → {path} ({name})");
+            return;
+        }
+
+        // Start recording the selected session
+        if let Some(session) = self.selected_session() {
+            if session.jsonl_path.is_none() {
+                self.status_msg = "Cannot record — no JSONL file for this session".into();
+                return;
+            }
+            let name = session.display_name().to_string();
+            let pid = session.pid;
+            let path = format!("{}-{}.gif", name, pid);
+            self.session_recording = Some((pid, path.clone()));
+            self.status_msg = format!("Recording {name} → {path} (press R to stop)");
         }
     }
 

@@ -17,6 +17,7 @@ mod orchestrator;
 mod process;
 mod recorder;
 mod session;
+mod session_recorder;
 mod terminals;
 mod theme;
 mod ui;
@@ -787,6 +788,8 @@ fn run_tui<W: io::Write>(
     }
 
     let mut last_tick = Instant::now();
+    let mut sess_rec: Option<session_recorder::SessionRecorder> = None;
+    let term_size = crossterm::terminal::size().unwrap_or((120, 40));
 
     loop {
         terminal.draw(|frame| {
@@ -800,6 +803,10 @@ fn run_tui<W: io::Write>(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if !app.handle_key(key) {
+                    // Finish session recording on quit
+                    if let Some(ref mut rec) = sess_rec {
+                        let _ = rec.finish();
+                    }
                     return Ok(());
                 }
             }
@@ -808,6 +815,44 @@ fn run_tui<W: io::Write>(
         if last_tick.elapsed() >= tick_rate {
             app.tick();
             last_tick = Instant::now();
+
+            // Handle session recording lifecycle
+            match (&app.session_recording, &mut sess_rec) {
+                (Some((pid, path)), None) => {
+                    // Start recording: find the session's JSONL path
+                    if let Some(session) = app.sessions.iter().find(|s| s.pid == *pid) {
+                        if let Some(ref jsonl) = session.jsonl_path {
+                            match session_recorder::SessionRecorder::new(
+                                jsonl,
+                                path,
+                                term_size.0,
+                                term_size.1,
+                            ) {
+                                Ok(r) => sess_rec = Some(r),
+                                Err(e) => {
+                                    app.status_msg = format!("Record error: {e}");
+                                    app.session_recording = None;
+                                }
+                            }
+                        }
+                    }
+                }
+                (Some(_), Some(rec)) => {
+                    // Poll for new events
+                    let _ = rec.poll();
+                }
+                (None, Some(rec)) => {
+                    // Stopped: finish recording
+                    match rec.finish() {
+                        Ok(()) => {}
+                        Err(e) => {
+                            app.status_msg = format!("{e}");
+                        }
+                    }
+                    sess_rec = None;
+                }
+                (None, None) => {}
+            }
         }
     }
 }

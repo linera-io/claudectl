@@ -2,6 +2,14 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.12.0] - 2026-04-13
+
+### Added
+- **Session highlight reel** — press `R` on any session to start recording a supercut of its activity. Parses the session's JSONL in real-time, extracts the interesting bits (file edits, bash commands, status transitions), compresses idle time, and outputs as `.gif` or `.cast`. Press `R` again to stop (#66)
+- Status bar shows `REC project-name → output.gif (R to stop)` while recording
+- Smart event extraction: file edits show path + diff size, bash commands show command + truncated output, errors highlighted in red, verbose assistant text trimmed
+- Works passively — just select a session and press `R`, it records in the background while you continue using claudectl
+
 ## [0.11.2] - 2026-04-13
 
 ### Added

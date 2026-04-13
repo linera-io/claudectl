@@ -65,6 +65,10 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Send /compact to session (when idle)"),
         ]),
         Line::from(vec![
+            Span::styled("  R              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Record session highlight reel (toggle)"),
+        ]),
+        Line::from(vec![
             Span::styled("  g              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle grouped view by project"),
         ]),

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -78,6 +79,14 @@ pub struct ClaudeSession {
     pub burn_rate_per_hr: f64,
     pub subagent_count: usize,
     pub activity_history: Vec<u8>, // Ring buffer of status levels (0-7) for sparkline, one per tick
+    pub files_modified: HashMap<String, u32>, // file path -> edit count
+    pub tool_usage: HashMap<String, ToolStats>, // tool name -> call count & tokens
+}
+
+/// Per-tool usage statistics.
+#[derive(Debug, Clone, Default)]
+pub struct ToolStats {
+    pub calls: u32,
 }
 
 impl ClaudeSession {
@@ -120,6 +129,8 @@ impl ClaudeSession {
             burn_rate_per_hr: 0.0,
             subagent_count: 0,
             activity_history: Vec::new(),
+            files_modified: HashMap::new(),
+            tool_usage: HashMap::new(),
         }
     }
 
@@ -247,6 +258,10 @@ impl ClaudeSession {
             "tokens_in": self.total_input_tokens,
             "tokens_out": self.total_output_tokens,
             "subagents": self.subagent_count,
+            "files_modified": self.files_modified,
+            "tool_usage": self.tool_usage.iter().map(|(k, v)| {
+                (k.clone(), serde_json::json!({"calls": v.calls}))
+            }).collect::<serde_json::Map<String, serde_json::Value>>(),
         })
     }
 

@@ -16,6 +16,7 @@ pub struct Config {
     pub webhook_on: Option<Vec<String>>,
     pub daily_limit: Option<f64>,
     pub weekly_limit: Option<f64>,
+    pub context_warn_threshold: u8, // 0-100, fires on_context_high when context % crosses this
 }
 
 impl Default for Config {
@@ -32,6 +33,7 @@ impl Default for Config {
             webhook_on: None,
             daily_limit: None,
             weekly_limit: None,
+            context_warn_threshold: 75,
         }
     }
 }
@@ -50,6 +52,7 @@ struct RawConfig {
     webhook_events: Option<Vec<String>>,
     daily_limit: Option<f64>,
     weekly_limit: Option<f64>,
+    context_warn_threshold: Option<u8>,
 }
 
 impl Config {
@@ -106,6 +109,9 @@ impl Config {
         }
         if let Some(v) = raw.weekly_limit {
             self.weekly_limit = Some(v);
+        }
+        if let Some(v) = raw.context_warn_threshold {
+            self.context_warn_threshold = v.min(100);
         }
     }
 
@@ -168,6 +174,7 @@ impl Config {
                 .map(|b| format!("${b:.2}"))
                 .unwrap_or_else(|| "none".into())
         );
+        println!("  context_warn: {}%", self.context_warn_threshold);
     }
 }
 
@@ -244,6 +251,9 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
             }
             ("budget", "weekly_limit") => {
                 raw.weekly_limit = value.parse().ok();
+            }
+            ("context", "warn_threshold") => {
+                raw.context_warn_threshold = value.parse().ok();
             }
             _ => {} // Ignore unknown keys
         }

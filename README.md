@@ -111,6 +111,9 @@ kill_on_budget = false
 [webhook]
 url = "https://hooks.slack.com/..."
 events = ["NeedsInput", "Finished"]
+
+[context]
+warn_threshold = 75  # Fire on_context_high when context window exceeds this %
 ```
 
 ## Event Hooks
@@ -144,10 +147,12 @@ run = "echo '[{project}] {old_status} → {new_status}' >> ~/claude-activity.log
 | `on_budget_warning` | Session hit 80% of budget |
 | `on_budget_exceeded` | Session hit 100% of budget |
 | `on_idle` | Session went idle (>10 min) |
+| `on_context_high` | Context window usage crossed threshold (default 75%) |
+| `on_conflict_detected` | 2+ sessions share the same working directory |
 
 ### Template variables
 
-`{pid}`, `{project}`, `{status}`, `{cost}`, `{model}`, `{cwd}`, `{tokens_in}`, `{tokens_out}`, `{elapsed}`, `{session_id}`, `{old_status}`, `{new_status}`
+`{pid}`, `{project}`, `{status}`, `{cost}`, `{model}`, `{cwd}`, `{tokens_in}`, `{tokens_out}`, `{elapsed}`, `{session_id}`, `{old_status}`, `{new_status}`, `{context_pct}`
 
 Use `claudectl --hooks` to verify your configured hooks.
 

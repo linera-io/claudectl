@@ -44,6 +44,11 @@ pub fn update_tokens(session: &mut ClaudeSession) {
             is_waiting_for_task = true;
         }
 
+        // Extract tool usage and file paths from tool_use content blocks
+        if line.contains("tool_use") {
+            extract_tool_usage(&line, session);
+        }
+
         // Extract message type — resets waiting_for_task when conversation continues
         if line.contains("\"type\":\"user\"") || line.contains("\"type\": \"user\"") {
             last_type = "user".to_string();
@@ -240,6 +245,46 @@ pub fn model_context_max(model: &str) -> u64 {
     } else {
         // Sonnet, Haiku, and other models default to 200k
         200_000
+    }
+}
+
+/// Extract tool usage stats and file paths from tool_use content blocks.
+fn extract_tool_usage(line: &str, session: &mut ClaudeSession) {
+    if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+        let content = entry
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array());
+        if let Some(blocks) = content {
+            for block in blocks {
+                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if block_type != "tool_use" {
+                    continue;
+                }
+                let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if tool_name.is_empty() {
+                    continue;
+                }
+
+                // Count tool calls
+                session
+                    .tool_usage
+                    .entry(tool_name.to_string())
+                    .or_default()
+                    .calls += 1;
+
+                // Track file modifications for Edit/Write
+                if matches!(tool_name, "Edit" | "Write" | "NotebookEdit") {
+                    if let Some(path) = block
+                        .get("input")
+                        .and_then(|i| i.get("file_path"))
+                        .and_then(|p| p.as_str())
+                    {
+                        *session.files_modified.entry(path.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
     }
 }
 

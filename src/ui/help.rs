@@ -61,6 +61,10 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Launch new Claude session"),
         ]),
         Line::from(vec![
+            Span::styled("  c              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Send /compact to session (when idle)"),
+        ]),
+        Line::from(vec![
             Span::styled("  g              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle grouped view by project"),
         ]),
@@ -115,6 +119,14 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  +N ", Style::default().fg(t.highlight_key)),
             Span::raw("after project = N sub-agents running"),
+        ]),
+        Line::from(vec![
+            Span::styled("  !! ", Style::default().fg(t.highlight_key)),
+            Span::raw("before project = directory conflict"),
+        ]),
+        Line::from(vec![
+            Span::styled("  (Xm Xs) ", Style::default().fg(t.highlight_key)),
+            Span::raw("after Needs Input = wait time"),
         ]),
         Line::from(""),
         Line::from(Span::styled(

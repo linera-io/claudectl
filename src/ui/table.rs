@@ -230,11 +230,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         // Contextual hints based on selected session state
         let hint = match app.selected_session().map(|s| s.status) {
             Some(SessionStatus::NeedsInput) => {
-                "  y:approve i:type Tab:go d:kill ?:help".to_string()
+                "  y:approve i:type c:compact Tab:go d:kill ?:help".to_string()
             }
             _ => {
                 format!(
-                    "  q:quit j/k:nav Tab:go y:approve i:input d:kill s:sort({sort_name}) ?:help"
+                    "  q:quit j/k:nav Tab:go y:approve i:input c:compact d:kill s:sort({sort_name}) ?:help"
                 )
             }
         };
@@ -257,8 +257,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             format!("${:.1}", ws.today_cost_usd)
         };
         let week_tokens = format_token_count(ws.total_tokens);
+        let eta_str = match app.budget_eta() {
+            Some((spent, limit, eta, _urgency)) => {
+                let spent_str = if spent < 1.0 { format!("${spent:.2}") } else { format!("${spent:.1}") };
+                let limit_str = if limit < 1.0 { format!("${limit:.2}") } else { format!("${limit:.1}") };
+                format!(" \u{2502} {spent_str}/{limit_str} (ETA: {eta})")
+            }
+            None => String::new(),
+        };
         format!(
-            " claudectl \u{2502} week: {week_cost} ({week_tokens}) \u{2502} today: {today_cost} "
+            " claudectl \u{2502} week: {week_cost} ({week_tokens}) \u{2502} today: {today_cost}{eta_str} "
         )
     } else {
         " claudectl ".to_string()
@@ -304,18 +312,41 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a> {
     let t = &app.theme;
-    let status_style = Style::default().fg(t.status_color(&s.status));
+    // Color escalation for NeedsInput based on wait time
+    let status_style = if s.status == SessionStatus::NeedsInput {
+        let wait_secs = app
+            .wait_duration(s.pid)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let color = if wait_secs >= 300 {
+            t.cost_danger // Red after 5 min
+        } else if wait_secs >= 60 {
+            t.cost_warning // Orange/yellow after 1 min
+        } else {
+            t.status_needs_input
+        };
+        Style::default().fg(color)
+    } else {
+        Style::default().fg(t.status_color(&s.status))
+    };
 
     let status_text = if app.auto_approve.contains(&s.pid) {
         format!("{}*", s.status)
+    } else if s.status == SessionStatus::NeedsInput {
+        match app.format_wait_time(s.pid) {
+            Some(wait) => format!("{} ({})", s.status, wait),
+            None => s.status.to_string(),
+        }
     } else {
         s.status.to_string()
     };
 
-    let project_text = if s.subagent_count > 0 {
-        format!("{} +{}", s.display_name(), s.subagent_count)
-    } else {
-        s.display_name().to_string()
+    let conflict = app.conflict_pids.contains(&s.pid);
+    let project_text = match (s.subagent_count > 0, conflict) {
+        (true, true) => format!("!! {} +{}", s.display_name(), s.subagent_count),
+        (true, false) => format!("{} +{}", s.display_name(), s.subagent_count),
+        (false, true) => format!("!! {}", s.display_name()),
+        (false, false) => s.display_name().to_string(),
     };
 
     let ctx_pct = s.context_percent();

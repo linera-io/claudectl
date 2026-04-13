@@ -49,6 +49,11 @@ pub struct App {
     pub weekly_limit: Option<f64>,
     pub daily_alert_fired: bool, // Prevent repeated alerts per app session
     pub weekly_alert_fired: bool,
+    pub context_warn_threshold: u8,  // 0-100, fires on_context_high hook
+    pub context_warned: HashSet<u32>, // PIDs that have been warned (reset if context drops below threshold)
+    pub needs_input_since: HashMap<u32, std::time::Instant>, // When each PID entered NeedsInput
+    pub conflict_pids: HashSet<u32>,   // PIDs that share a working directory with another session
+    pub conflict_alerted: HashSet<String>, // cwds that have already triggered a conflict alert
 }
 
 #[derive(Default, Clone)]
@@ -136,6 +141,11 @@ impl App {
             weekly_limit: None,
             daily_alert_fired: false,
             weekly_alert_fired: false,
+            context_warn_threshold: 75,
+            context_warned: HashSet::new(),
+            needs_input_since: HashMap::new(),
+            conflict_pids: HashSet::new(),
+            conflict_alerted: HashSet::new(),
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -263,6 +273,31 @@ impl App {
             }
         }
 
+        // Context threshold warnings
+        if self.context_warn_threshold > 0 {
+            let threshold = self.context_warn_threshold as f64;
+            for session in &sessions {
+                let pct = session.context_percent();
+                if pct >= threshold && !self.context_warned.contains(&session.pid) {
+                    self.context_warned.insert(session.pid);
+                    self.status_msg = format!(
+                        "CONTEXT HIGH: {} at {:.0}% of context window",
+                        session.display_name(),
+                        pct
+                    );
+                    fire_notification(&format!(
+                        "{} context at {:.0}%",
+                        session.display_name(),
+                        pct
+                    ));
+                    self.hooks.fire(HookEvent::ContextHigh, session);
+                } else if pct < threshold && self.context_warned.contains(&session.pid) {
+                    // Reset warning if context dropped (e.g., after /compact)
+                    self.context_warned.remove(&session.pid);
+                }
+            }
+        }
+
         // Record activity for sparkline
         for session in &mut sessions {
             session.record_activity();
@@ -381,6 +416,63 @@ impl App {
             self.hooks.fire(HookEvent::SessionStart, session);
         }
 
+        // Track NeedsInput wait times
+        let now_instant = std::time::Instant::now();
+        for session in &sessions {
+            if session.status == SessionStatus::NeedsInput {
+                // Record when it first entered NeedsInput
+                self.needs_input_since.entry(session.pid).or_insert(now_instant);
+            } else {
+                // Clear if no longer NeedsInput
+                self.needs_input_since.remove(&session.pid);
+            }
+        }
+        // Clean up entries for sessions that no longer exist
+        let active_pids: HashSet<u32> = sessions.iter().map(|s| s.pid).collect();
+        self.needs_input_since.retain(|pid, _| active_pids.contains(pid));
+
+        // Conflict detection: find sessions sharing the same working directory
+        self.conflict_pids.clear();
+        let mut cwd_sessions: HashMap<&str, Vec<u32>> = HashMap::new();
+        for session in &sessions {
+            if session.status != SessionStatus::Finished {
+                cwd_sessions.entry(&session.cwd).or_default().push(session.pid);
+            }
+        }
+        for (cwd, pids) in &cwd_sessions {
+            if pids.len() >= 2 {
+                for &pid in pids {
+                    self.conflict_pids.insert(pid);
+                }
+                // Fire hook once per cwd conflict (not on every tick)
+                if !self.conflict_alerted.contains(*cwd) {
+                    self.conflict_alerted.insert(cwd.to_string());
+                    let project = sessions
+                        .iter()
+                        .find(|s| s.cwd == *cwd)
+                        .map(|s| s.display_name())
+                        .unwrap_or("unknown");
+                    self.status_msg = format!(
+                        "CONFLICT: {} sessions sharing {}",
+                        pids.len(),
+                        project
+                    );
+                    fire_notification(&format!("{} sessions in {}", pids.len(), project));
+                    // Fire hook on first session in the conflict group
+                    if let Some(session) = sessions.iter().find(|s| s.pid == pids[0]) {
+                        self.hooks.fire(HookEvent::ConflictDetected, session);
+                    }
+                }
+            }
+        }
+        // Clear alerts for cwds that no longer have conflicts
+        self.conflict_alerted.retain(|cwd| {
+            cwd_sessions
+                .get(cwd.as_str())
+                .map(|pids| pids.len() >= 2)
+                .unwrap_or(false)
+        });
+
         // Update prev_statuses
         self.prev_statuses = sessions.iter().map(|s| (s.pid, s.status)).collect();
 
@@ -414,7 +506,16 @@ impl App {
                 a.status
                     .sort_key()
                     .cmp(&b.status.sort_key())
-                    .then(b.elapsed.cmp(&a.elapsed))
+                    .then_with(|| {
+                        // Within NeedsInput, sort by longest waiting first
+                        if a.status == SessionStatus::NeedsInput {
+                            let a_wait = self.wait_duration(a.pid).unwrap_or_default();
+                            let b_wait = self.wait_duration(b.pid).unwrap_or_default();
+                            b_wait.cmp(&a_wait)
+                        } else {
+                            b.elapsed.cmp(&a.elapsed)
+                        }
+                    })
             }),
             1 => sessions.sort_by(|a, b| {
                 b.context_percent()
@@ -467,6 +568,66 @@ impl App {
             self.weekly_summary = crate::history::weekly_summary();
             self.check_aggregate_budgets();
         }
+    }
+
+    /// Get how long a session has been waiting for input, if applicable.
+    pub fn wait_duration(&self, pid: u32) -> Option<std::time::Duration> {
+        self.needs_input_since
+            .get(&pid)
+            .map(|since| since.elapsed())
+    }
+
+    /// Format wait duration as a compact string (e.g., "2m 34s").
+    pub fn format_wait_time(&self, pid: u32) -> Option<String> {
+        let dur = self.wait_duration(pid)?;
+        let secs = dur.as_secs();
+        if secs < 60 {
+            Some(format!("{secs}s"))
+        } else {
+            Some(format!("{}m {}s", secs / 60, secs % 60))
+        }
+    }
+
+    /// Compute budget exhaustion ETA based on current burn rate.
+    /// Returns (spent, limit, eta_string, urgency) where urgency is 0=safe, 1=warn, 2=critical.
+    pub fn budget_eta(&self) -> Option<(f64, f64, String, u8)> {
+        let live_cost: f64 = self.sessions.iter().map(|s| s.cost_usd).sum();
+        let total_burn: f64 = self.sessions.iter().map(|s| s.burn_rate_per_hr).sum();
+
+        // Prefer daily limit, fall back to per-session budget
+        let (spent, limit) = if let Some(daily) = self.daily_limit {
+            (self.weekly_summary.today_cost_usd + live_cost, daily)
+        } else if let Some(budget) = self.budget_usd {
+            // For per-session budget, show the session closest to limit
+            if let Some(session) = self.sessions.iter().max_by(|a, b| {
+                (a.cost_usd / budget).partial_cmp(&(b.cost_usd / budget)).unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                (session.cost_usd, budget)
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+
+        let remaining = limit - spent;
+        if remaining <= 0.0 {
+            return Some((spent, limit, "exceeded".into(), 2));
+        }
+        if total_burn < 0.01 {
+            return Some((spent, limit, "safe".into(), 0));
+        }
+
+        let hours_left = remaining / total_burn;
+        let mins_left = (hours_left * 60.0) as u64;
+        let eta_str = if mins_left >= 120 {
+            format!("{}h {}m", mins_left / 60, mins_left % 60)
+        } else {
+            format!("{}m", mins_left)
+        };
+
+        let urgency = if mins_left <= 30 { 2 } else if mins_left <= 120 { 1 } else { 0 };
+        Some((spent, limit, eta_str, urgency))
     }
 
     fn check_aggregate_budgets(&mut self) {
@@ -730,6 +891,11 @@ impl App {
                 self.cancel_pending_auto_approve();
                 self.enter_input_mode();
             }
+            (KeyCode::Char('c'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.handle_compact();
+            }
             (KeyCode::Char('?'), _) => {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
@@ -835,6 +1001,33 @@ impl App {
                 }
             } else {
                 self.status_msg = "Session is not waiting for input".into();
+            }
+        }
+    }
+
+    fn handle_compact(&mut self) {
+        if let Some(session) = self.selected_session() {
+            match session.status {
+                SessionStatus::WaitingInput | SessionStatus::Idle => {
+                    match terminals::send_input(session, "/compact\n") {
+                        Ok(()) => {
+                            self.status_msg =
+                                format!("Sent /compact to {}", session.display_name())
+                        }
+                        Err(e) => self.status_msg = format!("Compact error: {e}"),
+                    }
+                }
+                SessionStatus::NeedsInput => {
+                    self.status_msg =
+                        "Cannot compact — session is waiting for permission approval".into();
+                }
+                SessionStatus::Processing => {
+                    self.status_msg =
+                        "Cannot compact — session is processing (wait until idle)".into();
+                }
+                SessionStatus::Finished => {
+                    self.status_msg = "Cannot compact — session has finished".into();
+                }
             }
         }
     }

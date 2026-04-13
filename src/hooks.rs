@@ -13,6 +13,8 @@ pub enum HookEvent {
     BudgetWarning,
     BudgetExceeded,
     Idle,
+    ContextHigh,
+    ConflictDetected,
 }
 
 impl HookEvent {
@@ -25,6 +27,8 @@ impl HookEvent {
             "hooks.on_budget_warning" => Some(Self::BudgetWarning),
             "hooks.on_budget_exceeded" => Some(Self::BudgetExceeded),
             "hooks.on_idle" => Some(Self::Idle),
+            "hooks.on_context_high" => Some(Self::ContextHigh),
+            "hooks.on_conflict_detected" => Some(Self::ConflictDetected),
             _ => None,
         }
     }
@@ -38,6 +42,8 @@ impl HookEvent {
             Self::BudgetWarning => "on_budget_warning",
             Self::BudgetExceeded => "on_budget_exceeded",
             Self::Idle => "on_idle",
+            Self::ContextHigh => "on_context_high",
+            Self::ConflictDetected => "on_conflict_detected",
         }
     }
 }
@@ -151,6 +157,7 @@ fn expand_template(template: &str, session: &ClaudeSession) -> String {
         .replace("{tokens_out}", &session.total_output_tokens.to_string())
         .replace("{elapsed}", &session.format_elapsed())
         .replace("{session_id}", &session.session_id)
+        .replace("{context_pct}", &format!("{:.0}", session.context_percent()))
 }
 
 #[cfg(test)]
@@ -206,6 +213,10 @@ mod tests {
             HookEvent::from_section("hooks.on_finished"),
             Some(HookEvent::Finished)
         );
+        assert_eq!(
+            HookEvent::from_section("hooks.on_context_high"),
+            Some(HookEvent::ContextHigh)
+        );
         assert_eq!(HookEvent::from_section("hooks.unknown"), None);
         assert_eq!(HookEvent::from_section("defaults"), None);
     }
@@ -216,5 +227,14 @@ mod tests {
         assert!(reg.is_empty());
         reg.add(HookEvent::NeedsInput, "echo test".into());
         assert!(!reg.is_empty());
+    }
+
+    #[test]
+    fn test_expand_context_pct() {
+        let mut s = make_session();
+        s.context_tokens = 150_000;
+        s.context_max = 200_000;
+        let result = expand_template("context at {context_pct}%", &s);
+        assert_eq!(result, "context at 75%");
     }
 }

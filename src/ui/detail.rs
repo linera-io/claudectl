@@ -49,7 +49,7 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         .unwrap_or_else(|| "-".into());
     let subagents = session.subagent_count.to_string();
 
-    let lines = vec![
+    let mut lines = vec![
         detail_line("PID", &pid, t),
         detail_line("Session ID", &session.session_id, t),
         detail_line("CWD", &session.cwd, t),
@@ -81,6 +81,45 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         detail_line("Subagents", &subagents, t),
     ];
 
+    // Tool usage section
+    if !session.tool_usage.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Tool Usage",
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        )));
+        let mut tools: Vec<_> = session.tool_usage.iter().collect();
+        tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls));
+        for (name, stats) in tools.iter().take(10) {
+            lines.push(detail_line(&format!("  {name}"), &format!("{} calls", stats.calls), t));
+        }
+    }
+
+    // Files modified section
+    if !session.files_modified.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" Files Modified ({})", session.files_modified.len()),
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        )));
+        // Sort by edit count descending, show up to 10
+        let mut files: Vec<_> = session.files_modified.iter().collect();
+        files.sort_by(|a, b| b.1.cmp(a.1));
+        for (path, count) in files.iter().take(10) {
+            // Show just the filename, or last 2 path components for context
+            let short = shorten_path(path);
+            let suffix = if **count > 1 {
+                format!("  ({count} edits)")
+            } else {
+                String::new()
+            };
+            lines.push(detail_line("", &format!("{short}{suffix}"), t));
+        }
+        if files.len() > 10 {
+            lines.push(detail_line("", &format!("  ... and {} more", files.len() - 10), t));
+        }
+    }
+
     let block = Block::default()
         .title(" Session Detail ")
         .borders(Borders::ALL)
@@ -98,6 +137,16 @@ fn detail_line(label: &str, value: &str, t: &Theme) -> Line<'static> {
         Span::styled(format!(" {label:<15}"), Style::default().fg(t.text_muted)),
         Span::styled(value.to_string(), Style::default().fg(t.text_primary)),
     ])
+}
+
+/// Shorten a file path to last 2 components (e.g., "src/main.rs").
+fn shorten_path(path: &str) -> String {
+    let parts: Vec<&str> = path.rsplit('/').take(2).collect();
+    match parts.len() {
+        2 => format!("{}/{}", parts[1], parts[0]),
+        1 => parts[0].to_string(),
+        _ => path.to_string(),
+    }
 }
 
 fn format_tokens(n: u64) -> String {

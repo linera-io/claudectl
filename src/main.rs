@@ -141,6 +141,22 @@ struct Cli {
     /// Run independent tasks in parallel (used with --run)
     #[arg(long)]
     parallel: bool,
+
+    /// Clean up old session data (JSONL transcripts, session JSON files)
+    #[arg(long)]
+    clean: bool,
+
+    /// Only clean sessions older than this duration (e.g., "7d", "24h"). Used with --clean.
+    #[arg(long)]
+    older_than: Option<String>,
+
+    /// Only clean sessions that have finished. Used with --clean.
+    #[arg(long)]
+    finished: bool,
+
+    /// Show what would be removed without deleting. Used with --clean.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -199,6 +215,10 @@ fn main() -> io::Result<()> {
     if let Some(ref run_file) = cli.run {
         let task_file = orchestrator::load_tasks(run_file)?;
         return orchestrator::run_tasks(task_file, cli.parallel);
+    }
+
+    if cli.clean {
+        return run_clean(cli.older_than.as_deref(), cli.finished, cli.dry_run);
     }
 
     if cli.history {
@@ -306,6 +326,150 @@ fn parse_duration_str(s: &str) -> Duration {
         }
     }
     Duration::from_secs(24 * 3600) // default 24h
+}
+
+fn run_clean(older_than: Option<&str>, finished_only: bool, dry_run: bool) -> io::Result<()> {
+    let min_age = older_than.map(parse_duration_str);
+    let now = std::time::SystemTime::now();
+
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+
+    // Collect active PIDs to avoid deleting live sessions
+    let active_pids: std::collections::HashSet<u32> = {
+        let app = App::new();
+        app.sessions.iter().map(|s| s.pid).collect()
+    };
+
+    let mut removed_sessions = 0u64;
+    let mut removed_jsonl = 0u64;
+    let mut freed_bytes = 0u64;
+
+    // Phase 1: Clean session JSON files in ~/.claude/sessions/
+    let sessions_dir = home.join(".claude/sessions");
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let pid: u32 = match stem.parse() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Never delete active sessions
+            if active_pids.contains(&pid) {
+                continue;
+            }
+
+            // Check age if --older-than is set
+            if let Some(min_age) = min_age {
+                let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
+                if let Some(modified) = modified {
+                    let age = now.duration_since(modified).unwrap_or_default();
+                    if age < min_age {
+                        continue;
+                    }
+                }
+            }
+
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if dry_run {
+                println!("  would remove: {} ({} bytes)", path.display(), size);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+            removed_sessions += 1;
+            freed_bytes += size;
+        }
+    }
+
+    // Phase 2: Clean JSONL transcript files in ~/.claude/projects/*/
+    let projects_dir = home.join(".claude/projects");
+    if let Ok(project_entries) = std::fs::read_dir(&projects_dir) {
+        for project_entry in project_entries.flatten() {
+            let project_path = project_entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(&project_path) else {
+                continue;
+            };
+            for file_entry in files.flatten() {
+                let file_path = file_entry.path();
+                if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+
+                let metadata = match file_entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                // Check age if --older-than is set
+                if let Some(min_age) = min_age {
+                    let modified = metadata.modified().ok();
+                    if let Some(modified) = modified {
+                        let age = now.duration_since(modified).unwrap_or_default();
+                        if age < min_age {
+                            continue;
+                        }
+                    }
+                }
+
+                // If --finished only, skip JSONL files whose corresponding session is still active
+                if finished_only {
+                    // Check if any active session is using this JSONL
+                    let app = App::new();
+                    let is_active = app.sessions.iter().any(|s| {
+                        s.jsonl_path.as_ref().map(|p| p == &file_path).unwrap_or(false)
+                    });
+                    if is_active {
+                        continue;
+                    }
+                }
+
+                let size = metadata.len();
+                if dry_run {
+                    println!("  would remove: {} ({} bytes)", file_path.display(), size);
+                } else {
+                    let _ = std::fs::remove_file(&file_path);
+                }
+                removed_jsonl += 1;
+                freed_bytes += size;
+            }
+        }
+    }
+
+    let freed_str = if freed_bytes >= 1_073_741_824 {
+        format!("{:.1} GB", freed_bytes as f64 / 1_073_741_824.0)
+    } else if freed_bytes >= 1_048_576 {
+        format!("{:.1} MB", freed_bytes as f64 / 1_048_576.0)
+    } else if freed_bytes >= 1024 {
+        format!("{:.1} KB", freed_bytes as f64 / 1024.0)
+    } else {
+        format!("{freed_bytes} bytes")
+    };
+
+    if dry_run {
+        println!();
+        println!(
+            "Dry run: would remove {} sessions + {} transcripts, freeing {}",
+            removed_sessions, removed_jsonl, freed_str
+        );
+    } else if removed_sessions + removed_jsonl == 0 {
+        println!("Nothing to clean up.");
+    } else {
+        println!(
+            "Removed {} sessions + {} transcripts, freed {}",
+            removed_sessions, removed_jsonl, freed_str
+        );
+    }
+
+    Ok(())
 }
 
 fn print_summary(since: &str) -> io::Result<()> {
@@ -547,6 +711,7 @@ fn run(
     app.hooks = hook_registry;
     app.daily_limit = cfg.daily_limit;
     app.weekly_limit = cfg.weekly_limit;
+    app.context_warn_threshold = cfg.context_warn_threshold;
     let mut last_tick = Instant::now();
 
     loop {

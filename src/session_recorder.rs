@@ -203,7 +203,7 @@ impl SessionRecorder {
                     return Ok(false);
                 }
                 let truncated = if text.len() > MAX_ASSISTANT_TEXT {
-                    format!("{}...", &text[..MAX_ASSISTANT_TEXT])
+                    format!("{}...", truncate_str(text, MAX_ASSISTANT_TEXT))
                 } else {
                     text.clone()
                 };
@@ -256,7 +256,7 @@ impl SessionRecorder {
 
                 let color = if *is_error { "1;31" } else { "32" };
                 let truncated = if output.len() > MAX_BASH_OUTPUT {
-                    format!("{}...", &output[..MAX_BASH_OUTPUT])
+                    format!("{}...", truncate_str(output, MAX_BASH_OUTPUT))
                 } else {
                     output.clone()
                 };
@@ -443,7 +443,7 @@ fn summarize_tool_use(tool: &str, input: Option<&serde_json::Value>) -> String {
         "Bash" => {
             let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("?");
             if cmd.len() > 80 {
-                format!("{}...", &cmd[..77])
+                format!("{}...", truncate_str(cmd, 77))
             } else {
                 cmd.to_string()
             }
@@ -465,6 +465,18 @@ fn summarize_tool_use(tool: &str, input: Option<&serde_json::Value>) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// Truncate a string at a char boundary, never splitting a multi-byte character.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn shorten_path(path: &str) -> String {

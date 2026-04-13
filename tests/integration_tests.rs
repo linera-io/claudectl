@@ -590,14 +590,8 @@ fn session_recorder_produces_highlight_reel() {
     let output_file = tempfile::NamedTempFile::new().unwrap();
     let output_path = output_file.path().to_str().unwrap().to_string() + ".cast";
 
-    let mut rec = SessionRecorder::new(
-        jsonl_file.path(),
-        &output_path,
-        "test-project",
-        120,
-        40,
-    )
-    .expect("Failed to create session recorder");
+    let mut rec = SessionRecorder::new(jsonl_file.path(), &output_path, "test-project", 120, 40)
+        .expect("Failed to create session recorder");
 
     let had_events = rec.poll().expect("Failed to poll");
     assert!(had_events, "Should have found events in the JSONL");
@@ -608,11 +602,21 @@ fn session_recorder_produces_highlight_reel() {
     let lines: Vec<&str> = content.lines().collect();
 
     // First line is the asciicast header
-    assert!(lines[0].contains("\"version\":2"), "Should have asciicast v2 header");
-    assert!(lines[0].contains("test-project"), "Header should contain session name");
+    assert!(
+        lines[0].contains("\"version\":2"),
+        "Should have asciicast v2 header"
+    );
+    assert!(
+        lines[0].contains("test-project"),
+        "Header should contain session name"
+    );
 
     // Should have multiple frames (header + title card + events + finish)
-    assert!(lines.len() >= 4, "Should have at least 4 lines (header + title + events + finish), got {}", lines.len());
+    assert!(
+        lines.len() >= 4,
+        "Should have at least 4 lines (header + title + events + finish), got {}",
+        lines.len()
+    );
 
     // Should contain the Edit tool (it's a highlight event)
     let full = content.to_string();
@@ -627,11 +631,20 @@ fn session_recorder_produces_highlight_reel() {
     // Read events produce ToolUse but is_highlight_tool("Read") returns false
     // so the frame won't be emitted. Check that "Read" doesn't appear as a tool header.
     // (It may appear in other text, so we check for the specific ANSI-formatted tool line)
-    let read_tool_lines: Vec<&&str> = lines.iter().filter(|l| l.contains("📖") && l.contains("Read")).collect();
-    assert!(read_tool_lines.is_empty(), "Read tool should be filtered from highlights");
+    let read_tool_lines: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.contains("📖") && l.contains("Read"))
+        .collect();
+    assert!(
+        read_tool_lines.is_empty(),
+        "Read tool should be filtered from highlights"
+    );
 
     // Should contain final summary
-    assert!(full.contains("complete"), "Should contain completion message");
+    assert!(
+        full.contains("complete"),
+        "Should contain completion message"
+    );
 
     // Clean up
     let _ = std::fs::remove_file(&output_path);
@@ -645,14 +658,8 @@ fn session_recorder_empty_jsonl() {
     let output_file = tempfile::NamedTempFile::new().unwrap();
     let output_path = output_file.path().to_str().unwrap().to_string() + ".cast";
 
-    let mut rec = SessionRecorder::new(
-        jsonl_file.path(),
-        &output_path,
-        "empty-session",
-        80,
-        24,
-    )
-    .expect("Failed to create recorder");
+    let mut rec = SessionRecorder::new(jsonl_file.path(), &output_path, "empty-session", 80, 24)
+        .expect("Failed to create recorder");
 
     let had_events = rec.poll().expect("Failed to poll");
     assert!(!had_events, "Empty JSONL should produce no events");
@@ -660,7 +667,10 @@ fn session_recorder_empty_jsonl() {
     rec.finish().expect("Failed to finish");
 
     let content = std::fs::read_to_string(&output_path).unwrap();
-    assert!(content.contains("\"version\":2"), "Should still have header");
+    assert!(
+        content.contains("\"version\":2"),
+        "Should still have header"
+    );
 
     let _ = std::fs::remove_file(&output_path);
 }
@@ -685,7 +695,11 @@ fn recorder_cast_file_creation() {
     assert!(lines[0].contains("\"version\":2"));
     assert!(lines[0].contains("\"width\":120"));
     assert!(lines[0].contains("\"height\":40"));
-    assert!(lines.len() == 3, "Should have header + 2 frames, got {}", lines.len());
+    assert!(
+        lines.len() == 3,
+        "Should have header + 2 frames, got {}",
+        lines.len()
+    );
     assert!(lines[1].contains("hello world"));
     assert!(lines[2].contains("second frame"));
 

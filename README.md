@@ -199,6 +199,26 @@ Run multiple Claude sessions with dependency ordering:
 claudectl --run tasks.json --parallel
 ```
 
+## Demo Mode & Recording
+
+Create screenshots and GIFs without real sessions running:
+
+```bash
+# Launch TUI with fake sessions
+claudectl --demo
+
+# Print demo data as list or JSON
+claudectl --demo --list
+claudectl --demo --json
+
+# Record a session as asciicast v2 (play with asciinema, convert to GIF with agg)
+claudectl --demo --record demo.cast
+asciinema play demo.cast
+agg demo.cast demo.gif
+```
+
+Demo mode generates 8 deterministic fake sessions with realistic data: varied statuses, costs, context levels, conflicts, sparklines, tool usage, and file changes. Sessions animate on each tick — statuses cycle through Processing, NeedsInput, Waiting, and Idle.
+
 ## Keybindings
 
 | Key | Action |

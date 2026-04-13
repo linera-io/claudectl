@@ -54,6 +54,8 @@ pub struct App {
     pub needs_input_since: HashMap<u32, std::time::Instant>, // When each PID entered NeedsInput
     pub conflict_pids: HashSet<u32>,  // PIDs that share a working directory with another session
     pub conflict_alerted: HashSet<String>, // cwds that have already triggered a conflict alert
+    pub demo_mode: bool,
+    pub demo_tick: u32,
 }
 
 #[derive(Default, Clone)]
@@ -146,6 +148,8 @@ impl App {
             needs_input_since: HashMap::new(),
             conflict_pids: HashSet::new(),
             conflict_alerted: HashSet::new(),
+            demo_mode: false,
+            demo_tick: 0,
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -156,6 +160,16 @@ impl App {
 
     pub fn refresh(&mut self) {
         let tick_start = std::time::Instant::now();
+
+        if self.demo_mode {
+            self.refresh_demo();
+            if self.debug {
+                let total_elapsed = tick_start.elapsed();
+                self.debug_timings
+                    .record(0.0, 0.0, 0.0, total_elapsed.as_secs_f64() * 1000.0);
+            }
+            return;
+        }
 
         // Discover which PIDs have session files
         let scan_start = std::time::Instant::now();
@@ -544,6 +558,54 @@ impl App {
         let mut sessions = std::mem::take(&mut self.sessions);
         self.apply_sort(&mut sessions);
         self.sessions = sessions;
+    }
+
+    fn refresh_demo(&mut self) {
+        self.demo_tick += 1;
+        let sessions = crate::demo::generate_sessions(self.demo_tick);
+
+        // Track NeedsInput wait times (same as real mode)
+        let now_instant = std::time::Instant::now();
+        for session in &sessions {
+            if session.status == SessionStatus::NeedsInput {
+                self.needs_input_since
+                    .entry(session.pid)
+                    .or_insert(now_instant);
+            } else {
+                self.needs_input_since.remove(&session.pid);
+            }
+        }
+
+        // Conflict detection using worktree_id
+        self.conflict_pids.clear();
+        let mut wt_sessions: HashMap<&str, Vec<u32>> = HashMap::new();
+        for session in &sessions {
+            if session.status != SessionStatus::Finished {
+                let key = session.worktree_id.as_deref().unwrap_or(&session.cwd);
+                wt_sessions.entry(key).or_default().push(session.pid);
+            }
+        }
+        for pids in wt_sessions.values() {
+            if pids.len() >= 2 {
+                for &pid in pids {
+                    self.conflict_pids.insert(pid);
+                }
+            }
+        }
+
+        self.sessions = sessions;
+
+        // Fix selection bounds
+        let len = self.sessions.len();
+        if len == 0 {
+            self.table_state.select(None);
+        } else if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
+        } else if let Some(sel) = self.table_state.selected() {
+            if sel >= len {
+                self.table_state.select(Some(len - 1));
+            }
+        }
     }
 
     pub fn tick(&mut self) {

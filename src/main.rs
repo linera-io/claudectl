@@ -7,6 +7,7 @@
 
 mod app;
 mod config;
+mod demo;
 mod discovery;
 mod history;
 mod hooks;
@@ -14,6 +15,7 @@ mod logger;
 mod monitor;
 mod orchestrator;
 mod process;
+mod recorder;
 mod session;
 mod terminals;
 mod theme;
@@ -157,6 +159,14 @@ struct Cli {
     /// Show what would be removed without deleting. Used with --clean.
     #[arg(long)]
     dry_run: bool,
+
+    /// Run with deterministic fake sessions for screenshots and recordings
+    #[arg(long)]
+    demo: bool,
+
+    /// Record the TUI session as an asciicast v2 file (e.g., --record demo.cast)
+    #[arg(long)]
+    record: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -240,11 +250,11 @@ fn main() -> io::Result<()> {
     }
 
     if cli.json && !cli.watch {
-        return print_json();
+        return print_json(cli.demo);
     }
 
     if cli.list {
-        return print_list();
+        return print_list(cli.demo);
     }
 
     if cli.watch {
@@ -265,7 +275,15 @@ fn main() -> io::Result<()> {
     let app_theme = theme::Theme::from_mode(theme_mode);
 
     // Run app
-    let result = run(&mut terminal, tick_rate, &cfg, app_theme, hook_registry);
+    let result = run(
+        &mut terminal,
+        tick_rate,
+        &cfg,
+        app_theme,
+        hook_registry,
+        cli.demo,
+        cli.record.as_deref(),
+    );
 
     // Restore terminal
     disable_raw_mode()?;
@@ -583,16 +601,27 @@ fn format_count(n: u64) -> String {
     }
 }
 
-fn print_json() -> io::Result<()> {
-    let app = App::new();
+fn make_app(demo: bool) -> App {
+    if demo {
+        let mut app = App::new();
+        app.demo_mode = true;
+        app.sessions = demo::generate_sessions(10);
+        app
+    } else {
+        App::new()
+    }
+}
+
+fn print_json(demo: bool) -> io::Result<()> {
+    let app = make_app(demo);
     let values: Vec<serde_json::Value> = app.sessions.iter().map(|s| s.to_json_value()).collect();
     let json = serde_json::to_string_pretty(&values).unwrap_or_else(|_| "[]".to_string());
     println!("{json}");
     Ok(())
 }
 
-fn print_list() -> io::Result<()> {
-    let app = App::new();
+fn print_list(demo: bool) -> io::Result<()> {
+    let app = make_app(demo);
 
     if app.sessions.is_empty() {
         println!("No active Claude sessions.");
@@ -701,6 +730,8 @@ fn run(
     cfg: &config::Config,
     app_theme: theme::Theme,
     hook_registry: hooks::HookRegistry,
+    demo_mode: bool,
+    record_path: Option<&str>,
 ) -> io::Result<()> {
     let mut app = App::new();
     app.notify = cfg.notify;
@@ -715,12 +746,57 @@ fn run(
     app.daily_limit = cfg.daily_limit;
     app.weekly_limit = cfg.weekly_limit;
     app.context_warn_threshold = cfg.context_warn_threshold;
+    app.demo_mode = demo_mode;
+
+    // Set up demo budget for ETA display
+    if demo_mode {
+        app.daily_limit = Some(50.0);
+        app.budget_usd = Some(10.0);
+    }
+
+    // Initialize recorder if --record is set
+    let term_size = crossterm::terminal::size().unwrap_or((120, 40));
+    let mut rec = match record_path {
+        Some(path) => Some(recorder::Recorder::new(path, term_size.0, term_size.1)?),
+        None => None,
+    };
+
     let mut last_tick = Instant::now();
 
     loop {
         terminal.draw(|frame| {
             ui::table::render(frame, frame.area(), &app);
         })?;
+
+        // Capture frame for recording
+        if let Some(ref mut recorder) = rec {
+            let mut buf = Vec::<u8>::new();
+            // Write ANSI clear + home
+            buf.extend_from_slice(b"\x1b[2J\x1b[H");
+            // Render a simplified text representation of the current state
+            for session in &app.sessions {
+                use std::fmt::Write;
+                let mut line = String::new();
+                let conflict = if app.conflict_pids.contains(&session.pid) {
+                    "!! "
+                } else {
+                    "   "
+                };
+                let _ = write!(
+                    line,
+                    "{:>6}  {}{:<12} {:<16} {:>4}  {:>8}  {}\r\n",
+                    session.pid,
+                    conflict,
+                    session.display_name(),
+                    session.status,
+                    session.format_context(),
+                    session.format_cost(),
+                    session.format_elapsed()
+                );
+                buf.extend_from_slice(line.as_bytes());
+            }
+            let _ = recorder.record_frame(&buf);
+        }
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -729,6 +805,13 @@ fn run(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if !app.handle_key(key) {
+                    if let Some(ref mut recorder) = rec {
+                        let _ = recorder.finish();
+                        eprintln!(
+                            "Recording saved to {}",
+                            record_path.unwrap_or("recording.cast")
+                        );
+                    }
                     return Ok(());
                 }
             }

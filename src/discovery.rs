@@ -155,6 +155,43 @@ pub fn scan_subagents(sessions: &mut [ClaudeSession]) {
     }
 }
 
+/// Resolve git worktree identity for each session (for conflict detection).
+/// Sessions in different worktrees of the same repo get different IDs.
+/// Runs `git rev-parse --show-toplevel` once per unique cwd.
+pub fn resolve_worktree_ids(sessions: &mut [ClaudeSession]) {
+    // Cache results to avoid running git multiple times for the same cwd
+    let mut cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for session in sessions.iter_mut() {
+        if session.worktree_id.is_some() {
+            continue;
+        }
+        let id = if let Some(cached) = cache.get(&session.cwd) {
+            cached.clone()
+        } else {
+            let resolved = std::process::Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .current_dir(&session.cwd)
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        String::from_utf8(o.stdout)
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+                // Fall back to cwd if not a git repo
+                .unwrap_or_else(|| session.cwd.clone());
+            cache.insert(session.cwd.clone(), resolved.clone());
+            resolved
+        };
+        session.worktree_id = Some(id);
+    }
+}
+
 fn cwd_to_slug(cwd: &str) -> String {
     cwd.replace('/', "-")
 }

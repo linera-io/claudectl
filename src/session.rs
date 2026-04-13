@@ -81,6 +81,7 @@ pub struct ClaudeSession {
     pub activity_history: Vec<u8>, // Ring buffer of status levels (0-7) for sparkline, one per tick
     pub files_modified: HashMap<String, u32>, // file path -> edit count
     pub tool_usage: HashMap<String, ToolStats>, // tool name -> call count & tokens
+    pub worktree_id: Option<String>, // Resolved git toplevel + git-dir, for conflict detection
 }
 
 /// Per-tool usage statistics.
@@ -131,6 +132,7 @@ impl ClaudeSession {
             activity_history: Vec::new(),
             files_modified: HashMap::new(),
             tool_usage: HashMap::new(),
+            worktree_id: None,
         }
     }
 

@@ -201,6 +201,9 @@ impl App {
         // Scan for subagents
         discovery::scan_subagents(&mut sessions);
 
+        // Resolve git worktree identity (for conflict detection, runs once per session)
+        discovery::resolve_worktree_ids(&mut sessions);
+
         // Snapshot previous cost for burn rate BEFORE reading new JSONL data
         for session in &mut sessions {
             session.prev_cost_usd = session.cost_usd;
@@ -434,44 +437,42 @@ impl App {
         self.needs_input_since
             .retain(|pid, _| active_pids.contains(pid));
 
-        // Conflict detection: find sessions sharing the same working directory
+        // Conflict detection: find sessions sharing the same git worktree
+        // Uses worktree_id (git show-toplevel) so different worktrees don't false-positive
         self.conflict_pids.clear();
-        let mut cwd_sessions: HashMap<&str, Vec<u32>> = HashMap::new();
+        let mut wt_sessions: HashMap<&str, Vec<u32>> = HashMap::new();
         for session in &sessions {
             if session.status != SessionStatus::Finished {
-                cwd_sessions
-                    .entry(&session.cwd)
-                    .or_default()
-                    .push(session.pid);
+                let key = session.worktree_id.as_deref().unwrap_or(&session.cwd);
+                wt_sessions.entry(key).or_default().push(session.pid);
             }
         }
-        for (cwd, pids) in &cwd_sessions {
+        for (wt, pids) in &wt_sessions {
             if pids.len() >= 2 {
                 for &pid in pids {
                     self.conflict_pids.insert(pid);
                 }
-                // Fire hook once per cwd conflict (not on every tick)
-                if !self.conflict_alerted.contains(*cwd) {
-                    self.conflict_alerted.insert(cwd.to_string());
+                // Fire hook once per worktree conflict (not on every tick)
+                if !self.conflict_alerted.contains(*wt) {
+                    self.conflict_alerted.insert(wt.to_string());
                     let project = sessions
                         .iter()
-                        .find(|s| s.cwd == *cwd)
+                        .find(|s| s.pid == pids[0])
                         .map(|s| s.display_name())
                         .unwrap_or("unknown");
                     self.status_msg =
                         format!("CONFLICT: {} sessions sharing {}", pids.len(), project);
                     fire_notification(&format!("{} sessions in {}", pids.len(), project));
-                    // Fire hook on first session in the conflict group
                     if let Some(session) = sessions.iter().find(|s| s.pid == pids[0]) {
                         self.hooks.fire(HookEvent::ConflictDetected, session);
                     }
                 }
             }
         }
-        // Clear alerts for cwds that no longer have conflicts
-        self.conflict_alerted.retain(|cwd| {
-            cwd_sessions
-                .get(cwd.as_str())
+        // Clear alerts for worktrees that no longer have conflicts
+        self.conflict_alerted.retain(|wt| {
+            wt_sessions
+                .get(wt.as_str())
                 .map(|pids| pids.len() >= 2)
                 .unwrap_or(false)
         });

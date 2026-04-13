@@ -1084,6 +1084,20 @@ impl App {
     }
 
     fn toggle_session_recording(&mut self) {
+        // If any recordings are active, R stops ALL of them
+        if !self.session_recordings.is_empty() {
+            let count = self.session_recordings.len();
+            let paths: Vec<String> = self.session_recordings.values().cloned().collect();
+            self.session_recordings.clear();
+            self.status_msg = if count == 1 {
+                format!("Recording stopped → {}", paths[0])
+            } else {
+                format!("{count} recordings stopped")
+            };
+            return;
+        }
+
+        // No recordings active — start recording the selected session
         let info = self
             .selected_session()
             .map(|s| (s.pid, s.display_name().to_string(), s.jsonl_path.is_some()));
@@ -1091,21 +1105,13 @@ impl App {
             return;
         };
 
-        // If already recording this session, stop it
-        if let Some(path) = self.session_recordings.remove(&pid) {
-            self.status_msg = format!("Recording stopped → {path} ({name})");
-            return;
-        }
-
-        // Start recording
         if !has_jsonl {
             self.status_msg = "Cannot record — no JSONL file for this session".into();
             return;
         }
         let path = format!("{}-{}.gif", name, pid);
         self.session_recordings.insert(pid, path.clone());
-        let count = self.session_recordings.len();
-        self.status_msg = format!("Recording {name} → {path} ({count} active, R to stop)");
+        self.status_msg = format!("Recording {name} → {path} (R to stop)");
     }
 
     fn handle_compact(&mut self) {

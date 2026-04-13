@@ -12,7 +12,7 @@ Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked a
 
 <sub>~1 MB binary. Sub-50ms startup. Zero config required.</sub>
 
-[![claudectl demo](https://asciinema.org/a/899569.svg)](https://asciinema.org/a/899569)
+[![claudectl demo](https://asciinema.org/a/bovJrUq2vEmC08NU.svg)](https://asciinema.org/a/bovJrUq2vEmC08NU)
 
 ## Install
 

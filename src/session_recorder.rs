@@ -88,9 +88,12 @@ impl SessionRecorder {
         });
         writeln!(cast_file, "{}", header)?;
 
+        // Start from end of file — only record NEW events going forward
+        let initial_offset = std::fs::metadata(jsonl_path).map(|m| m.len()).unwrap_or(0);
+
         Ok(Self {
             jsonl_path: jsonl_path.to_path_buf(),
-            offset: 0,
+            offset: initial_offset,
             cast_file,
             cast_path,
             final_path,

@@ -3,9 +3,11 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Maximum characters of bash output to include in a frame.
-const MAX_BASH_OUTPUT: usize = 400;
+const MAX_BASH_OUTPUT: usize = 800;
 /// Maximum characters of assistant text to include.
-const MAX_ASSISTANT_TEXT: usize = 160;
+const MAX_ASSISTANT_TEXT: usize = 200;
+/// Maximum lines of diff to show for Edit events.
+const MAX_DIFF_LINES: usize = 15;
 /// Seconds between frames in the highlight reel.
 const FRAME_PACE: f64 = 1.2;
 /// Seconds to hold tool results before next event.
@@ -35,13 +37,15 @@ pub struct SessionRecorder {
 /// A parsed event from the JSONL stream.
 enum SessionEvent {
     AssistantText(String),
-    ToolUse { tool: String, summary: String },
-    ToolResult { output: String, is_error: bool },
-}
-
-/// Which tool events make the highlight reel.
-fn is_highlight_tool(tool: &str) -> bool {
-    matches!(tool, "Edit" | "Write" | "Bash" | "Agent" | "NotebookEdit")
+    ToolUse {
+        tool: String,
+        summary: String,
+        diff: Option<String>, // For Edit: the new_string content (abbreviated)
+    },
+    ToolResult {
+        output: String,
+        is_error: bool,
+    },
 }
 
 impl SessionRecorder {
@@ -216,15 +220,27 @@ impl SessionRecorder {
                 self.virtual_time += FRAME_PACE;
                 Ok(true)
             }
-            SessionEvent::ToolUse { tool, summary } => {
-                if !is_highlight_tool(tool) {
-                    return Ok(false);
-                }
-
+            SessionEvent::ToolUse {
+                tool,
+                summary,
+                diff,
+            } => {
                 // Update tally
                 match tool.as_str() {
                     "Edit" | "Write" | "NotebookEdit" => self.edits += 1,
                     "Bash" => self.commands += 1,
+                    "Read" | "Grep" | "Glob" => {
+                        // Show as brief context line, don't count in tally
+                        let icon = match tool.as_str() {
+                            "Read" => "📖",
+                            "Grep" => "🔍",
+                            _ => "📂",
+                        };
+                        let frame = format!("\x1b[90m  {icon} {tool} {summary}\x1b[0m\r\n");
+                        self.write_frame(&frame)?;
+                        self.virtual_time += 0.4;
+                        return Ok(true);
+                    }
                     _ => {}
                 }
 
@@ -237,10 +253,34 @@ impl SessionRecorder {
                 };
 
                 self.write_stats_header()?;
-                let frame = format!(
+                let mut frame = format!(
                     "\x1b[1;33m  {icon} {tool}\x1b[0m\r\n\
-                     \x1b[37m  {summary}\x1b[0m\r\n\r\n"
+                     \x1b[37m  {summary}\x1b[0m\r\n"
                 );
+
+                // Show diff content for Edit events
+                if let Some(diff_content) = diff {
+                    frame.push_str("\x1b[90m  ────────\x1b[0m\r\n");
+                    for line in diff_content.lines().take(MAX_DIFF_LINES) {
+                        let colored = if line.starts_with('+') {
+                            format!("\x1b[32m  {line}\x1b[0m\r\n")
+                        } else if line.starts_with('-') {
+                            format!("\x1b[31m  {line}\x1b[0m\r\n")
+                        } else {
+                            format!("\x1b[90m  {line}\x1b[0m\r\n")
+                        };
+                        frame.push_str(&colored);
+                    }
+                    let total_lines = diff_content.lines().count();
+                    if total_lines > MAX_DIFF_LINES {
+                        frame.push_str(&format!(
+                            "\x1b[90m  ... +{} more lines\x1b[0m\r\n",
+                            total_lines - MAX_DIFF_LINES
+                        ));
+                    }
+                }
+
+                frame.push_str("\r\n");
                 self.write_frame(&frame)?;
                 self.virtual_time += FRAME_PACE;
                 Ok(true)
@@ -387,7 +427,12 @@ fn parse_events(line: &str) -> Vec<SessionEvent> {
                         .to_string();
 
                     let summary = summarize_tool_use(&tool, block.get("input"));
-                    events.push(SessionEvent::ToolUse { tool, summary });
+                    let diff = extract_diff(&tool, block.get("input"));
+                    events.push(SessionEvent::ToolUse {
+                        tool,
+                        summary,
+                        diff,
+                    });
                 }
                 // tool_result comes in "user" role messages (Claude API convention)
                 "tool_result" if role == "user" => {
@@ -499,6 +544,45 @@ fn truncate_str(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Extract a simple diff representation for Edit tool events.
+fn extract_diff(tool: &str, input: Option<&serde_json::Value>) -> Option<String> {
+    let input = input?;
+    match tool {
+        "Edit" => {
+            let old = input
+                .get("old_string")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            let new = input
+                .get("new_string")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if old.is_empty() && new.is_empty() {
+                return None;
+            }
+            let mut diff = String::new();
+            for line in old.lines() {
+                diff.push_str(&format!("-{line}\n"));
+            }
+            for line in new.lines() {
+                diff.push_str(&format!("+{line}\n"));
+            }
+            Some(diff)
+        }
+        "Write" => {
+            // Show first few lines of the new file content
+            let content = input.get("content").and_then(|s| s.as_str())?;
+            let preview: String = content
+                .lines()
+                .take(MAX_DIFF_LINES)
+                .map(|l| format!("+{l}\n"))
+                .collect();
+            Some(preview)
+        }
+        _ => None,
+    }
 }
 
 fn shorten_path(path: &str) -> String {

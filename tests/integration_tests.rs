@@ -627,17 +627,10 @@ fn session_recorder_produces_highlight_reel() {
     assert!(full.contains("Bash"), "Should contain Bash tool event");
     assert!(full.contains("cargo test"), "Should contain bash command");
 
-    // Should NOT contain Read tool (filtered out of highlights)
-    // Read events produce ToolUse but is_highlight_tool("Read") returns false
-    // so the frame won't be emitted. Check that "Read" doesn't appear as a tool header.
-    // (It may appear in other text, so we check for the specific ANSI-formatted tool line)
-    let read_tool_lines: Vec<&&str> = lines
-        .iter()
-        .filter(|l| l.contains("📖") && l.contains("Read"))
-        .collect();
+    // Read events should appear as brief gray context lines (not full highlight frames)
     assert!(
-        read_tool_lines.is_empty(),
-        "Read tool should be filtered from highlights"
+        full.contains("Read"),
+        "Read tool should appear as context line"
     );
 
     // Should contain final summary

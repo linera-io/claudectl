@@ -262,35 +262,67 @@ fn main() -> io::Result<()> {
     }
 
     let tick_rate = Duration::from_millis(cfg.interval);
-
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Detect theme
     let theme_mode = theme::ThemeMode::detect(cli.theme.as_deref());
     let app_theme = theme::Theme::from_mode(theme_mode);
 
-    // Run app
-    let result = run(
-        &mut terminal,
-        tick_rate,
-        &cfg,
-        app_theme,
-        hook_registry,
-        cli.demo,
-        cli.record.as_deref(),
-    );
+    if let Some(ref record_path) = cli.record {
+        // Recording mode: use TeeWriter to capture exact ANSI output
+        let term_size = crossterm::terminal::size().unwrap_or((120, 40));
+        let mut rec = recorder::Recorder::new(record_path, term_size.0, term_size.1)?;
+        let rec_ptr: *mut recorder::Recorder = &mut rec;
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+        enable_raw_mode()?;
+        // SAFETY: rec outlives tee_writer and terminal (both dropped before rec)
+        let tee_writer = unsafe { recorder::TeeWriter::new(rec_ptr) };
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(tee_writer);
+        let mut terminal = Terminal::new(backend)?;
 
-    result
+        let result = run_tui(
+            &mut terminal,
+            tick_rate,
+            &cfg,
+            app_theme,
+            hook_registry,
+            cli.demo,
+        );
+
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+
+        rec.finish()?;
+        eprintln!("Recording saved to {record_path}");
+        eprintln!("Play: asciinema play {record_path}");
+        eprintln!(
+            "GIF:  agg {record_path} {}.gif",
+            record_path.trim_end_matches(".cast")
+        );
+
+        result
+    } else {
+        // Normal mode: plain stdout
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        let result = run_tui(
+            &mut terminal,
+            tick_rate,
+            &cfg,
+            app_theme,
+            hook_registry,
+            cli.demo,
+        );
+
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+
+        result
+    }
 }
 
 fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> io::Result<()> {
@@ -724,14 +756,13 @@ fn format_session(fmt: &str, s: &session::ClaudeSession) -> String {
         .replace("{context}", &format!("{}", s.context_percent() as u32))
 }
 
-fn run(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+fn run_tui<W: io::Write>(
+    terminal: &mut Terminal<CrosstermBackend<W>>,
     tick_rate: Duration,
     cfg: &config::Config,
     app_theme: theme::Theme,
     hook_registry: hooks::HookRegistry,
     demo_mode: bool,
-    record_path: Option<&str>,
 ) -> io::Result<()> {
     let mut app = App::new();
     app.notify = cfg.notify;
@@ -748,18 +779,10 @@ fn run(
     app.context_warn_threshold = cfg.context_warn_threshold;
     app.demo_mode = demo_mode;
 
-    // Set up demo budget for ETA display
     if demo_mode {
         app.daily_limit = Some(50.0);
         app.budget_usd = Some(10.0);
     }
-
-    // Initialize recorder if --record is set
-    let term_size = crossterm::terminal::size().unwrap_or((120, 40));
-    let mut rec = match record_path {
-        Some(path) => Some(recorder::Recorder::new(path, term_size.0, term_size.1)?),
-        None => None,
-    };
 
     let mut last_tick = Instant::now();
 
@@ -768,36 +791,6 @@ fn run(
             ui::table::render(frame, frame.area(), &app);
         })?;
 
-        // Capture frame for recording
-        if let Some(ref mut recorder) = rec {
-            let mut buf = Vec::<u8>::new();
-            // Write ANSI clear + home
-            buf.extend_from_slice(b"\x1b[2J\x1b[H");
-            // Render a simplified text representation of the current state
-            for session in &app.sessions {
-                use std::fmt::Write;
-                let mut line = String::new();
-                let conflict = if app.conflict_pids.contains(&session.pid) {
-                    "!! "
-                } else {
-                    "   "
-                };
-                let _ = write!(
-                    line,
-                    "{:>6}  {}{:<12} {:<16} {:>4}  {:>8}  {}\r\n",
-                    session.pid,
-                    conflict,
-                    session.display_name(),
-                    session.status,
-                    session.format_context(),
-                    session.format_cost(),
-                    session.format_elapsed()
-                );
-                buf.extend_from_slice(line.as_bytes());
-            }
-            let _ = recorder.record_frame(&buf);
-        }
-
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
@@ -805,13 +798,6 @@ fn run(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if !app.handle_key(key) {
-                    if let Some(ref mut recorder) = rec {
-                        let _ = recorder.finish();
-                        eprintln!(
-                            "Recording saved to {}",
-                            record_path.unwrap_or("recording.cast")
-                        );
-                    }
                     return Ok(());
                 }
             }

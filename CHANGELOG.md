@@ -2,13 +2,12 @@
 
 All notable changes to claudectl are documented here.
 
-## [0.11.0] - 2026-04-13
+## [0.11.1] - 2026-04-13
 
 ### Added
-- **Demo mode** (`--demo`) — deterministic fake sessions for screenshots, GIFs, and videos. 8 sessions with realistic names, statuses, costs, context levels, conflicts, sparklines, tool usage, and file changes. Fully animated — status transitions cycle deterministically on each tick (#65)
-- **Session recording** (`--record demo.cast`) — captures TUI sessions as asciicast v2 format. Compatible with `asciinema play` and convertible to GIF with `agg`. Works with both demo and real sessions
-- One-command content creation: `claudectl --demo --record demo.cast`
-- Demo works with all output modes: `--demo --list`, `--demo --json`
+- **Live session recording** (`--record session.cast`) — captures pixel-perfect ANSI terminal output via a tee writer. Records exact colors, sparklines, and TUI layout as asciicast v2 format. Compatible with `asciinema play` and convertible to GIF with `agg`. Record real sessions for social media, blog posts, and team updates (#65)
+- **Demo mode** (`--demo`) — deterministic fake sessions for when no real sessions are running. 8 sessions with realistic names, statuses, costs, context levels, conflicts, sparklines, tool usage, and file changes. Works with all output modes: `--demo --list`, `--demo --json`
+- One-command shareable recording: `claudectl --record session.cast && agg session.cast session.gif`
 
 ### Fixed
 - **Worktree-aware conflict detection** — sessions in different git worktrees of the same repo no longer false-positive as conflicts. Uses `git rev-parse --show-toplevel` to resolve each session's worktree identity, cached per unique cwd

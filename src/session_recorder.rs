@@ -297,33 +297,55 @@ impl SessionRecorder {
     }
 
     fn convert_to_gif(&self) -> std::io::Result<()> {
-        let cast = self.cast_path.to_string_lossy();
-        let gif = self.final_path.to_string_lossy();
+        let cast = self.cast_path.clone();
+        let gif = self.final_path.clone();
 
-        let result = std::process::Command::new("agg")
-            .args([cast.as_ref(), gif.as_ref()])
-            .output();
+        // Check if agg exists before spawning
+        let has_agg = std::process::Command::new("which")
+            .arg("agg")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
-        match result {
-            Ok(output) if output.status.success() => {
-                let _ = std::fs::remove_file(&self.cast_path);
-                Ok(())
+        if !has_agg {
+            let fallback = self.final_path.with_extension("cast");
+            if self.cast_path != fallback {
+                std::fs::rename(&self.cast_path, &fallback)?;
             }
-            _ => {
-                let fallback = self.final_path.with_extension("cast");
-                if self.cast_path != fallback {
-                    std::fs::rename(&self.cast_path, &fallback)?;
-                }
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!(
-                        "agg not found — install with: cargo install agg\n\
-                         Saved asciicast to {}",
-                        fallback.display()
-                    ),
-                ))
-            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "agg not found — install with: cargo install agg\n\
+                     Saved asciicast to {}",
+                    fallback.display()
+                ),
+            ));
         }
+
+        // Spawn agg in the background — don't block the TUI
+        std::thread::spawn(move || {
+            let result = std::process::Command::new("agg")
+                .args([
+                    cast.to_string_lossy().as_ref(),
+                    gif.to_string_lossy().as_ref(),
+                ])
+                .output();
+
+            match result {
+                Ok(output) if output.status.success() => {
+                    let _ = std::fs::remove_file(&cast);
+                }
+                _ => {
+                    // Keep the .cast file as fallback
+                    let fallback = gif.with_extension("cast");
+                    if cast != fallback {
+                        let _ = std::fs::rename(&cast, &fallback);
+                    }
+                }
+            }
+        });
+
+        Ok(())
     }
 }
 

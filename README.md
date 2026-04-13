@@ -1,187 +1,133 @@
 # claudectl
 
-A fast, lightweight TUI for monitoring and managing multiple [Claude Code](https://claude.ai/claude-code) CLI sessions running across terminals.
+**Mission control for Claude Code.**
 
-Built in Rust. ~1MB binary. Sub-50ms startup.
+Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked agents, control token burn, approve actions, and orchestrate work across tmux, iTerm2, Ghostty, Warp, and more.
+
+[![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)
+[![Homebrew](https://img.shields.io/badge/homebrew-mercurialsolo%2Ftap-orange)](https://github.com/mercurialsolo/homebrew-tap)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)]()
+
+<sub>~1 MB binary. Sub-50ms startup. Zero config required.</sub>
 
 [![claudectl demo](https://asciinema.org/a/899569.svg)](https://asciinema.org/a/899569)
 
-## Features
-
-- **Live dashboard** — PID, project, status, context window %, cost, $/hr burn rate, elapsed time, CPU%, memory, token counts, activity sparkline
-- **Smart status detection** — Processing / Needs Input / Waiting / Idle / Finished, inferred from JSONL events, CPU usage, and message timestamps
-- **Cost tracking** — Per-session and total USD estimates based on model pricing (Opus, Sonnet, Haiku) with burn rate
-- **Budget enforcement** — Per-session budget alerts at 80%, optional auto-kill at 100%
-- **Approve/input** — Press `y` to approve permission prompts, `i` to type input to sessions
-- **Auto-approve** — Press `a` twice to enable auto-approve for trusted sessions
-- **Tab switching** — Press `Tab` to jump to a session's terminal tab (7 terminals supported)
-- **Session launcher** — Press `n` to start a new Claude Code session from within claudectl
-- **Grouped view** — Press `g` to group sessions by project with aggregate stats
-- **Detail panel** — Press `Enter` to expand session details (tokens, cost, model, paths)
-- **Notifications** — Desktop notifications when sessions need input (`--notify`)
-- **Webhooks** — POST JSON to Slack/Discord/URL on status changes (`--webhook`)
-- **Watch mode** — Stream status changes without TUI (`--watch`)
-- **Session history** — Persist completed sessions and view cost analytics (`--history`, `--stats`)
-- **Configuration file** — Persistent settings via `~/.config/claudectl/config.toml`
-- **Theme system** — Dark, light, and monochrome themes (`--theme`, `NO_COLOR` support)
-- **Task orchestration** — Run multiple Claude sessions with dependency ordering (`--run`)
-- **Session highlight reels** — Press `R` to record a supercut of any session as a shareable GIF
-- **Remote compaction** — Press `c` to send `/compact` to an idle session
-- **Conflict detection** — Warns when 2+ sessions share the same git worktree (`!!` indicator)
-- **Context alerts** — `on_context_high` hook when context window crosses threshold
-- **Permission wait time** — Shows how long sessions have been waiting, sorted by longest first
-- **Session cleanup** — `claudectl --clean` to remove old session data and free disk space
-- **Demo mode** — `--demo` for deterministic fake sessions (screenshots, content creation)
-- **Diagnostic logging** — Structured debug output for troubleshooting (`--log`)
-
 ## Install
 
-### Homebrew (macOS)
-
 ```bash
-brew tap mercurialsolo/tap
-brew install claudectl
+brew install mercurialsolo/tap/claudectl     # Homebrew (macOS)
+cargo install claudectl                       # Cargo (any platform)
 ```
 
-### Quick install (macOS / Linux)
+<details>
+<summary>Other methods</summary>
+
+**Quick install (macOS / Linux)**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mercurialsolo/claudectl/main/install.sh | sh
 ```
 
-### From source
-
-```bash
-cargo install --path .
-```
-
-### Nix
+**Nix**
 
 ```bash
 nix run github:mercurialsolo/claudectl
 ```
 
-## Usage
+**From source**
 
 ```bash
-# Launch the TUI dashboard
+git clone https://github.com/mercurialsolo/claudectl.git
+cd claudectl && cargo install --path .
+```
+
+</details>
+
+## Quickstart
+
+```bash
+# Make sure you have at least one Claude Code session running, then:
 claudectl
+```
 
-# Print session list and exit
-claudectl --list
+That's it. claudectl auto-discovers all running Claude Code sessions and shows a live dashboard. No configuration needed.
 
-# Export JSON for scripting
-claudectl --json
+From the dashboard you can:
+- Press `y` to approve a blocked permission prompt
+- Press `i` to type input to a session
+- Press `Tab` to jump to a session's terminal tab
+- Press `d` to kill a runaway session
+- Press `?` for all keybindings
 
-# Stream status changes (no TUI)
-claudectl --watch
-claudectl --watch --json
+## Why This Exists
 
-# Session history and cost analytics
+Claude Code is excellent at execution. It is not built to supervise many concurrent sessions.
+
+When you run 3, 5, or 8 sessions across terminals, real problems appear:
+
+- **Which session is blocked?** One is waiting for approval and you don't know which tab.
+- **Which session is burning money?** You can't see token spend without switching to each one.
+- **Which session needs input?** A permission prompt has been sitting for 10 minutes.
+- **Which session is stalled?** It looks busy but CPU is zero.
+
+claudectl is the operator layer that answers these questions from one pane.
+
+## Claude Code vs claudectl
+
+| Capability | Claude Code alone | With claudectl |
+|-----------|:-:|:-:|
+| Run a single session | Yes | Yes |
+| See status of all sessions at once | No | **Yes** |
+| Know which session is blocked | Tab-hunt | **At a glance** |
+| Track cost per session | Manually | **Live $/hr burn rate** |
+| Enforce spend budgets | No | **Auto-kill at limit** |
+| Approve prompts without switching | No | **Press `y`** |
+| Get notified on stalls/blocks | No | **Desktop + webhook** |
+| Orchestrate multi-session workflows | No | **Dependency-ordered tasks** |
+| Record session highlight reels | No | **Press `R`** |
+
+## Core Workflows
+
+### Supervise multiple sessions
+
+Launch `claudectl` and see every running session: status, cost, burn rate, CPU, context window usage, token counts, and activity sparkline — all updating live.
+
+```bash
+claudectl                   # Interactive TUI dashboard
+claudectl --watch           # Stream status changes (no TUI)
+claudectl --list            # Print session table and exit
+claudectl --json            # Machine-readable output for scripting
+```
+
+### Control spend
+
+Set per-session budgets. Get warned at 80%. Optionally auto-kill at 100%.
+
+```bash
+claudectl --budget 5 --kill-on-budget
+```
+
+Weekly and daily cost aggregation shows in the title bar. Use `--history` and `--stats` to review past spend:
+
+```bash
 claudectl --history --since 24h
 claudectl --stats --since 7d
+```
 
-# Launch a new Claude session
-claudectl --new --cwd ~/projects/my-app --prompt "Fix the auth bug"
+### Catch blockers instantly
 
-# Budget enforcement
-claudectl --budget 5 --kill-on-budget
+Sessions needing approval show as **Needs Input** in magenta. Desktop notifications and webhooks alert you even when claudectl isn't focused:
 
-# Notifications and webhooks
+```bash
 claudectl --notify
 claudectl --webhook https://hooks.slack.com/... --webhook-on NeedsInput,Finished
-
-# Theme and diagnostics
-claudectl --theme light
-claudectl --log /tmp/claudectl.log
-
-# Run multiple tasks from a file
-claudectl --run tasks.json --parallel
-
-# Clean up old session data
-claudectl --clean --older-than 7d --dry-run
-claudectl --clean --finished
-
-# Show resolved configuration
-claudectl --config
 ```
 
-## Configuration
+### Orchestrate multi-session work
 
-claudectl loads settings from `~/.config/claudectl/config.toml` (global) and `.claudectl.toml` (per-project). CLI flags override config file values.
-
-```toml
-[defaults]
-interval = 1000
-notify = true
-grouped = true
-sort = "cost"
-budget = 5.00
-kill_on_budget = false
-
-[webhook]
-url = "https://hooks.slack.com/..."
-events = ["NeedsInput", "Finished"]
-
-[context]
-warn_threshold = 75  # Fire on_context_high when context window exceeds this %
-```
-
-## Event Hooks
-
-Run shell commands automatically when session events occur. Add hooks to your config file:
-
-```toml
-# ~/.config/claudectl/config.toml
-
-[hooks.on_needs_input]
-run = "say 'Claude needs your attention'"
-
-[hooks.on_finished]
-run = "terminal-notifier -title 'claudectl' -message '{project} finished (${cost})'"
-
-[hooks.on_session_start]
-run = "echo '{pid},{project},{model}' >> ~/claude-sessions.csv"
-
-[hooks.on_status_change]
-run = "echo '[{project}] {old_status} → {new_status}' >> ~/claude-activity.log"
-```
-
-### Events
-
-| Event | Trigger |
-|-------|---------|
-| `on_session_start` | New session discovered |
-| `on_status_change` | Any status transition |
-| `on_needs_input` | Session needs user approval/input |
-| `on_finished` | Session process exited |
-| `on_budget_warning` | Session hit 80% of budget |
-| `on_budget_exceeded` | Session hit 100% of budget |
-| `on_idle` | Session went idle (>10 min) |
-| `on_context_high` | Context window usage crossed threshold (default 75%) |
-| `on_conflict_detected` | 2+ sessions share the same working directory |
-
-### Template variables
-
-`{pid}`, `{project}`, `{status}`, `{cost}`, `{model}`, `{cwd}`, `{tokens_in}`, `{tokens_out}`, `{elapsed}`, `{session_id}`, `{old_status}`, `{new_status}`, `{context_pct}`
-
-Use `claudectl --hooks` to verify your configured hooks.
-
-### Verified Hooks
-
-We maintain a curated set of officially verified hooks at [mercurialsolo/claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks). Only verified hooks are endorsed for production use.
-
-**To submit a hook for verification**, open an issue on the [claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks/issues) repository with:
-- Hook name and description
-- The `[hooks.*]` config snippet
-- What problem it solves
-- Any dependencies (e.g., `terminal-notifier`, `jq`)
-
-Submitted hooks are reviewed for security, reliability, and usefulness before being added to the verified collection.
-
-## Task Orchestration
-
-Run multiple Claude sessions with dependency ordering:
+Run coordinated tasks with dependency ordering:
 
 ```json
 {
@@ -210,42 +156,54 @@ Run multiple Claude sessions with dependency ordering:
 claudectl --run tasks.json --parallel
 ```
 
-## Session Recording & Highlight Reels
+### Record and share
 
-### Per-Session Highlight Reel (press `R`)
+**Highlight reels** — Press `R` on any session to record a supercut: file edits, bash commands, errors, and successes. Idle time and noise are stripped. Output is a shareable GIF.
 
-Select any running session and press `R` to start recording a supercut:
-
-- **What's captured**: file edits (path + diff size), bash commands (+ output), errors (red ✗), successes (green ✓)
-- **What's skipped**: file reads, grep/glob searches, verbose explanations, idle time
-- **Output**: title card → paced events → final summary with edit/command/error tally
-- **Multiple recordings**: press `R` on different sessions to record them all simultaneously
-- **Passive**: records in background while you keep using claudectl
-- **Works in split terminals**: reads JSONL on disk, not terminal output
-
-Table shows `REC` prefix on recorded sessions. Status bar shows `REC 2 sessions: a, b (R to stop)`.
-
-### TUI Recording (--record)
-
-Record the full claudectl dashboard as a shareable GIF:
+**Dashboard recording** — Capture the full TUI:
 
 ```bash
-claudectl --record session.gif           # Direct GIF (requires agg: cargo install agg)
-claudectl --record session.cast          # Raw asciicast v2
+claudectl --record session.gif      # Direct GIF (requires agg)
+claudectl --record session.cast     # Raw asciicast v2
 ```
 
-### Demo Mode
-
-No sessions running? Use `--demo` for deterministic fake sessions:
+**Demo mode** — Deterministic fake sessions for screenshots and content:
 
 ```bash
-claudectl --demo                         # Animated TUI with 8 fake sessions
-claudectl --demo --record demo.gif       # One-command GIF for your README
-claudectl --demo --list                  # Print as table
-claudectl --demo --json                  # Export as JSON
+claudectl --demo                    # Animated TUI with 8 fake sessions
+claudectl --demo --record demo.gif  # One-command GIF for your README
 ```
 
-## Keybindings
+## Features
+
+### Dashboard
+- Live table: PID, project, status, context %, cost, $/hr burn rate, elapsed, CPU%, memory, tokens, sparkline
+- Detail panel (`Enter`) with full session metadata
+- Grouped view (`g`) by project with aggregate stats
+- Sort by status, context, cost, burn rate, or elapsed (`s`)
+- Conflict detection when 2+ sessions share the same git worktree (`!!`)
+- Permission wait time — shows how long sessions have been waiting, longest first
+
+### Status Detection
+
+Multi-signal inference from CPU usage, JSONL events, and timestamps:
+
+| Status | Color | Meaning |
+|--------|-------|---------|
+| **Needs Input** | Magenta | Waiting for user to approve/confirm a tool use |
+| **Processing** | Green | Actively generating or executing tools |
+| **Waiting** | Yellow | Done responding, waiting for user's next prompt |
+| **Idle** | Gray | No recent activity (>10 min since last message) |
+| **Finished** | Red | Process exited |
+
+### Cost Tracking & Budgets
+- Per-session USD estimates (Opus, Sonnet, Haiku model pricing)
+- Live $/hr burn rate
+- Per-session budget alerts at 80%, auto-kill at 100%
+- Daily/weekly aggregate cost tracking
+- Session history with cost analytics
+
+### Interactive Controls
 
 | Key | Action |
 |-----|--------|
@@ -258,40 +216,14 @@ claudectl --demo --json                  # Export as JSON
 | `a` | Toggle auto-approve (double-tap to confirm) |
 | `n` | Launch new Claude session |
 | `g` | Toggle grouped view by project |
-| `s` | Cycle sort column (Status, Context, Cost, $/hr, Elapsed) |
+| `s` | Cycle sort column |
 | `c` | Send /compact to session (when idle) |
 | `R` | Record session highlight reel (toggle) |
 | `r` | Force refresh |
 | `?` | Toggle help overlay |
 | `q`/`Esc` | Quit |
 
-## Status Colors
-
-| Status | Color | Meaning |
-|--------|-------|---------|
-| **Needs Input** | Magenta | Waiting for user to approve/confirm a tool use |
-| **Processing** | Green | Actively generating or executing tools |
-| **Waiting** | Yellow | Done responding, waiting for user's next prompt |
-| **Idle** | Gray | No recent activity (>10 min since last message) |
-| **Finished** | Red | Process exited |
-
-## How It Works
-
-claudectl reads Claude Code's local data:
-
-- **`~/.claude/sessions/*.json`** — One file per running Claude process with PID, session ID, working directory, and start time
-- **`~/.claude/projects/{slug}/*.jsonl`** — Conversation logs with token usage, model info, `stop_reason`, and `waiting_for_task` events
-- **`ps`** — CPU%, memory, TTY, and command args for each process
-- **`/tmp/claude-{uid}/{slug}/{sessionId}/tasks/`** — Subagent task files
-
-Status is inferred from multiple signals:
-- `waiting_for_task` progress event → **Needs Input** (needs user confirmation)
-- CPU > 5% → **Processing** (overrides all other signals)
-- `stop_reason: tool_use` + low CPU + age >5s → **Needs Input** (permission prompt)
-- `stop_reason: end_turn` + recent activity → **Waiting**
-- Last message > 10 minutes ago → **Idle**
-
-## Terminal Support
+### Terminal Support
 
 | Terminal | Tab Switch | Approve/Input | Method |
 |----------|-----------|---------------|--------|
@@ -303,34 +235,151 @@ Status is inferred from multiple signals:
 | **iTerm2** | Focus switch | Focus switch | AppleScript + System Events |
 | **Terminal.app** | Focus switch | Focus switch | AppleScript + System Events |
 
-### Terminal-specific notes
+**Notes:** Ghostty has the best support — no config needed. Kitty requires `allow_remote_control yes` in config. Warp requires Accessibility permission. tmux is auto-detected.
 
-- **Ghostty**: Best support. Native AppleScript with working directory and TTY matching. No extra config needed.
-- **Kitty**: Requires `allow_remote_control yes` (or `socket-only`) in `~/.config/kitty/kitty.conf`.
-- **Warp**: Requires Accessibility permission (System Settings > Privacy & Security > Accessibility). Approve/input briefly switches focus to the Claude tab, sends the keystroke, then you can switch back.
-- **tmux**: Auto-detected when running inside tmux. Works alongside the outer terminal's support.
+### Themes
+- Dark, light, and monochrome (`--theme`)
+- Respects `NO_COLOR` environment variable
 
-## Requirements
+## Event Hooks
 
-- macOS or Linux
-- [Claude Code CLI](https://claude.ai/claude-code) installed and running
-- Rust 2024 edition (to build from source)
+Run shell commands automatically when session events occur. Add to your config file:
 
-## Issues & Feature Requests
+```toml
+# ~/.config/claudectl/config.toml
 
-Found a bug or have an idea? [Open an issue](https://github.com/mercurialsolo/claudectl/issues/new).
+[hooks.on_needs_input]
+run = "say 'Claude needs your attention'"
 
-**Bug reports** — please include:
-- `claudectl --version` output
-- Your terminal (`echo $TERM_PROGRAM`) and OS
-- Steps to reproduce
-- If possible, attach a log file: `claudectl --log /tmp/claudectl-debug.log` and reproduce the issue
+[hooks.on_finished]
+run = "terminal-notifier -title 'claudectl' -message '{project} finished (${cost})'"
 
-**Feature requests** — describe the use case, not just the solution. What are you trying to accomplish? Knowing the "why" helps us find the best approach.
+[hooks.on_budget_warning]
+run = "curl -X POST $SLACK_WEBHOOK -d '{\"text\": \"{project} hit 80% budget (${cost})\"}'"
+
+[hooks.on_status_change]
+run = "echo '[{project}] {old_status} -> {new_status}' >> ~/claude-activity.log"
+```
+
+### Events
+
+| Event | Trigger |
+|-------|---------|
+| `on_session_start` | New session discovered |
+| `on_status_change` | Any status transition |
+| `on_needs_input` | Session needs user approval/input |
+| `on_finished` | Session process exited |
+| `on_budget_warning` | Session hit 80% of budget |
+| `on_budget_exceeded` | Session hit 100% of budget |
+| `on_idle` | Session went idle (>10 min) |
+| `on_context_high` | Context window usage crossed threshold (default 75%) |
+| `on_conflict_detected` | 2+ sessions share the same working directory |
+
+### Template Variables
+
+`{pid}`, `{project}`, `{status}`, `{cost}`, `{model}`, `{cwd}`, `{tokens_in}`, `{tokens_out}`, `{elapsed}`, `{session_id}`, `{old_status}`, `{new_status}`, `{context_pct}`
+
+Use `claudectl --hooks` to verify your configured hooks.
+
+### Verified Hooks
+
+We maintain a curated set of verified hooks at [mercurialsolo/claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks). Submitted hooks are reviewed for security, reliability, and usefulness before being added.
+
+To submit a hook, [open an issue](https://github.com/mercurialsolo/claudectl-hooks/issues) with the config snippet, what it solves, and any dependencies.
+
+## Configuration
+
+claudectl loads settings from `~/.config/claudectl/config.toml` (global) and `.claudectl.toml` (per-project). CLI flags override both.
+
+```toml
+[defaults]
+interval = 1000
+notify = true
+grouped = true
+sort = "cost"
+budget = 5.00
+kill_on_budget = false
+
+[webhook]
+url = "https://hooks.slack.com/..."
+events = ["NeedsInput", "Finished"]
+
+[context]
+warn_threshold = 75
+```
+
+Show resolved config: `claudectl --config`
+
+## Maintenance
+
+```bash
+claudectl --clean --older-than 7d --dry-run   # Preview cleanup
+claudectl --clean --finished                    # Remove finished session data
+```
+
+## How It Works
+
+claudectl reads Claude Code's local data — no API keys, no network access, no modifications to Claude Code:
+
+- **`~/.claude/sessions/*.json`** — session metadata (PID, session ID, working directory, start time)
+- **`~/.claude/projects/{slug}/*.jsonl`** — conversation logs with token usage and events
+- **`ps`** — CPU%, memory, TTY for each process
+- **`/tmp/claude-{uid}/{slug}/{sessionId}/tasks/`** — subagent task files
+
+Status inference combines multiple signals: `waiting_for_task` events, CPU usage thresholds, `stop_reason` fields, and message recency.
+
+## Troubleshooting
+
+**No sessions found**
+- Ensure Claude Code is running (`claude` in another terminal)
+- Check that `~/.claude/sessions/` contains `.json` files
+- Run `claudectl --log /tmp/claudectl.log` and check the log
+
+**Tab switching doesn't work**
+- Ghostty: should work out of the box
+- Kitty: add `allow_remote_control yes` to `~/.config/kitty/kitty.conf`
+- Warp: grant Accessibility permission in System Settings > Privacy & Security
+- tmux: must be running inside a tmux session
+
+**Cost shows $0.00**
+- claudectl reads token usage from JSONL logs. If the session just started, wait for the first response to complete
+- Check that `~/.claude/projects/` contains `.jsonl` files
+
+**High CPU usage from claudectl itself**
+- Increase the poll interval: `claudectl --interval 3000` (default is 1000ms)
+
+For other issues, run with `--log` and [open an issue](https://github.com/mercurialsolo/claudectl/issues/new) with the log attached.
+
+## FAQ
+
+**Does claudectl modify Claude Code or its files?**
+No. It is read-only. The only writes are to its own history file and log file.
+
+**Does it need an API key?**
+No. It reads local files on disk. No network access required (unless you configure webhooks).
+
+**Does it work with Claude Code in VS Code / JetBrains?**
+It monitors any Claude Code process, regardless of how it was launched. Terminal-specific features (tab switching, input) require a supported terminal.
+
+**Can I use it with a single session?**
+Yes, but the value increases with concurrency. If you run one session, you already know where it is.
+
+**What about Windows?**
+Not yet. macOS and Linux only. WSL support is planned.
+
+## Security
+
+claudectl runs entirely locally. It reads Claude Code's session files from disk and process data from `ps`. It does not:
+- Send data to any server (unless you configure webhooks)
+- Modify Claude Code's files or behavior
+- Require API keys or authentication
+- Run with elevated privileges
+
+Webhook payloads contain session metadata (project name, cost, status). Review your webhook URL and event filters before enabling.
 
 ## Contributing
 
-Contributions are welcome! Here's how to get started:
+Contributions are welcome.
 
 ### Setup
 
@@ -341,22 +390,24 @@ cargo build
 cargo test --all-targets
 ```
 
-### Development workflow
+### Before submitting
 
-1. **Check existing issues** — look for `good first issue` or comment on something you'd like to work on
-2. **Fork and branch** — create a feature branch from `main`
-3. **Write tests** — new functionality should include tests in `tests/integration_tests.rs` or as module-level `#[cfg(test)]` tests
-4. **Pass all checks** before submitting:
-   ```bash
-   cargo test --all-targets
-   cargo clippy --all-targets -- -D warnings
-   cargo fmt --all -- --check
-   ```
-5. **Open a PR** — describe what changed and why. Link to any related issues.
+```bash
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+### Guidelines
+
+- **No new dependencies** without strong justification — the project stays lightweight
+- **Test behavior, not implementation** — focus on what the code does
+- **Match existing patterns** — look at similar code before writing new code
+- **Keep commits atomic** — one logical change per commit
+
+Not all contributions are code. Hooks, docs, config presets, terminal compatibility fixes, and packaging help are all valuable.
 
 ### Architecture
-
-The codebase is organized into focused modules:
 
 | Module | Purpose |
 |--------|---------|
@@ -377,12 +428,11 @@ The codebase is organized into focused modules:
 | `terminals/` | Terminal-specific switching and input injection |
 | `ui/` | TUI rendering (table, detail, help, status bar) |
 
-### Guidelines
+## Community
 
-- **No new dependencies** without strong justification — the project stays lightweight
-- **Test behavior, not implementation** — focus on what the code does, not how
-- **Match existing patterns** — look at similar code in the repo before writing new code
-- **Keep commits atomic** — one logical change per commit with a clear message
+Questions, ideas, or workflows to share? [Start a Discussion](https://github.com/mercurialsolo/claudectl/discussions).
+
+Found a bug? [Open an issue](https://github.com/mercurialsolo/claudectl/issues/new) with `claudectl --version`, your terminal (`echo $TERM_PROGRAM`), and steps to reproduce.
 
 ## License
 

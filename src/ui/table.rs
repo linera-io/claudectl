@@ -230,11 +230,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         // Contextual hints based on selected session state
         let hint = match app.selected_session().map(|s| s.status) {
             Some(SessionStatus::NeedsInput) => {
-                "  y:approve i:type c:compact Tab:go d:kill ?:help".to_string()
+                "  y:approve i:type c:compact R:record Tab:go d:kill ?:help".to_string()
             }
             _ => {
                 format!(
-                    "  q:quit j/k:nav Tab:go y:approve i:input c:compact d:kill s:sort({sort_name}) ?:help"
+                    "  q:quit j/k:nav Tab:go y:approve i:input c:compact R:record d:kill s:sort({sort_name}) ?:help"
                 )
             }
         };

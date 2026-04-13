@@ -2,12 +2,18 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.11.2] - 2026-04-13
+
+### Added
+- **Direct GIF recording** (`--record session.gif`) — specify `.gif` extension and claudectl automatically records asciicast then converts via `agg`. No manual pipeline needed (#65)
+- Falls back gracefully: if `agg` not installed, saves `.cast` with install instructions
+- `.cast` extension still supported for raw asciicast v2 output
+
 ## [0.11.1] - 2026-04-13
 
 ### Added
-- **Live session recording** (`--record session.cast`) — captures pixel-perfect ANSI terminal output via a tee writer. Records exact colors, sparklines, and TUI layout as asciicast v2 format. Compatible with `asciinema play` and convertible to GIF with `agg`. Record real sessions for social media, blog posts, and team updates (#65)
+- **Live session recording** (`--record session.cast`) — captures pixel-perfect ANSI terminal output via a tee writer. Records exact colors, sparklines, and TUI layout as asciicast v2 format
 - **Demo mode** (`--demo`) — deterministic fake sessions for when no real sessions are running. 8 sessions with realistic names, statuses, costs, context levels, conflicts, sparklines, tool usage, and file changes. Works with all output modes: `--demo --list`, `--demo --json`
-- One-command shareable recording: `claudectl --record session.cast && agg session.cast session.gif`
 
 ### Fixed
 - **Worktree-aware conflict detection** — sessions in different git worktrees of the same repo no longer false-positive as conflicts. Uses `git rev-parse --show-toplevel` to resolve each session's worktree identity, cached per unique cwd

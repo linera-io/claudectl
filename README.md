@@ -201,20 +201,18 @@ claudectl --run tasks.json --parallel
 
 ## Session Recording
 
-Record live Claude Code sessions as shareable animated GIFs — perfect for social media, blog posts, and team updates:
+Record live Claude Code sessions as shareable animated GIFs:
 
 ```bash
-# Record your live sessions (captures exact terminal output — colors, sparklines, everything)
+# Record straight to GIF (requires agg: cargo install agg)
+claudectl --record session.gif
+
+# Or record as asciicast for maximum flexibility
 claudectl --record session.cast
-
-# Play it back
 asciinema play session.cast
-
-# Convert to GIF (install: cargo install agg)
-agg session.cast session.gif
 ```
 
-The `--record` flag captures pixel-perfect ANSI output via a tee writer — what you see in the terminal is exactly what gets recorded. Works with real sessions or demo mode.
+Specify `.gif` and claudectl automatically converts via [`agg`](https://github.com/asciinema/agg). Specify `.cast` to save raw asciicast v2 format. The recording captures pixel-perfect ANSI output — colors, sparklines, everything you see live.
 
 ### Demo Mode
 
@@ -222,9 +220,9 @@ No sessions running? Use `--demo` for deterministic fake sessions:
 
 ```bash
 claudectl --demo                         # Animated TUI with 8 fake sessions
+claudectl --demo --record demo.gif       # One-command GIF for your README
 claudectl --demo --list                  # Print as table
 claudectl --demo --json                  # Export as JSON
-claudectl --demo --record demo.cast      # Record a demo for your README
 ```
 
 ## Keybindings

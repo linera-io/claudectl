@@ -291,13 +291,15 @@ fn main() -> io::Result<()> {
         execute!(io::stdout(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
 
-        rec.finish()?;
-        eprintln!("Recording saved to {record_path}");
-        eprintln!("Play: asciinema play {record_path}");
-        eprintln!(
-            "GIF:  agg {record_path} {}.gif",
-            record_path.trim_end_matches(".cast")
-        );
+        match rec.finish() {
+            Ok(()) => {
+                eprintln!("Saved to {record_path}");
+            }
+            Err(e) => {
+                // For GIF conversion failures, the error message contains instructions
+                eprintln!("{e}");
+            }
+        }
 
         result
     } else {

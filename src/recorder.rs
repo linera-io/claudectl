@@ -1,19 +1,54 @@
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Instant;
+
+/// Output format detected from file extension.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OutputFormat {
+    Asciicast, // .cast
+    Gif,       // .gif — records as .cast then converts via agg
+}
+
+impl OutputFormat {
+    pub fn from_path(path: &str) -> Self {
+        if path.ends_with(".gif") {
+            Self::Gif
+        } else {
+            Self::Asciicast
+        }
+    }
+}
 
 /// Records terminal output in asciicast v2 format by teeing all writes.
 /// See: https://docs.asciinema.org/manual/asciicast/v2/
 pub struct Recorder {
     file: File,
     start: Instant,
-    buf: Vec<u8>, // Accumulate writes between flushes
+    buf: Vec<u8>,
+    cast_path: PathBuf,  // Where the .cast file lives
+    final_path: PathBuf, // What the user asked for
+    format: OutputFormat,
 }
 
 impl Recorder {
-    /// Create a new recorder writing to the given path.
+    /// Create a new recorder. If path ends in .gif, records to a temp .cast
+    /// and converts on finish.
     pub fn new(path: &str, width: u16, height: u16) -> io::Result<Self> {
-        let mut file = File::create(path)?;
+        let format = OutputFormat::from_path(path);
+        let final_path = PathBuf::from(path);
+
+        // For GIF output, write the .cast to a temp file
+        let cast_path = match format {
+            OutputFormat::Gif => {
+                let mut tmp = std::env::temp_dir();
+                tmp.push(format!("claudectl-{}.cast", std::process::id()));
+                tmp
+            }
+            OutputFormat::Asciicast => final_path.clone(),
+        };
+
+        let mut file = File::create(&cast_path)?;
 
         let header = serde_json::json!({
             "version": 2,
@@ -35,6 +70,9 @@ impl Recorder {
             file,
             start: Instant::now(),
             buf: Vec::with_capacity(8192),
+            cast_path,
+            final_path,
+            format,
         })
     }
 
@@ -56,10 +94,51 @@ impl Recorder {
         Ok(())
     }
 
-    /// Finish recording.
+    /// Finish recording. For GIF output, converts the .cast file via `agg`.
     pub fn finish(&mut self) -> io::Result<()> {
         self.flush_frame()?;
-        self.file.flush()
+        self.file.flush()?;
+
+        if self.format == OutputFormat::Gif {
+            return self.convert_to_gif();
+        }
+        Ok(())
+    }
+
+    fn convert_to_gif(&self) -> io::Result<()> {
+        let cast = self.cast_path.to_string_lossy();
+        let gif = self.final_path.to_string_lossy();
+
+        // Try agg first (Rust-based, best quality)
+        let result = std::process::Command::new("agg")
+            .args([cast.as_ref(), gif.as_ref()])
+            .output();
+
+        match result {
+            Ok(output) if output.status.success() => {
+                // Clean up temp .cast file
+                let _ = std::fs::remove_file(&self.cast_path);
+                Ok(())
+            }
+            _ => {
+                // agg not found — keep the .cast and tell the user
+                let fallback = self.final_path.with_extension("cast");
+                if self.cast_path != fallback {
+                    std::fs::rename(&self.cast_path, &fallback)?;
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "agg not found — install with: cargo install agg\n\
+                         Saved asciicast to {}\n\
+                         Convert manually: agg {} {}",
+                        fallback.display(),
+                        fallback.display(),
+                        gif
+                    ),
+                ))
+            }
+        }
     }
 }
 

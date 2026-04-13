@@ -56,7 +56,7 @@ pub struct App {
     pub conflict_alerted: HashSet<String>, // cwds that have already triggered a conflict alert
     pub demo_mode: bool,
     pub demo_tick: u32,
-    pub session_recording: Option<(u32, String)>, // (pid, output_path) if recording a specific session
+    pub session_recordings: HashMap<u32, String>, // pid -> output_path for active recordings
 }
 
 #[derive(Default, Clone)]
@@ -151,7 +151,7 @@ impl App {
             conflict_alerted: HashSet::new(),
             demo_mode: false,
             demo_tick: 0,
-            session_recording: None,
+            session_recordings: HashMap::new(),
         };
         app.refresh();
         if !app.sessions.is_empty() {
@@ -1084,31 +1084,28 @@ impl App {
     }
 
     fn toggle_session_recording(&mut self) {
-        if self.session_recording.is_some() {
-            // Stop recording
-            let (pid, path) = self.session_recording.take().unwrap();
-            let name = self
-                .sessions
-                .iter()
-                .find(|s| s.pid == pid)
-                .map(|s| s.display_name().to_string())
-                .unwrap_or_else(|| pid.to_string());
+        let info = self
+            .selected_session()
+            .map(|s| (s.pid, s.display_name().to_string(), s.jsonl_path.is_some()));
+        let Some((pid, name, has_jsonl)) = info else {
+            return;
+        };
+
+        // If already recording this session, stop it
+        if let Some(path) = self.session_recordings.remove(&pid) {
             self.status_msg = format!("Recording stopped → {path} ({name})");
             return;
         }
 
-        // Start recording the selected session
-        if let Some(session) = self.selected_session() {
-            if session.jsonl_path.is_none() {
-                self.status_msg = "Cannot record — no JSONL file for this session".into();
-                return;
-            }
-            let name = session.display_name().to_string();
-            let pid = session.pid;
-            let path = format!("{}-{}.gif", name, pid);
-            self.session_recording = Some((pid, path.clone()));
-            self.status_msg = format!("Recording {name} → {path} (press R to stop)");
+        // Start recording
+        if !has_jsonl {
+            self.status_msg = "Cannot record — no JSONL file for this session".into();
+            return;
         }
+        let path = format!("{}-{}.gif", name, pid);
+        self.session_recordings.insert(pid, path.clone());
+        let count = self.session_recordings.len();
+        self.status_msg = format!("Recording {name} → {path} ({count} active, R to stop)");
     }
 
     fn handle_compact(&mut self) {

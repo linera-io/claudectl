@@ -43,15 +43,26 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(color),
         ));
         frame.render_widget(msg, area);
-    } else if let Some((pid, path)) = &app.session_recording {
-        let name = app
-            .sessions
-            .iter()
-            .find(|s| s.pid == *pid)
-            .map(|s| s.display_name())
-            .unwrap_or("?");
+    } else if !app.session_recordings.is_empty() {
+        let count = app.session_recordings.len();
+        let names: Vec<&str> = app
+            .session_recordings
+            .keys()
+            .filter_map(|pid| {
+                app.sessions
+                    .iter()
+                    .find(|s| s.pid == *pid)
+                    .map(|s| s.display_name())
+            })
+            .collect();
+        let label = names.join(", ");
+        let text = if count == 1 {
+            format!(" REC {label}  (R to stop)")
+        } else {
+            format!(" REC {count} sessions: {label}  (R to stop)")
+        };
         let msg = Paragraph::new(Span::styled(
-            format!(" REC {name} → {path}  (R to stop)"),
+            text,
             Style::default().fg(t.error).add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(msg, area);

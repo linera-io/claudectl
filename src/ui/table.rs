@@ -347,11 +347,17 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
     };
 
     let conflict = app.conflict_pids.contains(&s.pid);
-    let project_text = match (s.subagent_count > 0, conflict) {
-        (true, true) => format!("!! {} +{}", s.display_name(), s.subagent_count),
-        (true, false) => format!("{} +{}", s.display_name(), s.subagent_count),
-        (false, true) => format!("!! {}", s.display_name()),
-        (false, false) => s.display_name().to_string(),
+    let recording = app.session_recordings.contains_key(&s.pid);
+    let prefix = match (conflict, recording) {
+        (true, true) => "!! REC ",
+        (true, false) => "!! ",
+        (false, true) => "REC ",
+        (false, false) => "",
+    };
+    let project_text = if s.subagent_count > 0 {
+        format!("{prefix}{} +{}", s.display_name(), s.subagent_count)
+    } else {
+        format!("{prefix}{}", s.display_name())
     };
 
     let ctx_pct = s.context_percent();

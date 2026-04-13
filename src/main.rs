@@ -788,7 +788,8 @@ fn run_tui<W: io::Write>(
     }
 
     let mut last_tick = Instant::now();
-    let mut sess_rec: Option<session_recorder::SessionRecorder> = None;
+    let mut sess_recs: std::collections::HashMap<u32, session_recorder::SessionRecorder> =
+        std::collections::HashMap::new();
     let term_size = crossterm::terminal::size().unwrap_or((120, 40));
 
     loop {
@@ -803,8 +804,8 @@ fn run_tui<W: io::Write>(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if !app.handle_key(key) {
-                    // Finish session recording on quit
-                    if let Some(ref mut rec) = sess_rec {
+                    // Finish all session recordings on quit
+                    for (_, rec) in sess_recs.iter_mut() {
                         let _ = rec.finish();
                     }
                     return Ok(());
@@ -816,44 +817,52 @@ fn run_tui<W: io::Write>(
             app.tick();
             last_tick = Instant::now();
 
-            // Handle session recording lifecycle
-            match (&app.session_recording, &mut sess_rec) {
-                (Some((pid, path)), None) => {
-                    // Start recording: find the session's JSONL path
-                    if let Some(session) = app.sessions.iter().find(|s| s.pid == *pid) {
-                        if let Some(ref jsonl) = session.jsonl_path {
-                            let name = session.display_name();
-                            match session_recorder::SessionRecorder::new(
-                                jsonl,
-                                path,
-                                name,
-                                term_size.0,
-                                term_size.1,
-                            ) {
-                                Ok(r) => sess_rec = Some(r),
-                                Err(e) => {
-                                    app.status_msg = format!("Record error: {e}");
-                                    app.session_recording = None;
-                                }
+            // Start recorders for newly added recordings
+            for (pid, path) in &app.session_recordings {
+                if sess_recs.contains_key(pid) {
+                    continue;
+                }
+                if let Some(session) = app.sessions.iter().find(|s| s.pid == *pid) {
+                    if let Some(ref jsonl) = session.jsonl_path {
+                        let name = session.display_name();
+                        match session_recorder::SessionRecorder::new(
+                            jsonl,
+                            path,
+                            name,
+                            term_size.0,
+                            term_size.1,
+                        ) {
+                            Ok(r) => {
+                                sess_recs.insert(*pid, r);
+                            }
+                            Err(e) => {
+                                app.status_msg = format!("Record error: {e}");
                             }
                         }
                     }
                 }
-                (Some(_), Some(rec)) => {
-                    // Poll for new events
-                    let _ = rec.poll();
-                }
-                (None, Some(rec)) => {
-                    // Stopped: finish recording
+            }
+
+            // Poll all active recorders
+            for (_, rec) in sess_recs.iter_mut() {
+                let _ = rec.poll();
+            }
+
+            // Finish recorders that were removed from app.session_recordings
+            let stopped: Vec<u32> = sess_recs
+                .keys()
+                .filter(|pid| !app.session_recordings.contains_key(pid))
+                .copied()
+                .collect();
+            for pid in stopped {
+                if let Some(mut rec) = sess_recs.remove(&pid) {
                     match rec.finish() {
                         Ok(()) => {}
                         Err(e) => {
                             app.status_msg = format!("{e}");
                         }
                     }
-                    sess_rec = None;
                 }
-                (None, None) => {}
             }
         }
     }

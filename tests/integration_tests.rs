@@ -569,3 +569,125 @@ fn context_bar_formatting() {
     assert!(bar.contains("█████"));
     assert!(bar.contains("░░░░░"));
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Session Recorder Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn session_recorder_produces_highlight_reel() {
+    use claudectl::session_recorder::SessionRecorder;
+
+    // Create a JSONL with realistic events
+    let mut jsonl_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(jsonl_file, r#"{{"message":{{"type":"assistant","content":[{{"type":"text","text":"I'll fix the authentication bug by updating the middleware."}}],"stop_reason":"tool_use"}}}}"#).unwrap();
+    writeln!(jsonl_file, r#"{{"message":{{"type":"assistant","content":[{{"type":"tool_use","name":"Edit","input":{{"file_path":"/src/auth.rs","old_string":"fn check()","new_string":"fn check_auth(token: &str)"}}}}],"stop_reason":"tool_use"}}}}"#).unwrap();
+    writeln!(jsonl_file, r#"{{"message":{{"type":"assistant","content":[{{"type":"tool_use","name":"Bash","input":{{"command":"cargo test"}}}}],"stop_reason":"tool_use"}}}}"#).unwrap();
+    writeln!(jsonl_file, r#"{{"message":{{"type":"assistant","content":[{{"type":"tool_result","content":"test result: ok. 12 passed","is_error":false}}]}}}}"#).unwrap();
+    writeln!(jsonl_file, r#"{{"message":{{"type":"assistant","content":[{{"type":"tool_use","name":"Read","input":{{"file_path":"/src/main.rs"}}}}],"stop_reason":"tool_use"}}}}"#).unwrap();
+    jsonl_file.flush().unwrap();
+
+    let output_file = tempfile::NamedTempFile::new().unwrap();
+    let output_path = output_file.path().to_str().unwrap().to_string() + ".cast";
+
+    let mut rec = SessionRecorder::new(
+        jsonl_file.path(),
+        &output_path,
+        "test-project",
+        120,
+        40,
+    )
+    .expect("Failed to create session recorder");
+
+    let had_events = rec.poll().expect("Failed to poll");
+    assert!(had_events, "Should have found events in the JSONL");
+
+    rec.finish().expect("Failed to finish recording");
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+
+    // First line is the asciicast header
+    assert!(lines[0].contains("\"version\":2"), "Should have asciicast v2 header");
+    assert!(lines[0].contains("test-project"), "Header should contain session name");
+
+    // Should have multiple frames (header + title card + events + finish)
+    assert!(lines.len() >= 4, "Should have at least 4 lines (header + title + events + finish), got {}", lines.len());
+
+    // Should contain the Edit tool (it's a highlight event)
+    let full = content.to_string();
+    assert!(full.contains("Edit"), "Should contain Edit tool event");
+    assert!(full.contains("auth.rs"), "Should contain edited file name");
+
+    // Should contain the Bash tool
+    assert!(full.contains("Bash"), "Should contain Bash tool event");
+    assert!(full.contains("cargo test"), "Should contain bash command");
+
+    // Should NOT contain Read tool (filtered out of highlights)
+    // Read events produce ToolUse but is_highlight_tool("Read") returns false
+    // so the frame won't be emitted. Check that "Read" doesn't appear as a tool header.
+    // (It may appear in other text, so we check for the specific ANSI-formatted tool line)
+    let read_tool_lines: Vec<&&str> = lines.iter().filter(|l| l.contains("📖") && l.contains("Read")).collect();
+    assert!(read_tool_lines.is_empty(), "Read tool should be filtered from highlights");
+
+    // Should contain final summary
+    assert!(full.contains("complete"), "Should contain completion message");
+
+    // Clean up
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn session_recorder_empty_jsonl() {
+    use claudectl::session_recorder::SessionRecorder;
+
+    let jsonl_file = tempfile::NamedTempFile::new().unwrap();
+    let output_file = tempfile::NamedTempFile::new().unwrap();
+    let output_path = output_file.path().to_str().unwrap().to_string() + ".cast";
+
+    let mut rec = SessionRecorder::new(
+        jsonl_file.path(),
+        &output_path,
+        "empty-session",
+        80,
+        24,
+    )
+    .expect("Failed to create recorder");
+
+    let had_events = rec.poll().expect("Failed to poll");
+    assert!(!had_events, "Empty JSONL should produce no events");
+
+    rec.finish().expect("Failed to finish");
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+    assert!(content.contains("\"version\":2"), "Should still have header");
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn recorder_cast_file_creation() {
+    use claudectl::recorder::Recorder;
+
+    let output_file = tempfile::NamedTempFile::new().unwrap();
+    let output_path = output_file.path().to_str().unwrap().to_string() + ".cast";
+
+    let mut rec = Recorder::new(&output_path, 120, 40).expect("Failed to create recorder");
+    rec.capture(b"hello world");
+    rec.flush_frame().expect("Failed to flush");
+    rec.capture(b"second frame");
+    rec.flush_frame().expect("Failed to flush");
+    rec.finish().expect("Failed to finish");
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert!(lines[0].contains("\"version\":2"));
+    assert!(lines[0].contains("\"width\":120"));
+    assert!(lines[0].contains("\"height\":40"));
+    assert!(lines.len() == 3, "Should have header + 2 frames, got {}", lines.len());
+    assert!(lines[1].contains("hello world"));
+    assert!(lines[2].contains("second frame"));
+
+    let _ = std::fs::remove_file(&output_path);
+}

@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.10.1] - 2026-04-13
+
+### Fixed
+- **Worktree-aware conflict detection** — sessions in different git worktrees of the same repo no longer false-positive as conflicts. Uses `git rev-parse --show-toplevel` to resolve each session's worktree identity, cached per unique cwd.
+
 ## [0.10.0] - 2026-04-13
 
 ### Added

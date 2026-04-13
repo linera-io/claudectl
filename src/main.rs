@@ -822,9 +822,11 @@ fn run_tui<W: io::Write>(
                     // Start recording: find the session's JSONL path
                     if let Some(session) = app.sessions.iter().find(|s| s.pid == *pid) {
                         if let Some(ref jsonl) = session.jsonl_path {
+                            let name = session.display_name();
                             match session_recorder::SessionRecorder::new(
                                 jsonl,
                                 path,
+                                name,
                                 term_size.0,
                                 term_size.1,
                             ) {

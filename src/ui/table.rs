@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let launch_hint = if crate::terminals::can_launch_session() {
             "  Press n for the launch wizard, or start claude in another terminal."
         } else {
-            "  Start claude in GNOME Terminal, tmux, Kitty, WezTerm, or another terminal."
+            "  Start claude in GNOME Terminal, tmux, Kitty, WezTerm, Windows Terminal on WSL, or another terminal."
         };
         let empty_lines = vec![
             Line::from(""),

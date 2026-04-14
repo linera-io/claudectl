@@ -10,6 +10,7 @@ mod tmux;
 #[cfg(target_os = "macos")]
 mod warp;
 mod wezterm;
+mod windows_terminal;
 
 use crate::session::ClaudeSession;
 use std::path::PathBuf;
@@ -117,6 +118,7 @@ pub enum Terminal {
     ITerm2,
     Kitty,
     WezTerm,
+    WindowsTerminal,
     Apple,
     Tmux,
     Unknown(String),
@@ -130,6 +132,7 @@ fn terminal_name(t: &Terminal) -> &str {
         Terminal::ITerm2 => "iTerm2",
         Terminal::Kitty => "Kitty",
         Terminal::WezTerm => "WezTerm",
+        Terminal::WindowsTerminal => "Windows Terminal",
         Terminal::Apple => "Apple Terminal",
         Terminal::Tmux => "tmux",
         Terminal::Unknown(name) => name,
@@ -148,7 +151,7 @@ fn platform_name() -> String {
     platform_label(std::env::consts::OS, is_wsl())
 }
 
-fn environment_notes(is_wsl: bool, has_wt_interop: bool) -> Vec<String> {
+fn environment_notes(is_wsl: bool, has_windows_terminal_bridge: bool) -> Vec<String> {
     if !is_wsl {
         return Vec::new();
     }
@@ -156,18 +159,18 @@ fn environment_notes(is_wsl: bool, has_wt_interop: bool) -> Vec<String> {
     let mut notes = vec![
         "WSL detected. Linux session discovery should work normally inside the distro."
             .to_string(),
-        "For reliable launch, switch, input, and approval automation in WSL today, prefer tmux inside WSL."
+        "For reliable switch, input, and approval automation in WSL today, prefer tmux or Kitty inside WSL."
             .to_string(),
     ];
 
-    if has_wt_interop {
+    if has_windows_terminal_bridge {
         notes.push(
-            "Windows Terminal interop (`wt.exe`) is reachable from WSL, but direct Windows Terminal control is not implemented yet."
+            "Windows Terminal launch is available from WSL through `cmd.exe /c wt.exe`, but tab switching and input automation still rely on tmux or Kitty."
                 .to_string(),
         );
     } else {
         notes.push(
-            "Windows Terminal interop (`wt.exe`) was not detected in PATH, so claudectl currently relies on Linux-native terminals inside WSL."
+            "Windows Terminal launch is not available from this WSL shell, so claudectl currently relies on Linux-native terminals inside WSL."
                 .to_string(),
         );
     }
@@ -175,15 +178,28 @@ fn environment_notes(is_wsl: bool, has_wt_interop: bool) -> Vec<String> {
     notes
 }
 
+fn windows_terminal_bridge_ready() -> bool {
+    command_ready("cmd.exe") && command_ready("wt.exe")
+}
+
 fn wsl_interop_check(is_wsl: bool) -> Option<DoctorCheck> {
     if !is_wsl {
         return None;
     }
 
-    if command_ready("wt.exe") {
+    if windows_terminal_bridge_ready() {
         Some(DoctorCheck::ready(
             "Windows Terminal interop",
-            "`wt.exe` is reachable from WSL.",
+            "`cmd.exe /c wt.exe` is reachable from WSL.",
+        ))
+    } else if !command_ready("cmd.exe") {
+        Some(DoctorCheck::blocked(
+            "Windows Terminal interop",
+            "`cmd.exe` is not on PATH from this WSL environment.",
+            Some(
+                "Enable WSL Windows interop or reopen this distro from a normal WSL shell."
+                    .to_string(),
+            ),
         ))
     } else {
         Some(DoctorCheck::blocked(
@@ -222,7 +238,7 @@ fn is_wsl() -> bool {
 
 fn supported_actions(terminal: &Terminal) -> Vec<TerminalAction> {
     match terminal {
-        Terminal::Gnome => vec![TerminalAction::Launch],
+        Terminal::Gnome | Terminal::WindowsTerminal => vec![TerminalAction::Launch],
         Terminal::Kitty | Terminal::Tmux => vec![
             TerminalAction::Launch,
             TerminalAction::Switch,
@@ -269,6 +285,10 @@ pub fn detect_terminal() -> Terminal {
         || ancestor_process_contains("gnome-terminal")
     {
         return Terminal::Gnome;
+    }
+
+    if is_wsl() && std::env::var_os("WT_SESSION").is_some() {
+        return Terminal::WindowsTerminal;
     }
 
     match std::env::var("TERM_PROGRAM").as_deref() {
@@ -469,7 +489,7 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
             .to_string(),
         "`n` and `--new` use the same launch capability shown here.".to_string(),
     ];
-    notes.extend(environment_notes(is_wsl, command_ready("wt.exe")));
+    notes.extend(environment_notes(is_wsl, windows_terminal_bridge_ready()));
 
     match terminal {
         Terminal::Gnome => {
@@ -514,6 +534,57 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
 
             notes.push(
                 "GNOME Terminal launch works on Linux and was smoke-tested under Docker/X11. Remote focus/input automation is intentionally disabled until window targeting is reliable."
+                    .to_string(),
+            );
+        }
+        Terminal::WindowsTerminal => {
+            let cmd_check = binary_check("cmd.exe");
+            let cmd_ready = cmd_check.status == DoctorStatus::Ready;
+            prerequisites.push(cmd_check);
+
+            let wt_check = binary_check("wt.exe");
+            let wt_ready = wt_check.status == DoctorStatus::Ready;
+            prerequisites.push(wt_check);
+
+            let launch_status = if cmd_ready && wt_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let launch_detail = if launch_status == DoctorStatus::Ready {
+                "Windows Terminal can open a new WSL tab in the current window and run `claude` there."
+            } else {
+                "Windows Terminal launch needs both `cmd.exe` and `wt.exe` reachable from this WSL shell."
+            };
+            let launch_fix = Some(
+                "Enable WSL Windows interop, ensure Windows Terminal is installed, then rerun `claudectl --doctor`."
+                    .to_string(),
+            );
+            actions.push(action_check(
+                TerminalAction::Launch,
+                launch_status,
+                launch_detail,
+                launch_fix.clone(),
+            ));
+
+            for action in [
+                TerminalAction::Switch,
+                TerminalAction::Input,
+                TerminalAction::Approve,
+            ] {
+                actions.push(action_check(
+                    action,
+                    DoctorStatus::Unsupported,
+                    "Windows Terminal launch works from WSL, but remote tab switching and input automation are not implemented there yet.",
+                    Some(
+                        "Use tmux or Kitty inside WSL when you need switch/input/approve automation."
+                            .to_string(),
+                    ),
+                ));
+            }
+
+            notes.push(
+                "Windows Terminal support is WSL-only and currently covers visible launch into a new tab, not remote control of existing tabs."
                     .to_string(),
             );
         }
@@ -773,7 +844,7 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
                     action,
                     DoctorStatus::Unsupported,
                     format!(
-                        "No integration is configured for `{name}`. Supported terminals: GNOME Terminal, tmux, Kitty, WezTerm, Ghostty, Warp, iTerm2, Terminal.app."
+                        "No integration is configured for `{name}`. Supported terminals: GNOME Terminal, Windows Terminal on WSL, tmux, Kitty, WezTerm, Ghostty, Warp, iTerm2, Terminal.app."
                     ),
                     None::<String>,
                 ));
@@ -879,8 +950,9 @@ pub fn launch_session(
         Terminal::Kitty => kitty::launch(cwd, prompt, resume),
         Terminal::Tmux => tmux::launch(cwd, prompt, resume),
         Terminal::WezTerm => wezterm::launch(cwd, prompt, resume),
+        Terminal::WindowsTerminal => windows_terminal::launch(cwd, prompt, resume),
         other => Err(format!(
-            "Visible session launch is not supported in {}. Start `claude` manually, use tmux/Kitty/WezTerm/GNOME Terminal, or run `claudectl --doctor` for setup guidance.",
+            "Visible session launch is not supported in {}. Start `claude` manually, use tmux/Kitty/WezTerm/GNOME Terminal/Windows Terminal on WSL, or run `claudectl --doctor` for setup guidance.",
             terminal_name(&other)
         )),
     }
@@ -907,6 +979,10 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
         Terminal::Kitty => kitty::switch(session),
         Terminal::WezTerm => wezterm::switch(session),
         Terminal::Tmux => tmux::switch(session),
+        Terminal::WindowsTerminal => Err(
+            "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for session switching."
+                .into(),
+        ),
         #[cfg(target_os = "macos")]
         Terminal::Ghostty => ghostty::switch(session),
         #[cfg(target_os = "macos")]
@@ -916,7 +992,7 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         Terminal::Apple => apple::switch(session),
         Terminal::Unknown(name) => Err(format!(
-            "Unsupported terminal: {name}. Supported: GNOME Terminal, Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux. Run `claudectl --doctor` for details."
+            "Unsupported terminal: {name}. Supported: GNOME Terminal, Windows Terminal on WSL (launch only), Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux. Run `claudectl --doctor` for details."
         )),
         #[cfg(not(target_os = "macos"))]
         _ => Err("Terminal switching not supported on this platform. Run `claudectl --doctor` for details.".into()),
@@ -930,6 +1006,10 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
         Terminal::Ghostty => ghostty::send_input(session, text),
         Terminal::Kitty => kitty::send_input(session, text),
         Terminal::Tmux => tmux::send_input(session, text),
+        Terminal::WindowsTerminal => Err(
+            "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for session input automation."
+                .into(),
+        ),
         #[cfg(target_os = "macos")]
         Terminal::Warp => warp::send_input(session, text),
         #[cfg(target_os = "macos")]
@@ -954,6 +1034,10 @@ pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
         Terminal::Ghostty => ghostty::approve(session),
         Terminal::Kitty => kitty::approve(session),
         Terminal::Tmux => tmux::send_input(session, "\r"),
+        Terminal::WindowsTerminal => Err(
+            "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for approval automation."
+                .into(),
+        ),
         #[cfg(target_os = "macos")]
         Terminal::Warp => warp::approve(session),
         #[cfg(target_os = "macos")]
@@ -1009,6 +1093,12 @@ mod tests {
     }
 
     #[test]
+    fn help_summary_lists_windows_terminal_launch() {
+        let summary = help_capability_summary_for(&Terminal::WindowsTerminal);
+        assert_eq!(summary, "Current terminal: Windows Terminal (launch)");
+    }
+
+    #[test]
     fn doctor_report_for_unknown_terminal_marks_actions_unsupported() {
         let report = doctor_report_for(Terminal::Unknown("foot".into()));
         assert_eq!(report.actions.len(), 4);
@@ -1030,7 +1120,7 @@ mod tests {
     fn environment_notes_describe_wsl_interop_state() {
         let notes = environment_notes(true, true);
         assert!(notes.iter().any(|note| note.contains("WSL detected")));
-        assert!(notes.iter().any(|note| note.contains("wt.exe")));
+        assert!(notes.iter().any(|note| note.contains("cmd.exe /c wt.exe")));
     }
 
     #[test]

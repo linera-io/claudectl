@@ -218,7 +218,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `i` | Input mode (type text to session) |
 | `d`/`x` | Kill session (double-tap to confirm) |
 | `a` | Toggle auto-approve (double-tap to confirm) |
-| `n` | Launch wizard for cwd, prompt, and resume (GNOME Terminal, `tmux`, Kitty, WezTerm) |
+| `n` | Launch wizard for cwd, prompt, and resume (GNOME Terminal, `tmux`, Kitty, WezTerm, Windows Terminal on WSL) |
 | `g` | Toggle grouped view by project |
 | `s` | Cycle sort column |
 | `f` | Cycle status filter |
@@ -242,11 +242,12 @@ Use `claudectl --doctor` to check the current terminal's launch/switch/input sup
 | **Kitty** | Yes | Yes | Yes | Yes | `kitty @` remote control |
 | **tmux** | Yes | Yes | Yes | Yes | `tmux` pane/window control |
 | **WezTerm** | Yes | Yes | - | - | `wezterm cli` launch + pane activation |
+| **Windows Terminal (WSL)** | Yes | - | - | - | Visible launch via `cmd.exe /c wt.exe` into a new WSL tab |
 | **Warp** | - | Yes | Yes | Yes | Command Palette + System Events |
 | **iTerm2** | - | Yes | Yes | Yes | AppleScript + System Events |
 | **Terminal.app** | - | Yes | Yes | Yes | AppleScript + System Events |
 
-**Notes:** Run `claudectl --doctor` from the same terminal family you use for Claude. It reports the supported launch/switch/input/approve actions plus any missing prerequisites. GNOME Terminal launch is verified on Linux under Docker/X11, but remote switch/input/approve automation is intentionally unsupported there. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux support assumes claudectl can reach the same tmux server as the Claude panes.
+**Notes:** Run `claudectl --doctor` from the same terminal family you use for Claude. It reports the supported launch/switch/input/approve actions plus any missing prerequisites. GNOME Terminal launch is verified on Linux under Docker/X11, but remote switch/input/approve automation is intentionally unsupported there. Windows Terminal support is WSL-only and currently covers visible launch, not remote tab control. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux support assumes claudectl can reach the same tmux server as the Claude panes.
 
 ### Themes
 - Dark, light, and none (`--theme`)
@@ -360,6 +361,7 @@ Status inference combines multiple signals: `waiting_for_task` events, CPU usage
 **Tab switching doesn't work**
 - Run `claudectl --doctor` first to see the detected terminal, missing prerequisites, and supported actions
 - GNOME Terminal: launch support is available; use tmux or Kitty if you need remote switching or input automation
+- Windows Terminal on WSL: launch support is available when `cmd.exe /c wt.exe` works; use tmux or Kitty inside WSL for switching and input automation
 - Ghostty: should work out of the box
 - Kitty: add `allow_remote_control yes` to `~/.config/kitty/kitty.conf`
 - Warp/iTerm2/Terminal.app: grant Automation/Accessibility permission in System Settings > Privacy & Security
@@ -389,7 +391,7 @@ It monitors any Claude Code process, regardless of how it was launched. Terminal
 Yes, but the value increases with concurrency. If you run one session, you already know where it is.
 
 **What about Windows?**
-Native Windows is not supported yet. WSL detection is now wired into `claudectl --doctor`, and today the recommended setup is WSL plus `tmux` for reliable launch/switch/input automation.
+Native Windows is not supported yet. WSL plus Windows Terminal can now launch new Claude tabs through `claudectl --new` or `n`, and WSL plus `tmux` remains the recommended setup when you also want switch/input/approve automation.
 
 ## Security
 

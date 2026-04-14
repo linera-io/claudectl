@@ -61,6 +61,18 @@ From the dashboard you can:
 - Press `d` to kill a runaway session
 - Press `?` for all keybindings
 
+## Current Release
+
+Current crate version: **v0.16.0**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+Recent upgrades now reflected in this README:
+- GNOME Terminal now supports visible `--new` launches on Linux, and `claudectl --doctor` reports launch, switch, input, and approve support for the current terminal
+- Parent sessions now expand into active subagent rows in the dashboard while keeping completed-subagent rollups in detail and JSON views
+- `--run` orchestration now writes live `status.json`, final `summary.json`, and per-attempt stdout/stderr logs under `.claudectl-runs/`, with retries, dependency skips, and non-zero exit handling
+- Missing transcript telemetry now shows as explicit `Unknown` state instead of looking like idle zero-cost sessions
+- Model pricing and context limits can be overridden per model via `[models."..."]` config sections when you want verified local cost estimates
+
 ## Why This Exists
 
 Claude Code is excellent at execution. It is not built to supervise many concurrent sessions.
@@ -101,7 +113,7 @@ claudectl --list            # Print session table and exit
 claudectl --json            # Machine-readable output for scripting
 claudectl --doctor          # Diagnose terminal control support and setup
 claudectl --filter-status needs-input --search api
-claudectl --watch --focus attention
+claudectl --watch --focus attention   # other values: over-budget, high-context, unknown-telemetry, conflict
 ```
 
 ### Control spend
@@ -118,6 +130,8 @@ Weekly and daily cost aggregation shows in the title bar. Use `--history` and `-
 claudectl --history --since 24h
 claudectl --stats --since 7d
 ```
+
+Unknown models are marked as fallback estimates until you override pricing and context in config.
 
 ### Catch blockers instantly
 
@@ -242,21 +256,21 @@ Use `claudectl --doctor` to check the current terminal's launch/switch/input sup
 
 ### Terminal Support
 
-| Terminal | Tab Switch | Approve/Input | Method |
-|----------|-----------|---------------|--------|
-| **GNOME Terminal** | - | - | Visible launch via `gnome-terminal --window` |
-| **Ghostty** | Background | Background | Native AppleScript API |
-| **Kitty** | Background | Background | `kitty @` remote control |
-| **tmux** | Background | Background | `tmux send-keys` |
-| **WezTerm** | Background | - | CLI JSON API |
-| **Warp** | Focus switch | Focus switch | Command Palette + System Events |
-| **iTerm2** | Focus switch | Focus switch | AppleScript + System Events |
-| **Terminal.app** | Focus switch | Focus switch | AppleScript + System Events |
+| Terminal | Launch (`--new` / `n`) | Switch | Input | Approve | Notes |
+|----------|-------------------------|--------|-------|---------|-------|
+| **GNOME Terminal** | Yes | - | - | - | Visible launch via `gnome-terminal --window` on Linux |
+| **Ghostty** | - | Yes | Yes | Yes | Native AppleScript API, no Kitty-style remote control setup |
+| **Kitty** | Yes | Yes | Yes | Yes | `kitty @` remote control |
+| **tmux** | Yes | Yes | Yes | Yes | `tmux` pane/window control |
+| **WezTerm** | Yes | Yes | - | - | `wezterm cli` launch + pane activation |
+| **Warp** | - | Yes | Yes | Yes | Command Palette + System Events |
+| **iTerm2** | - | Yes | Yes | Yes | AppleScript + System Events |
+| **Terminal.app** | - | Yes | Yes | Yes | AppleScript + System Events |
 
-**Notes:** GNOME Terminal launch works on Linux and is verified under Docker/X11, but remote focus/input automation is intentionally not exposed yet. Ghostty has the best support on macOS with no extra config. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux is auto-detected. Run `claudectl --doctor` from the same terminal you use for Claude to verify the current setup.
+**Notes:** Run `claudectl --doctor` from the same terminal family you use for Claude. It reports the supported launch/switch/input/approve actions plus any missing prerequisites. GNOME Terminal launch is verified on Linux under Docker/X11, but remote switch/input/approve automation is intentionally unsupported there. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux support assumes claudectl can reach the same tmux server as the Claude panes.
 
 ### Themes
-- Dark, light, and monochrome (`--theme`)
+- Dark, light, and none (`--theme`)
 - Respects `NO_COLOR` environment variable
 
 ## Event Hooks
@@ -311,12 +325,16 @@ claudectl loads settings from `~/.config/claudectl/config.toml` (global) and `.c
 
 ```toml
 [defaults]
-interval = 1000
+interval = 2000
 notify = true
 grouped = true
 sort = "cost"
 budget = 5.00
 kill_on_budget = false
+
+[budget]
+daily_limit = 25.00
+weekly_limit = 100.00
 
 [webhook]
 url = "https://hooks.slack.com/..."
@@ -373,7 +391,7 @@ Status inference combines multiple signals: `waiting_for_task` events, CPU usage
 - Check that `~/.claude/projects/` contains `.jsonl` files
 
 **High CPU usage from claudectl itself**
-- Increase the poll interval: `claudectl --interval 3000` (default is 1000ms)
+- Increase the poll interval: `claudectl --interval 3000` (default is 2000ms)
 
 For other issues, run with `--log` and [open an issue](https://github.com/mercurialsolo/claudectl/issues/new) with the log attached.
 

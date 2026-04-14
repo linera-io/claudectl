@@ -2,7 +2,7 @@
 
 **Mission control for Claude Code.**
 
-Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked agents, control token burn, approve actions, and orchestrate work across GNOME Terminal, tmux, iTerm2, Ghostty, Warp, and more.
+Run 3, 5, or 8 Claude Code sessions without tab hunting. `claudectl` shows which agent is blocked, burning budget, waiting for approval, or stalled, and lets you intervene from one terminal dashboard across GNOME Terminal, tmux, iTerm2, Ghostty, Warp, and more.
 
 [![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)
@@ -12,7 +12,9 @@ Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked a
 
 <sub>~1 MB binary. Sub-50ms startup. Zero config required.</sub>
 
-[![claudectl demo](https://asciinema.org/a/bovJrUq2vEmC08NU.svg)](https://asciinema.org/a/bovJrUq2vEmC08NU)
+[Website](https://mercurialsolo.github.io/claudectl/) • [Demo](https://asciinema.org/a/bovJrUq2vEmC08NU) • [Releases](https://github.com/mercurialsolo/claudectl/releases)
+
+README is the quick technical entry point. Use the [landing page](https://mercurialsolo.github.io/claudectl/) for the full overview, screenshots, and shareable launch surface.
 
 ## Install
 
@@ -48,11 +50,11 @@ cd claudectl && cargo install --path .
 ## Quickstart
 
 ```bash
-# Make sure you have at least one Claude Code session running, then:
-claudectl
+claudectl --demo   # First run, screenshots, and zero-risk evaluation
+claudectl          # Live dashboard for real Claude Code sessions
 ```
 
-That's it. claudectl auto-discovers all running Claude Code sessions and shows a live dashboard. No configuration needed.
+Use `--demo` if you want to evaluate the UI or record assets without any live Claude Code sessions. Use plain `claudectl` when you already have at least one Claude Code session running. No configuration needed.
 
 From the dashboard you can:
 - Press `y` to approve a blocked permission prompt
@@ -61,30 +63,7 @@ From the dashboard you can:
 - Press `d` to kill a runaway session
 - Press `?` for all keybindings
 
-## Current Release
-
-Current crate version: **v0.16.0**.
-See [CHANGELOG.md](CHANGELOG.md) for the full release history.
-
-Recent upgrades now reflected in this README:
-- GNOME Terminal now supports visible `--new` launches on Linux, and `claudectl --doctor` reports launch, switch, input, and approve support for the current terminal
-- Parent sessions now expand into active subagent rows in the dashboard while keeping completed-subagent rollups in detail and JSON views
-- `--run` orchestration now writes live `status.json`, final `summary.json`, and per-attempt stdout/stderr logs under `.claudectl-runs/`, with retries, dependency skips, and non-zero exit handling
-- Missing transcript telemetry now shows as explicit `Unknown` state instead of looking like idle zero-cost sessions
-- Model pricing and context limits can be overridden per model via `[models."..."]` config sections when you want verified local cost estimates
-
-## Why This Exists
-
-Claude Code is excellent at execution. It is not built to supervise many concurrent sessions.
-
-When you run 3, 5, or 8 sessions across terminals, real problems appear:
-
-- **Which session is blocked?** One is waiting for approval and you don't know which tab.
-- **Which session is burning money?** You can't see token spend without switching to each one.
-- **Which session needs input?** A permission prompt has been sitting for 10 minutes.
-- **Which session is stalled?** It looks busy but CPU is zero.
-
-claudectl is the operator layer that answers these questions from one pane.
+See [CHANGELOG.md](CHANGELOG.md) for release history and [the landing page](https://mercurialsolo.github.io/claudectl/) for the higher-level product overview.
 
 ## Claude Code vs claudectl
 

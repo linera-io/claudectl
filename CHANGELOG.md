@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.17.0] - 2026-04-15
+
+### Added
+- Rule-based auto-actions: configure `[rules.*]` sections in `.claudectl.toml` to automatically approve, deny, send messages, or terminate sessions based on tool name, command pattern, project, cost threshold, and error state
+- Pending tool tracking: sessions now expose the tool name and command awaiting approval for rule matching and display
+- Deny-first precedence: deny rules always override approve rules regardless of config order
+
 ## [0.16.2] - 2026-04-14
 
 ### Fixed

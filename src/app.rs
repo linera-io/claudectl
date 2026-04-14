@@ -294,6 +294,9 @@ pub struct App {
     pub demo_mode: bool,
     pub demo_tick: u32,
     pub session_recordings: HashMap<u32, String>, // pid -> output_path for active recordings
+    pub rules: Vec<crate::rules::AutoRule>,
+    pub auto_actions_fired: HashMap<u32, std::time::Instant>, // Debounce: pid -> last action time
+    pub last_rule_action: Option<String>,                     // Last auto-action status for display
 }
 
 #[derive(Default, Clone)]
@@ -394,6 +397,9 @@ impl App {
             demo_mode: false,
             demo_tick: 0,
             session_recordings: HashMap::new(),
+            rules: Vec::new(),
+            auto_actions_fired: HashMap::new(),
+            last_rule_action: None,
         };
         app.refresh();
         if app.visible_session_count() > 0 {
@@ -846,7 +852,7 @@ impl App {
         }
 
         self.refresh();
-        self.run_auto_approve();
+        self.run_auto_actions();
 
         // Refresh weekly summary every ~30s (15 ticks at 2s interval)
         self.weekly_summary_tick += 1;
@@ -979,21 +985,74 @@ impl App {
         }
     }
 
-    fn run_auto_approve(&mut self) {
-        let pids_to_approve: Vec<u32> = self
+    fn run_auto_actions(&mut self) {
+        // Legacy per-PID auto-approve (toggled with 'a' key)
+        let legacy_pids: Vec<u32> = self
             .sessions
             .iter()
             .filter(|s| s.status == SessionStatus::NeedsInput && self.auto_approve.contains(&s.pid))
             .map(|s| s.pid)
             .collect();
 
-        for pid in pids_to_approve {
+        for pid in legacy_pids {
             if let Some(session) = self.sessions.iter().find(|s| s.pid == pid) {
                 match terminals::approve_session(session) {
                     Ok(()) => self.status_msg = format!("Auto-approved {}", session.display_name()),
                     Err(e) => self.status_msg = format!("Auto-approve error: {e}"),
                 }
             }
+        }
+
+        // Rule-based auto-actions
+        if self.rules.is_empty() {
+            return;
+        }
+
+        let candidates: Vec<u32> = self
+            .sessions
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    SessionStatus::NeedsInput | SessionStatus::WaitingInput
+                )
+            })
+            .filter(|s| !self.auto_approve.contains(&s.pid)) // Legacy takes priority
+            .map(|s| s.pid)
+            .collect();
+
+        for pid in candidates {
+            // Debounce: don't re-fire within 3 seconds for same PID
+            if let Some(last) = self.auto_actions_fired.get(&pid) {
+                if last.elapsed().as_secs() < 3 {
+                    continue;
+                }
+            }
+
+            let session = match self.sessions.iter().find(|s| s.pid == pid) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let result = crate::rules::evaluate(&self.rules, session);
+            let Some(rule_match) = result else {
+                continue;
+            };
+
+            let msg = crate::rules::execute(&rule_match, session);
+            match msg {
+                Ok(status) => {
+                    crate::logger::log("AUTO", &status);
+                    self.last_rule_action = Some(status.clone());
+                    self.status_msg = status;
+                }
+                Err(e) => {
+                    self.status_msg = format!("Rule error: {e}");
+                }
+            }
+
+            self.auto_actions_fired
+                .insert(pid, std::time::Instant::now());
         }
     }
 

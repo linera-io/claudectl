@@ -154,8 +154,23 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                 }
 
                                 for block in message.content {
-                                    if let TranscriptBlock::ToolUse { name, input } = block {
-                                        record_tool_usage(&name, &input, session);
+                                    match &block {
+                                        TranscriptBlock::ToolUse { name, input } => {
+                                            record_tool_usage(name, input, session);
+                                            // Track pending tool for rule-based auto-actions
+                                            session.pending_tool_name = Some(name.clone());
+                                            session.pending_tool_input = input
+                                                .get("command")
+                                                .and_then(|v| v.as_str())
+                                                .map(|s| s.to_string());
+                                        }
+                                        TranscriptBlock::ToolResult { is_error, .. } => {
+                                            session.last_tool_error = *is_error;
+                                            // Tool was executed — no longer pending
+                                            session.pending_tool_name = None;
+                                            session.pending_tool_input = None;
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }

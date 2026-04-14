@@ -36,6 +36,23 @@ fn terminal_name(t: &Terminal) -> &str {
     }
 }
 
+pub(crate) fn build_claude_args(prompt: Option<&str>, resume: Option<&str>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(resume_id) = resume {
+        args.push("--resume".to_string());
+        args.push(resume_id.to_string());
+    }
+    if let Some(prompt_text) = prompt {
+        args.push("-p".to_string());
+        args.push(prompt_text.to_string());
+    }
+    args
+}
+
+pub(crate) fn shell_escape(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\"'\"'"))
+}
+
 pub fn detect_terminal() -> Terminal {
     if std::env::var("TMUX").is_ok() {
         return Terminal::Tmux;
@@ -50,6 +67,30 @@ pub fn detect_terminal() -> Terminal {
         Ok("Apple_Terminal") => Terminal::Apple,
         Ok(other) => Terminal::Unknown(other.to_string()),
         Err(_) => Terminal::Unknown("unknown".to_string()),
+    }
+}
+
+pub fn can_launch_session() -> bool {
+    matches!(
+        detect_terminal(),
+        Terminal::Kitty | Terminal::Tmux | Terminal::WezTerm
+    )
+}
+
+pub fn launch_session(
+    cwd: &str,
+    prompt: Option<&str>,
+    resume: Option<&str>,
+) -> Result<String, String> {
+    let terminal = detect_terminal();
+    match terminal {
+        Terminal::Kitty => kitty::launch(cwd, prompt, resume),
+        Terminal::Tmux => tmux::launch(cwd, prompt, resume),
+        Terminal::WezTerm => wezterm::launch(cwd, prompt, resume),
+        other => Err(format!(
+            "Visible session launch is not supported in {}. Start `claude` manually, or use tmux, Kitty, or WezTerm.",
+            terminal_name(&other)
+        )),
     }
 }
 

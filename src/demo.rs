@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::session::{ClaudeSession, RawSession, SessionStatus};
+use crate::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus};
 
 /// Fake project definitions for demo mode.
 const PROJECTS: &[(&str, &str, &str)] = &[
@@ -129,6 +129,8 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
             let mut s = ClaudeSession::from_raw(raw);
             s.project_name = name.to_string();
             s.model = model.to_string();
+            s.telemetry_status = TelemetryStatus::Available;
+            s.usage_metrics_available = true;
 
             // Deterministic status from sequence
             let seq = STATUS_SEQUENCES[i % STATUS_SEQUENCES.len()];
@@ -180,6 +182,7 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                     SessionStatus::Processing => 7,
                     SessionStatus::NeedsInput => 4,
                     SessionStatus::WaitingInput => 2,
+                    SessionStatus::Unknown => 2,
                     SessionStatus::Idle => 1,
                     SessionStatus::Finished => 0,
                 };

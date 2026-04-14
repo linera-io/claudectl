@@ -10,6 +10,7 @@ pub enum SessionStatus {
     NeedsInput,   // Blocked — waiting for user to approve/confirm (permission prompt)
     Processing,   // Actively generating or executing tools
     WaitingInput, // Done responding, waiting for user's next prompt
+    Unknown,      // Process is alive, but transcript telemetry is unavailable
     Idle,         // No recent activity, stale session
     Finished,     // Process exited
 }
@@ -20,6 +21,7 @@ impl fmt::Display for SessionStatus {
             Self::NeedsInput => write!(f, "Needs Input"),
             Self::Processing => write!(f, "Processing"),
             Self::WaitingInput => write!(f, "Waiting"),
+            Self::Unknown => write!(f, "Unknown"),
             Self::Idle => write!(f, "Idle"),
             Self::Finished => write!(f, "Finished"),
         }
@@ -32,8 +34,44 @@ impl SessionStatus {
             Self::NeedsInput => 0,
             Self::Processing => 1,
             Self::WaitingInput => 2,
-            Self::Idle => 3,
-            Self::Finished => 4,
+            Self::Unknown => 3,
+            Self::Idle => 4,
+            Self::Finished => 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryStatus {
+    Pending,
+    Available,
+    MissingTranscript,
+    UnreadableTranscript,
+    UnsupportedTranscript,
+}
+
+impl TelemetryStatus {
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Available => "Available",
+            Self::MissingTranscript => "No transcript",
+            Self::UnreadableTranscript => "Unreadable transcript",
+            Self::UnsupportedTranscript => "Unsupported transcript",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Available => "Available",
+            Self::MissingTranscript => "No transcript",
+            Self::UnreadableTranscript => "Unreadable",
+            Self::UnsupportedTranscript => "Unsupported",
         }
     }
 }
@@ -82,6 +120,10 @@ pub struct ClaudeSession {
     pub files_modified: HashMap<String, u32>, // file path -> edit count
     pub tool_usage: HashMap<String, ToolStats>, // tool name -> call count & tokens
     pub worktree_id: Option<String>, // Resolved git toplevel + git-dir, for conflict detection
+    pub telemetry_status: TelemetryStatus,
+    pub usage_metrics_available: bool,
+    pub cost_estimate_unverified: bool,
+    pub model_profile_source: String,
 }
 
 /// Per-tool usage statistics.
@@ -133,6 +175,10 @@ impl ClaudeSession {
             files_modified: HashMap::new(),
             tool_usage: HashMap::new(),
             worktree_id: None,
+            telemetry_status: TelemetryStatus::Pending,
+            usage_metrics_available: false,
+            cost_estimate_unverified: false,
+            model_profile_source: "built-in".into(),
         }
     }
 
@@ -143,6 +189,7 @@ impl ClaudeSession {
             SessionStatus::Processing => 7,
             SessionStatus::NeedsInput => 4,
             SessionStatus::WaitingInput => 2,
+            SessionStatus::Unknown => 2,
             SessionStatus::Idle => 1,
             SessionStatus::Finished => 0,
         };
@@ -188,6 +235,9 @@ impl ClaudeSession {
     }
 
     pub fn format_tokens(&self) -> String {
+        if !self.usage_metrics_available {
+            return "n/a".to_string();
+        }
         let total = self.total_input_tokens + self.total_output_tokens;
         if total == 0 {
             return String::from("-");
@@ -203,17 +253,39 @@ impl ClaudeSession {
     }
 
     pub fn format_cost(&self) -> String {
+        if !self.usage_metrics_available {
+            return "n/a".to_string();
+        }
         if self.cost_usd < 0.01 {
             return String::from("-");
         }
         if self.cost_usd < 1.0 {
-            format!("${:.2}", self.cost_usd)
+            format!(
+                "${:.2}{}",
+                self.cost_usd,
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
+            )
         } else {
-            format!("${:.1}", self.cost_usd)
+            format!(
+                "${:.1}{}",
+                self.cost_usd,
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
+            )
         }
     }
 
     pub fn context_percent(&self) -> f64 {
+        if !self.usage_metrics_available {
+            return 0.0;
+        }
         if self.context_max == 0 || self.context_tokens == 0 {
             return 0.0;
         }
@@ -222,6 +294,9 @@ impl ClaudeSession {
 
     /// Format context as "450k/1M 45%" or a visual bar
     pub fn format_context(&self) -> String {
+        if !self.usage_metrics_available {
+            return "n/a".to_string();
+        }
         if self.context_tokens == 0 {
             return String::from("-");
         }
@@ -231,6 +306,9 @@ impl ClaudeSession {
 
     /// Visual bar for context usage: ████░░ 62%
     pub fn format_context_bar(&self, width: usize) -> String {
+        if !self.usage_metrics_available {
+            return "n/a".to_string();
+        }
         let pct = self.context_percent();
         if pct == 0.0 {
             return String::from("-");
@@ -247,18 +325,52 @@ impl ClaudeSession {
 
     /// Produce a JSON-serializable value for --json export.
     pub fn to_json_value(&self) -> serde_json::Value {
+        let cost_usd = if self.usage_metrics_available {
+            serde_json::json!((self.cost_usd * 100.0).round() / 100.0)
+        } else {
+            serde_json::Value::Null
+        };
+        let burn_rate = if self.usage_metrics_available {
+            serde_json::json!((self.burn_rate_per_hr * 100.0).round() / 100.0)
+        } else {
+            serde_json::Value::Null
+        };
+        let context_pct = if self.usage_metrics_available {
+            serde_json::json!((self.context_percent() * 100.0).round() / 100.0)
+        } else {
+            serde_json::Value::Null
+        };
+        let tokens_in = if self.usage_metrics_available {
+            serde_json::json!(self.total_input_tokens)
+        } else {
+            serde_json::Value::Null
+        };
+        let tokens_out = if self.usage_metrics_available {
+            serde_json::json!(self.total_output_tokens)
+        } else {
+            serde_json::Value::Null
+        };
+
         serde_json::json!({
             "pid": self.pid,
             "project": self.display_name(),
             "status": self.status.to_string(),
-            "context_pct": (self.context_percent() * 100.0).round() / 100.0, // 0-100 range, 2 decimal places
-            "cost_usd": (self.cost_usd * 100.0).round() / 100.0,
-            "burn_rate_per_hr": (self.burn_rate_per_hr * 100.0).round() / 100.0,
+            "telemetry": {
+                "state": self.telemetry_status.label(),
+                "usage_metrics_available": self.usage_metrics_available,
+            },
+            "estimate": {
+                "verified": !self.cost_estimate_unverified,
+                "profile_source": self.model_profile_source,
+            },
+            "context_pct": context_pct,
+            "cost_usd": cost_usd,
+            "burn_rate_per_hr": burn_rate,
             "elapsed_secs": self.elapsed.as_secs(),
             "cpu": self.cpu_percent,
             "mem_mb": (self.mem_mb * 100.0).round() / 100.0,
-            "tokens_in": self.total_input_tokens,
-            "tokens_out": self.total_output_tokens,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
             "subagents": self.subagent_count,
             "files_modified": self.files_modified,
             "tool_usage": self.tool_usage.iter().map(|(k, v)| {
@@ -268,14 +380,41 @@ impl ClaudeSession {
     }
 
     pub fn format_burn_rate(&self) -> String {
+        if !self.usage_metrics_available {
+            return "n/a".to_string();
+        }
         if self.burn_rate_per_hr < 0.01 {
             return String::from("-");
         }
         if self.burn_rate_per_hr < 1.0 {
-            format!("${:.2}/h", self.burn_rate_per_hr)
+            format!(
+                "${:.2}/h{}",
+                self.burn_rate_per_hr,
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
+            )
         } else {
-            format!("${:.1}/h", self.burn_rate_per_hr)
+            format!(
+                "${:.1}/h{}",
+                self.burn_rate_per_hr,
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
+            )
         }
+    }
+
+    pub fn telemetry_label(&self) -> &'static str {
+        self.telemetry_status.label()
+    }
+
+    pub fn has_usage_metrics(&self) -> bool {
+        self.usage_metrics_available
     }
 }
 

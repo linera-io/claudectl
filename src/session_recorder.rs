@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use crate::transcript::{TranscriptBlock, TranscriptEvent, TranscriptRole, parse_line};
+
 /// Maximum characters of bash output to include in a frame.
 const MAX_BASH_OUTPUT: usize = 800;
 /// Maximum characters of assistant text to include.
@@ -394,75 +396,42 @@ impl SessionRecorder {
 fn parse_events(line: &str) -> Vec<SessionEvent> {
     let mut events = Vec::new();
 
-    let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+    let Some(event) = parse_line(line) else {
         return events;
     };
 
-    let msg = match entry.get("message") {
-        Some(m) => m,
-        None => return events,
+    let TranscriptEvent::Message(message) = event else {
+        return events;
     };
 
-    // Real Claude Code JSONL uses message.role ("assistant"/"user"), not message.type
-    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-    let content = msg.get("content").and_then(|c| c.as_array());
-
-    if let Some(blocks) = content {
-        for block in blocks {
-            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-            match block_type {
-                "text" if role == "assistant" => {
-                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() && trimmed.len() > 20 {
-                            events.push(SessionEvent::AssistantText(trimmed.to_string()));
-                        }
-                    }
+    for block in message.content {
+        match block {
+            TranscriptBlock::Text(text) if message.role == TranscriptRole::Assistant => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() && trimmed.len() > 20 {
+                    events.push(SessionEvent::AssistantText(trimmed.to_string()));
                 }
-                "tool_use" if role == "assistant" => {
-                    let tool = block
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-
-                    let summary = summarize_tool_use(&tool, block.get("input"));
-                    let diff = extract_diff(&tool, block.get("input"));
-                    events.push(SessionEvent::ToolUse {
-                        tool,
-                        summary,
-                        diff,
-                    });
-                }
-                // tool_result comes in "user" role messages (Claude API convention)
-                "tool_result" if role == "user" => {
-                    let is_error = block
-                        .get("is_error")
-                        .and_then(|e| e.as_bool())
-                        .unwrap_or(false);
-                    let output = block
-                        .get("content")
-                        .and_then(|c| {
-                            if let Some(s) = c.as_str() {
-                                Some(s.to_string())
-                            } else if let Some(arr) = c.as_array() {
-                                arr.first()
-                                    .and_then(|b| b.get("text"))
-                                    .and_then(|t| t.as_str())
-                                    .map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
-
-                    if !output.is_empty() {
-                        events.push(SessionEvent::ToolResult { output, is_error });
-                    }
-                }
-                _ => {}
             }
+            TranscriptBlock::ToolUse { name, input }
+                if message.role == TranscriptRole::Assistant =>
+            {
+                let summary = summarize_tool_use(&name, Some(&input));
+                let diff = extract_diff(&name, Some(&input));
+                events.push(SessionEvent::ToolUse {
+                    tool: name,
+                    summary,
+                    diff,
+                });
+            }
+            TranscriptBlock::ToolResult { content, is_error }
+                if message.role == TranscriptRole::User && !content.is_empty() =>
+            {
+                events.push(SessionEvent::ToolResult {
+                    output: content,
+                    is_error,
+                });
+            }
+            _ => {}
         }
     }
 

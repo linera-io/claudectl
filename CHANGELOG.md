@@ -2,6 +2,21 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.15.5] - 2026-04-14
+
+### Fixed
+- Unified Claude transcript parsing across monitoring and highlight reels, so status/cost/context now come from one parser instead of separate ad-hoc readers
+- Sessions with missing or unsupported transcript telemetry now show an explicit `Unknown` state with `n/a` metrics instead of looking like idle zero-cost sessions
+- `--run` now tracks real child exit status, drains stdout/stderr, writes per-task logs under `.claudectl-runs/`, and fails tasks on non-zero exit instead of treating any vanished PID as success
+- `n` and `--new` now launch visible Claude sessions only in supported terminals (`tmux`, Kitty, WezTerm) and fail clearly elsewhere instead of spawning detached background processes
+- Cost estimation now uses a model registry with config overrides; unknown models are marked as fallback estimates instead of silently pretending pricing is verified
+- `install.sh` now downloads the tagged release assets that the GitHub release workflow actually publishes
+
+### Added
+- `[models."..."]` config sections for overriding pricing and context limits per model
+- Telemetry metadata in JSON and webhook outputs, including whether estimates are verified or fallback
+- Shared transcript fixtures and parser tests for both current and legacy Claude JSONL shapes
+
 ## [0.13.1] - 2026-04-13
 
 ### Changed

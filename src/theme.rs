@@ -39,6 +39,7 @@ pub struct Theme {
     pub status_needs_input: Color,
     pub status_processing: Color,
     pub status_waiting: Color,
+    pub status_unknown: Color,
     pub status_idle: Color,
     pub status_finished: Color,
 
@@ -81,6 +82,7 @@ impl Theme {
             status_needs_input: Color::Magenta,
             status_processing: Color::Green,
             status_waiting: Color::Yellow,
+            status_unknown: Color::Blue,
             status_idle: Color::DarkGray,
             status_finished: Color::Red,
             border: Color::DarkGray,
@@ -111,6 +113,7 @@ impl Theme {
             status_needs_input: Color::Magenta,
             status_processing: Color::Blue,
             status_waiting: Color::Rgb(180, 140, 0), // Dark yellow
+            status_unknown: Color::Gray,
             status_idle: Color::Gray,
             status_finished: Color::Red,
             border: Color::Gray,
@@ -142,6 +145,7 @@ impl Theme {
             status_needs_input: Color::Reset,
             status_processing: Color::Reset,
             status_waiting: Color::Reset,
+            status_unknown: Color::Reset,
             status_idle: Color::Reset,
             status_finished: Color::Reset,
             border: Color::Reset,
@@ -173,6 +177,7 @@ impl Theme {
             SessionStatus::NeedsInput => self.status_needs_input,
             SessionStatus::Processing => self.status_processing,
             SessionStatus::WaitingInput => self.status_waiting,
+            SessionStatus::Unknown => self.status_unknown,
             SessionStatus::Idle => self.status_idle,
             SessionStatus::Finished => self.status_finished,
         }

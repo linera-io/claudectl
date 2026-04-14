@@ -1,5 +1,23 @@
 use crate::session::ClaudeSession;
 
+pub fn launch(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("kitty");
+    cmd.args(["@", "launch", "--type=tab", "--cwd", cwd, "claude"]);
+    for arg in super::build_claude_args(prompt, resume) {
+        cmd.arg(arg);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("kitty launch failed: {e}. Is allow_remote_control enabled?"))?;
+
+    if output.status.success() {
+        Ok("kitty tab".into())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 pub fn switch(session: &ClaudeSession) -> Result<(), String> {
     // Kitty has a powerful remote control protocol via `kitty @ focus-window`.
     // Requires `allow_remote_control yes` or `allow_remote_control socket-only` in kitty.conf.

@@ -58,7 +58,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("  n              ", Style::default().fg(t.highlight_key)),
-            Span::raw("  Launch new Claude session"),
+            Span::raw("  Launch new Claude session (tmux/Kitty/WezTerm)"),
         ]),
         Line::from(vec![
             Span::styled("  c              ", Style::default().fg(t.highlight_key)),
@@ -101,6 +101,10 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  Waiting     ", Style::default().fg(t.status_waiting)),
             Span::raw("  Done responding, awaiting next prompt"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Unknown     ", Style::default().fg(t.status_unknown)),
+            Span::raw("  Session is alive but transcript telemetry is unavailable"),
         ]),
         Line::from(vec![
             Span::styled("  Idle        ", Style::default().fg(t.status_idle)),

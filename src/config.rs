@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::models::{ModelOverride, ModelProfile};
+
 /// Configuration loaded from TOML files, merged with CLI flags.
 /// Priority: CLI flags > project config > global config > defaults.
 #[derive(Debug, Clone)]
@@ -17,6 +19,7 @@ pub struct Config {
     pub daily_limit: Option<f64>,
     pub weekly_limit: Option<f64>,
     pub context_warn_threshold: u8, // 0-100, fires on_context_high when context % crosses this
+    pub model_overrides: Vec<ModelOverride>,
 }
 
 impl Default for Config {
@@ -34,6 +37,7 @@ impl Default for Config {
             daily_limit: None,
             weekly_limit: None,
             context_warn_threshold: 75,
+            model_overrides: Vec::new(),
         }
     }
 }
@@ -53,6 +57,7 @@ struct RawConfig {
     daily_limit: Option<f64>,
     weekly_limit: Option<f64>,
     context_warn_threshold: Option<u8>,
+    model_overrides: Vec<ModelOverride>,
 }
 
 impl Config {
@@ -112,6 +117,9 @@ impl Config {
         }
         if let Some(v) = raw.context_warn_threshold {
             self.context_warn_threshold = v.min(100);
+        }
+        for override_ in raw.model_overrides {
+            upsert_model_override(&mut self.model_overrides, override_);
         }
     }
 
@@ -175,6 +183,20 @@ impl Config {
                 .unwrap_or_else(|| "none".into())
         );
         println!("  context_warn: {}%", self.context_warn_threshold);
+        if self.model_overrides.is_empty() {
+            println!("  model_overrides: none");
+        } else {
+            println!("  model_overrides:");
+            for override_ in &self.model_overrides {
+                println!(
+                    "    {} => in ${:.2}/M, out ${:.2}/M, ctx {}",
+                    override_.name,
+                    override_.profile.input_per_m,
+                    override_.profile.output_per_m,
+                    override_.profile.context_max
+                );
+            }
+        }
     }
 }
 
@@ -255,6 +277,32 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
             ("context", "warn_threshold") => {
                 raw.context_warn_threshold = value.parse().ok();
             }
+            _ if parse_model_section(&section).is_some() => {
+                let Some(model_name) = parse_model_section(&section) else {
+                    continue;
+                };
+                let profile = ensure_model_override(&mut raw.model_overrides, &model_name);
+                match key {
+                    "input_per_m" => {
+                        profile.input_per_m = value.parse().unwrap_or(profile.input_per_m);
+                    }
+                    "output_per_m" => {
+                        profile.output_per_m = value.parse().unwrap_or(profile.output_per_m);
+                    }
+                    "cache_read_per_m" => {
+                        profile.cache_read_per_m =
+                            value.parse().unwrap_or(profile.cache_read_per_m);
+                    }
+                    "cache_write_per_m" => {
+                        profile.cache_write_per_m =
+                            value.parse().unwrap_or(profile.cache_write_per_m);
+                    }
+                    "context_max" => {
+                        profile.context_max = value.parse().unwrap_or(profile.context_max);
+                    }
+                    _ => {}
+                }
+            }
             _ => {} // Ignore unknown keys
         }
     }
@@ -333,6 +381,43 @@ fn parse_string_array(s: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_model_section(section: &str) -> Option<String> {
+    section.strip_prefix("models.").map(unquote)
+}
+
+fn ensure_model_override<'a>(
+    overrides: &'a mut Vec<ModelOverride>,
+    model_name: &str,
+) -> &'a mut ModelProfile {
+    if let Some(index) = overrides.iter().position(|item| item.name == model_name) {
+        return &mut overrides[index].profile;
+    }
+
+    overrides.push(ModelOverride {
+        name: model_name.to_string(),
+        profile: ModelProfile {
+            input_per_m: 0.0,
+            output_per_m: 0.0,
+            cache_read_per_m: 0.0,
+            cache_write_per_m: 0.0,
+            context_max: 0,
+        },
+    });
+
+    &mut overrides
+        .last_mut()
+        .expect("override was just pushed")
+        .profile
+}
+
+fn upsert_model_override(overrides: &mut Vec<ModelOverride>, incoming: ModelOverride) {
+    if let Some(existing) = overrides.iter_mut().find(|item| item.name == incoming.name) {
+        *existing = incoming;
+    } else {
+        overrides.push(incoming);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +461,13 @@ kill_on_budget = false
 [webhook]
 url = "https://hooks.slack.com/test"
 events = ["NeedsInput", "Finished"]
+
+[models."gpt-4o"]
+input_per_m = 1.25
+output_per_m = 5.0
+cache_read_per_m = 0.15
+cache_write_per_m = 0.9
+context_max = 128000
 "#
         )
         .unwrap();
@@ -393,6 +485,9 @@ events = ["NeedsInput", "Finished"]
             raw.webhook_events,
             Some(vec!["NeedsInput".into(), "Finished".into()])
         );
+        assert_eq!(raw.model_overrides.len(), 1);
+        assert_eq!(raw.model_overrides[0].name, "gpt-4o");
+        assert_eq!(raw.model_overrides[0].profile.context_max, 128_000);
     }
 
     #[test]

@@ -53,6 +53,22 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Cycle sort column"),
         ]),
         Line::from(vec![
+            Span::styled("  f              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Cycle status filter"),
+        ]),
+        Line::from(vec![
+            Span::styled("  v              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Cycle focus filter"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Search project/model/session text"),
+        ]),
+        Line::from(vec![
+            Span::styled("  z              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Clear all active filters"),
+        ]),
+        Line::from(vec![
             Span::styled("  a              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle auto-approve (double-tap)"),
         ]),
@@ -135,6 +151,10 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  (Xm Xs) ", Style::default().fg(t.highlight_key)),
             Span::raw("after Needs Input = wait time"),
+        ]),
+        Line::from(vec![
+            Span::styled("  filters ", Style::default().fg(t.highlight_key)),
+            Span::raw("in footer/status bar = active triage filters"),
         ]),
         Line::from(""),
         Line::from(Span::styled(

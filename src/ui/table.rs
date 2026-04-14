@@ -15,7 +15,12 @@ use super::status_bar::render_status_bar;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
-    let has_status = !app.status_msg.is_empty() || app.input_mode || app.launch_mode;
+    let visible_sessions = app.visible_sessions();
+    let has_status = !app.status_msg.is_empty()
+        || app.input_mode
+        || app.launch_mode
+        || app.search_mode
+        || app.has_active_filters();
     let show_detail = app.detail_panel && app.selected_session().is_some();
 
     let mut constraints = Vec::new();
@@ -87,6 +92,43 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    if visible_sessions.is_empty() {
+        let empty_lines = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                "No sessions match the current filters.",
+                Style::default()
+                    .fg(t.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(format!("  {}", app.filter_summary())),
+            Line::from(""),
+            Line::from("  Press z to clear filters, or / to edit the search query."),
+        ];
+
+        let block = Block::default()
+            .title(" claudectl ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(t.border));
+
+        let empty_widget = Paragraph::new(empty_lines)
+            .block(block)
+            .alignment(Alignment::Center);
+
+        frame.render_widget(empty_widget, chunks[0]);
+
+        if has_status && chunks.len() > 1 {
+            render_status_bar(frame, chunks[1], app);
+        }
+
+        if app.show_help {
+            render_help_overlay(frame, area, app);
+        }
+        return;
+    }
+
     // Build header with sort indicator
     let header_names = [
         "PID", "Project", "Status", "Context", "Cost", "$/hr", "Elapsed", "CPU%", "MEM", "In/Out",
@@ -115,9 +157,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let header = Row::new(header_cells).height(1);
 
+    let selected_pid = app.selected_session().map(|s| s.pid);
+    let mut selected_row_idx = app.table_state.selected();
     let rows: Vec<Row> = if app.grouped_view {
         let groups = app.project_groups();
         let mut rows = Vec::new();
+        let mut row_idx = 0usize;
         for group in &groups {
             // Group header row
             let cost_str = if group.total_cost < 1.0 {
@@ -142,15 +187,28 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 cells.push(Cell::from(""));
             }
             rows.push(Row::new(cells));
+            row_idx += 1;
 
             // Session rows under this group
-            for s in app.sessions.iter().filter(|s| s.project_name == group.name) {
+            for s in visible_sessions
+                .iter()
+                .copied()
+                .filter(|s| s.project_name == group.name)
+            {
+                if Some(s.pid) == selected_pid {
+                    selected_row_idx = Some(row_idx);
+                }
                 rows.push(session_row(s, app));
+                row_idx += 1;
             }
         }
         rows
     } else {
-        app.sessions.iter().map(|s| session_row(s, app)).collect()
+        visible_sessions
+            .iter()
+            .copied()
+            .map(|s| session_row(s, app))
+            .collect()
     };
 
     let widths = [
@@ -167,9 +225,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(16), // Activity sparkline
     ];
 
-    let count = app.sessions.len();
-    let active = app
-        .sessions
+    let count = visible_sessions.len();
+    let total_sessions = app.sessions.len();
+    let active = visible_sessions
         .iter()
         .filter(|s| {
             matches!(
@@ -178,14 +236,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             )
         })
         .count();
-    let total_cost: f64 = app.sessions.iter().map(|s| s.cost_usd).sum();
-    let total_tokens: u64 = app
-        .sessions
+    let total_cost: f64 = visible_sessions.iter().map(|s| s.cost_usd).sum();
+    let total_tokens: u64 = visible_sessions
         .iter()
         .map(|s| s.total_input_tokens + s.total_output_tokens)
         .sum();
-    let missing_usage = app
-        .sessions
+    let missing_usage = visible_sessions
         .iter()
         .filter(|s| !s.has_usage_metrics())
         .count();
@@ -208,7 +264,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut footer_spans = vec![
         Span::styled(
-            format!(" {count} sessions ({active} active) "),
+            if app.has_active_filters() {
+                format!(" {count}/{total_sessions} shown ({active} active) ")
+            } else {
+                format!(" {count} sessions ({active} active) ")
+            },
             Style::default().fg(t.footer),
         ),
         Span::styled(format!("{cost_str} "), Style::default().fg(t.cost)),
@@ -222,6 +282,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ];
 
+    if app.has_active_filters() {
+        footer_spans.push(Span::styled(
+            format!(" {} ", app.filter_summary()),
+            Style::default().fg(t.header),
+        ));
+    }
+
     if app.debug {
         footer_spans.push(Span::styled(
             format!("  {}", app.debug_timings.format()),
@@ -231,11 +298,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         // Contextual hints based on selected session state
         let hint = match app.selected_session().map(|s| s.status) {
             Some(SessionStatus::NeedsInput) => {
-                "  y:approve i:type c:compact R:record Tab:go d:kill ?:help".to_string()
+                "  y:approve i:type c:compact R:record Tab:go f/v:filter /:search z:clear d:kill ?:help".to_string()
             }
             _ => {
                 format!(
-                    "  q:quit j/k:nav Tab:go y:approve i:input c:compact R:record d:kill s:sort({sort_name}) ?:help"
+                    "  q:quit j/k:nav Tab:go y:approve i:input c:compact R:record f/v:filter /:search z:clear d:kill s:sort({sort_name}) ?:help"
                 )
             }
         };
@@ -325,7 +392,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("\u{25b6} "); // ▶
 
-    frame.render_stateful_widget(table, chunks[0], &mut app.table_state.clone());
+    let mut render_state = app.table_state.clone();
+    render_state.select(selected_row_idx);
+    frame.render_stateful_widget(table, chunks[0], &mut render_state);
 
     // Detail panel
     let mut next_chunk = 1;

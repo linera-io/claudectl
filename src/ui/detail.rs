@@ -56,7 +56,8 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "-".into());
-    let subagents = session.subagent_count.to_string();
+    let subagents = session.format_subagent_summary();
+    let subagent_breakdown = session.subagent_breakdown();
     let telemetry = if session.has_usage_metrics() {
         format!("{} (usage metrics available)", session.telemetry_label())
     } else {
@@ -96,6 +97,33 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         detail_line("JSONL", &jsonl, t),
         detail_line("Subagents", &subagents, t),
     ];
+
+    if !subagent_breakdown.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Subagent Breakdown",
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        )));
+        for row in subagent_breakdown.iter().take(10) {
+            lines.push(detail_line(
+                &format!("  {}", row.display_label()),
+                &format!(
+                    "{} | {} | {}",
+                    row.state_label(),
+                    row.format_cost(),
+                    row.format_tokens()
+                ),
+                t,
+            ));
+        }
+        if subagent_breakdown.len() > 10 {
+            lines.push(detail_line(
+                "",
+                &format!("  ... and {} more", subagent_breakdown.len() - 10),
+                t,
+            ));
+        }
+    }
 
     // Tool usage section
     if !session.tool_usage.is_empty() {

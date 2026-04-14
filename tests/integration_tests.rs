@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::time::Duration;
 
+use claudectl::discovery;
+use claudectl::models;
 use claudectl::monitor;
 use claudectl::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus};
 
@@ -336,6 +338,35 @@ fn make_session_with_jsonl(content: &str) -> (ClaudeSession, tempfile::NamedTemp
     (s, file)
 }
 
+fn make_session_with_paths(
+    cwd: String,
+    session_id: String,
+    jsonl_path: std::path::PathBuf,
+) -> ClaudeSession {
+    let raw = RawSession {
+        pid: 1,
+        session_id,
+        cwd,
+        started_at: 0,
+    };
+    let mut s = ClaudeSession::from_raw(raw);
+    s.jsonl_path = Some(jsonl_path);
+    s
+}
+
+fn write_jsonl(path: &std::path::Path, content: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, content).unwrap();
+}
+
+fn expected_cost(model: &str, input_tokens: u64, output_tokens: u64) -> f64 {
+    let profile = models::resolve(model).profile;
+    (input_tokens as f64 / 1_000_000.0) * profile.input_per_m
+        + (output_tokens as f64 / 1_000_000.0) * profile.output_per_m
+}
+
 #[test]
 fn jsonl_parse_token_usage() {
     let jsonl = r#"{"type":"assistant","message":{"model":"claude-opus-4-6-20260401","stop_reason":"end_turn","usage":{"input_tokens":50000,"output_tokens":10000,"cache_read_input_tokens":20000,"cache_creation_input_tokens":5000}}}"#;
@@ -477,6 +508,96 @@ fn jsonl_no_path() {
     assert_eq!(s.total_input_tokens, 0);
 }
 
+#[test]
+fn jsonl_rolls_up_subagent_tokens_and_cost() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent_jsonl = temp.path().join("parent.jsonl");
+    write_jsonl(
+        &parent_jsonl,
+        r#"{"type":"assistant","message":{"model":"claude-sonnet-4-6-20260401","stop_reason":"end_turn","usage":{"input_tokens":100000,"output_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    );
+
+    let session_id = format!("subagent-rollup-{}", std::process::id());
+    let cwd = format!("/tmp/claudectl-rollup-{}", std::process::id());
+    let slug = cwd.replace('/', "-");
+    let uid = unsafe { libc::getuid() };
+    let tasks_dir = std::path::PathBuf::from(format!("/tmp/claude-{uid}"))
+        .join(&slug)
+        .join(&session_id)
+        .join("tasks");
+    write_jsonl(
+        &tasks_dir.join("agent-1.jsonl"),
+        r#"{"type":"assistant","message":{"model":"claude-opus-4-6-20260401","stop_reason":"end_turn","usage":{"input_tokens":200000,"output_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    );
+    write_jsonl(
+        &tasks_dir.join("nested/agent-2.jsonl"),
+        r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20260101","stop_reason":"end_turn","usage":{"input_tokens":50000,"output_tokens":10000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    );
+
+    let mut s = make_session_with_paths(cwd, session_id, parent_jsonl);
+    discovery::scan_subagents(std::slice::from_mut(&mut s));
+    monitor::update_tokens(&mut s);
+
+    assert_eq!(s.active_subagent_count, 2);
+    assert_eq!(s.subagent_count, 2);
+    assert_eq!(s.total_input_tokens, 350_000);
+    assert_eq!(s.total_output_tokens, 110_000);
+
+    let expected = expected_cost("sonnet-4.6", 100_000, 50_000)
+        + expected_cost("opus-4.6", 200_000, 50_000)
+        + expected_cost("haiku", 50_000, 10_000);
+    assert!((s.cost_usd - expected).abs() < 0.0001);
+    assert!(!s.cost_estimate_unverified);
+
+    let _ = std::fs::remove_dir_all(
+        std::path::PathBuf::from(format!("/tmp/claude-{uid}"))
+            .join(&slug)
+            .join(&s.session_id),
+    );
+}
+
+#[test]
+fn subagent_rollup_persists_after_task_file_disappears() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent_jsonl = temp.path().join("parent.jsonl");
+    write_jsonl(
+        &parent_jsonl,
+        r#"{"type":"assistant","message":{"model":"claude-sonnet-4-6-20260401","stop_reason":"end_turn","usage":{"input_tokens":100000,"output_tokens":10000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    );
+
+    let session_id = format!("subagent-persist-{}", std::process::id());
+    let cwd = format!("/tmp/claudectl-persist-{}", std::process::id());
+    let slug = cwd.replace('/', "-");
+    let uid = unsafe { libc::getuid() };
+    let subagent_root = std::path::PathBuf::from(format!("/tmp/claude-{uid}"))
+        .join(&slug)
+        .join(&session_id);
+    let tasks_dir = subagent_root.join("tasks");
+    write_jsonl(
+        &tasks_dir.join("agent-1.jsonl"),
+        r#"{"type":"assistant","message":{"model":"claude-sonnet-4-6-20260401","stop_reason":"end_turn","usage":{"input_tokens":200000,"output_tokens":20000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    );
+
+    let mut s = make_session_with_paths(cwd, session_id, parent_jsonl);
+    discovery::scan_subagents(std::slice::from_mut(&mut s));
+    monitor::update_tokens(&mut s);
+
+    assert_eq!(s.active_subagent_count, 1);
+    assert_eq!(s.subagent_count, 1);
+    assert_eq!(s.total_input_tokens, 300_000);
+    assert_eq!(s.total_output_tokens, 30_000);
+
+    std::fs::remove_dir_all(&subagent_root).unwrap();
+
+    discovery::scan_subagents(std::slice::from_mut(&mut s));
+    monitor::update_tokens(&mut s);
+
+    assert_eq!(s.active_subagent_count, 0);
+    assert_eq!(s.subagent_count, 1);
+    assert_eq!(s.total_input_tokens, 300_000);
+    assert_eq!(s.total_output_tokens, 30_000);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Session Formatting Edge Cases
 // ────────────────────────────────────────────────────────────────────────────
@@ -549,6 +670,46 @@ fn json_export_format() {
     assert_eq!(json["elapsed_secs"], 300);
     assert_eq!(json["tokens_in"], 50000);
     assert_eq!(json["tokens_out"], 10000);
+    assert!(json["subagent_breakdown"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn json_export_includes_subagent_breakdown() {
+    let mut s = make_session(0.0, 0);
+    s.active_subagent_jsonl_paths = vec![std::path::PathBuf::from(
+        "/tmp/claude-1/-tmp-project/session-1/tasks/agent-2.jsonl",
+    )];
+    s.subagent_rollups.insert(
+        std::path::PathBuf::from("/tmp/claude-1/-tmp-project/session-1/tasks/agent-1.jsonl"),
+        claudectl::session::SubagentRollup {
+            input_tokens: 20_000,
+            output_tokens: 2_000,
+            cost_usd: 0.4,
+            usage_metrics_available: true,
+            ..claudectl::session::SubagentRollup::default()
+        },
+    );
+    s.subagent_rollups.insert(
+        std::path::PathBuf::from("/tmp/claude-1/-tmp-project/session-1/tasks/agent-2.jsonl"),
+        claudectl::session::SubagentRollup {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            cost_usd: 0.2,
+            usage_metrics_available: true,
+            ..claudectl::session::SubagentRollup::default()
+        },
+    );
+    s.subagent_count = 2;
+    s.active_subagent_count = 1;
+
+    let json = s.to_json_value();
+    let breakdown = json["subagent_breakdown"].as_array().unwrap();
+    assert_eq!(breakdown.len(), 2);
+    assert_eq!(breakdown[0]["label"], "completed");
+    assert_eq!(breakdown[0]["state"], "Completed");
+    assert_eq!(breakdown[0]["tokens_in"], 20000);
+    assert_eq!(breakdown[1]["label"], "agent-2");
+    assert_eq!(breakdown[1]["state"], "Active");
 }
 
 #[test]

@@ -4,153 +4,227 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use serde_json::Value;
 
 use crate::models;
-use crate::session::{ClaudeSession, SessionStatus, TelemetryStatus};
+use crate::session::{ClaudeSession, SessionStatus, SubagentRollup, TelemetryStatus};
 use crate::transcript::{TranscriptBlock, TranscriptEvent, TranscriptRole, parse_line};
+
+#[derive(Default)]
+struct UsageRollup {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+    cost_usd: f64,
+    usage_metrics_available: bool,
+    cost_estimate_unverified: bool,
+}
+
+impl UsageRollup {
+    fn total_input_tokens(&self) -> u64 {
+        self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+    }
+}
 
 /// Read new JSONL entries since last offset, accumulate token stats.
 pub fn update_tokens(session: &mut ClaudeSession) {
-    let Some(ref path) = session.jsonl_path else {
-        session.telemetry_status = TelemetryStatus::MissingTranscript;
-        return;
-    };
-
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => {
-            session.telemetry_status = TelemetryStatus::UnreadableTranscript;
-            return;
-        }
-    };
-
-    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-
-    if file_len == 0 {
-        session.telemetry_status = TelemetryStatus::Pending;
-        return;
-    }
-
-    if session.jsonl_offset > file_len {
-        session.jsonl_offset = 0;
-    }
-
-    if session.jsonl_offset > 0 && session.jsonl_offset >= file_len {
-        return;
-    }
-
-    if session.jsonl_offset > 0 && file.seek(SeekFrom::Start(session.jsonl_offset)).is_err() {
-        return;
-    }
-
-    let reader = BufReader::new(&file);
     let mut last_type = String::new();
     let mut last_stop_reason = String::new();
     let mut is_waiting_for_task = false;
     let mut saw_non_empty_line = false;
     let mut recognized_events = 0usize;
+    let mut saw_parent_usage = false;
+    let jsonl_path = session.jsonl_path.clone();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    match jsonl_path.as_ref() {
+        Some(path) => {
+            let mut file = match File::open(path) {
+                Ok(f) => f,
+                Err(_) => {
+                    session.telemetry_status = TelemetryStatus::UnreadableTranscript;
+                    finalize_usage(
+                        session,
+                        &last_type,
+                        &last_stop_reason,
+                        is_waiting_for_task,
+                        false,
+                    );
+                    return;
+                }
+            };
 
-        if line.trim().is_empty() {
-            continue;
-        }
-        saw_non_empty_line = true;
+            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-        let Some(event) = parse_line(&line) else {
-            continue;
-        };
-        recognized_events += 1;
+            if file_len == 0 {
+                session.telemetry_status = TelemetryStatus::Pending;
+            } else {
+                if session.jsonl_offset > file_len {
+                    session.jsonl_offset = 0;
+                    session.own_input_tokens = 0;
+                    session.own_output_tokens = 0;
+                    session.own_cache_read_tokens = 0;
+                    session.own_cache_write_tokens = 0;
+                }
 
-        match event {
-            TranscriptEvent::WaitingForTask => {
-                is_waiting_for_task = true;
-            }
-            TranscriptEvent::Message(message) => {
-                is_waiting_for_task = false;
-                last_type = match message.role {
-                    TranscriptRole::Assistant => "assistant".to_string(),
-                    TranscriptRole::User => "user".to_string(),
-                };
+                if session.jsonl_offset < file_len {
+                    if session.jsonl_offset > 0
+                        && file.seek(SeekFrom::Start(session.jsonl_offset)).is_err()
+                    {
+                        finalize_usage(
+                            session,
+                            &last_type,
+                            &last_stop_reason,
+                            is_waiting_for_task,
+                            false,
+                        );
+                        return;
+                    }
 
-                if let Some(reason) = message.stop_reason {
-                    last_stop_reason = reason;
+                    let reader = BufReader::new(&file);
+
+                    for line in reader.lines() {
+                        let line = match line {
+                            Ok(l) => l,
+                            Err(_) => break,
+                        };
+
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        saw_non_empty_line = true;
+
+                        let Some(event) = parse_line(&line) else {
+                            continue;
+                        };
+                        recognized_events += 1;
+
+                        match event {
+                            TranscriptEvent::WaitingForTask => {
+                                is_waiting_for_task = true;
+                            }
+                            TranscriptEvent::Message(message) => {
+                                is_waiting_for_task = false;
+                                last_type = match message.role {
+                                    TranscriptRole::Assistant => "assistant".to_string(),
+                                    TranscriptRole::User => "user".to_string(),
+                                };
+
+                                if let Some(reason) = message.stop_reason {
+                                    last_stop_reason = reason;
+                                } else {
+                                    last_stop_reason.clear();
+                                }
+
+                                if let Some(usage) = message.usage {
+                                    let input = usage.input_tokens;
+                                    let cache_read = usage.cache_read_input_tokens;
+                                    let cache_create = usage.cache_creation_input_tokens;
+                                    let output = usage.output_tokens;
+
+                                    session.own_input_tokens += input + cache_read + cache_create;
+                                    session.own_output_tokens += output;
+                                    session.own_cache_read_tokens += cache_read;
+                                    session.own_cache_write_tokens += cache_create;
+                                    saw_parent_usage = true;
+
+                                    // Track context window: the input_tokens of the LAST API call
+                                    // represents the current prompt/context size
+                                    let context_size = input + cache_read + cache_create;
+                                    if context_size > 0 {
+                                        session.context_tokens = context_size;
+                                    }
+                                }
+
+                                if let Some(model) = message.model {
+                                    session.model = shorten_model(&model);
+                                }
+
+                                for block in message.content {
+                                    if let TranscriptBlock::ToolUse { name, input } = block {
+                                        record_tool_usage(&name, &input, session);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if recognized_events > 0 || session.telemetry_status.is_available() {
+                    session.telemetry_status = TelemetryStatus::Available;
+                } else if saw_non_empty_line {
+                    session.telemetry_status = TelemetryStatus::UnsupportedTranscript;
                 } else {
-                    last_stop_reason.clear();
+                    session.telemetry_status = TelemetryStatus::Pending;
                 }
 
-                if let Some(usage) = message.usage {
-                    let input = usage.input_tokens;
-                    let cache_read = usage.cache_read_input_tokens;
-                    let cache_create = usage.cache_creation_input_tokens;
-                    let output = usage.output_tokens;
+                session.jsonl_offset = file_len;
+            }
 
-                    session.total_input_tokens += input + cache_read + cache_create;
-                    session.total_output_tokens += output;
-                    session.cache_read_tokens += cache_read;
-                    session.cache_write_tokens += cache_create;
-                    session.usage_metrics_available = true;
-
-                    // Track context window: the input_tokens of the LAST API call
-                    // represents the current prompt/context size
-                    let context_size = input + cache_read + cache_create;
-                    if context_size > 0 {
-                        session.context_tokens = context_size;
-                    }
-                }
-
-                if let Some(model) = message.model {
-                    session.model = shorten_model(&model);
-                }
-
-                for block in message.content {
-                    if let TranscriptBlock::ToolUse { name, input } = block {
-                        record_tool_usage(&name, &input, session);
-                    }
+            if let Ok(meta) = std::fs::metadata(path) {
+                if let Ok(modified) = meta.modified() {
+                    let mtime_ms = modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    session.last_message_ts = mtime_ms;
                 }
             }
         }
-    }
-
-    if recognized_events > 0 || session.telemetry_status.is_available() {
-        session.telemetry_status = TelemetryStatus::Available;
-    } else if saw_non_empty_line {
-        session.telemetry_status = TelemetryStatus::UnsupportedTranscript;
-    } else {
-        session.telemetry_status = TelemetryStatus::Pending;
-    }
-
-    session.jsonl_offset = file_len;
-
-    // Use the JSONL file's mtime as "last activity" — reliable, no timestamp parsing needed
-    if let Some(ref path) = session.jsonl_path {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if let Ok(modified) = meta.modified() {
-                let mtime_ms = modified
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                session.last_message_ts = mtime_ms;
-            }
+        None => {
+            session.telemetry_status = TelemetryStatus::MissingTranscript;
         }
     }
 
+    finalize_usage(
+        session,
+        &last_type,
+        &last_stop_reason,
+        is_waiting_for_task,
+        saw_parent_usage,
+    );
+}
+
+fn finalize_usage(
+    session: &mut ClaudeSession,
+    last_type: &str,
+    last_stop_reason: &str,
+    is_waiting_for_task: bool,
+    saw_parent_usage: bool,
+) {
     let resolved_profile = models::resolve(&session.model);
     session.context_max = resolved_profile.profile.context_max;
-    session.cost_estimate_unverified =
-        resolved_profile.source == models::ModelProfileSource::Fallback;
     session.model_profile_source = resolved_profile.source.label().to_string();
 
-    // Compute cost estimate based on model pricing
-    session.cost_usd = if session.usage_metrics_available {
-        estimate_cost(session)
-    } else {
-        0.0
-    };
+    let subagent_rollup = refresh_subagent_rollups(session);
+    session.subagent_input_tokens = subagent_rollup.total_input_tokens();
+    session.subagent_output_tokens = subagent_rollup.output_tokens;
+    session.subagent_cache_read_tokens = subagent_rollup.cache_read_tokens;
+    session.subagent_cache_write_tokens = subagent_rollup.cache_write_tokens;
+    session.subagent_count = session.subagent_rollups.len();
 
-    infer_status(session, &last_type, &last_stop_reason, is_waiting_for_task);
+    session.total_input_tokens = session.own_input_tokens + session.subagent_input_tokens;
+    session.total_output_tokens = session.own_output_tokens + session.subagent_output_tokens;
+    session.cache_read_tokens = session.own_cache_read_tokens + session.subagent_cache_read_tokens;
+    session.cache_write_tokens =
+        session.own_cache_write_tokens + session.subagent_cache_write_tokens;
+
+    let own_usage_metrics_available = saw_parent_usage
+        || session.own_input_tokens > 0
+        || session.own_output_tokens > 0
+        || session.own_cache_read_tokens > 0
+        || session.own_cache_write_tokens > 0;
+    let (own_cost, own_cost_unverified) = estimate_cost_components(
+        &session.model,
+        session.own_input_tokens,
+        session.own_output_tokens,
+        session.own_cache_read_tokens,
+        session.own_cache_write_tokens,
+    );
+    session.cost_usd = own_cost + subagent_rollup.cost_usd;
+    session.usage_metrics_available =
+        own_usage_metrics_available || subagent_rollup.usage_metrics_available;
+    session.cost_estimate_unverified = (own_usage_metrics_available && own_cost_unverified)
+        || subagent_rollup.cost_estimate_unverified;
+
+    infer_status(session, last_type, last_stop_reason, is_waiting_for_task);
 }
 
 pub fn infer_status(
@@ -228,19 +302,16 @@ pub fn infer_status(
 }
 
 /// Estimate USD cost based on token usage and model.
+#[allow(dead_code)]
 pub fn estimate_cost(session: &ClaudeSession) -> f64 {
-    // Plain input tokens = total_input - cache_read - cache_write
-    let plain_input = session
-        .total_input_tokens
-        .saturating_sub(session.cache_read_tokens)
-        .saturating_sub(session.cache_write_tokens);
-
-    let profile = models::resolve(&session.model).profile;
-
-    (plain_input as f64 / 1_000_000.0) * profile.input_per_m
-        + (session.total_output_tokens as f64 / 1_000_000.0) * profile.output_per_m
-        + (session.cache_read_tokens as f64 / 1_000_000.0) * profile.cache_read_per_m
-        + (session.cache_write_tokens as f64 / 1_000_000.0) * profile.cache_write_per_m
+    estimate_cost_components(
+        &session.model,
+        session.total_input_tokens,
+        session.total_output_tokens,
+        session.cache_read_tokens,
+        session.cache_write_tokens,
+    )
+    .0
 }
 
 /// Max context window tokens by model.
@@ -269,4 +340,121 @@ fn record_tool_usage(tool_name: &str, input: &Value, session: &mut ClaudeSession
 
 pub fn shorten_model(model: &str) -> String {
     models::shorten_model(model)
+}
+
+fn refresh_subagent_rollups(session: &mut ClaudeSession) -> UsageRollup {
+    for path in session.active_subagent_jsonl_paths.clone() {
+        let rollup = session.subagent_rollups.entry(path.clone()).or_default();
+        update_subagent_rollup(&path, rollup, &session.model);
+    }
+
+    let mut totals = UsageRollup::default();
+    for rollup in session.subagent_rollups.values() {
+        totals.input_tokens += rollup.input_tokens;
+        totals.output_tokens += rollup.output_tokens;
+        totals.cache_read_tokens += rollup.cache_read_tokens;
+        totals.cache_write_tokens += rollup.cache_write_tokens;
+        totals.cost_usd += rollup.cost_usd;
+        totals.usage_metrics_available |= rollup.usage_metrics_available;
+        totals.cost_estimate_unverified |= rollup.cost_estimate_unverified;
+    }
+    totals
+}
+
+fn update_subagent_rollup(
+    path: &std::path::Path,
+    rollup: &mut SubagentRollup,
+    default_model: &str,
+) {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+
+    let file_len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    if rollup.jsonl_offset > file_len {
+        *rollup = SubagentRollup::default();
+    }
+
+    if rollup.jsonl_offset >= file_len {
+        rollup.jsonl_offset = file_len;
+        return;
+    }
+
+    if rollup.jsonl_offset > 0 && file.seek(SeekFrom::Start(rollup.jsonl_offset)).is_err() {
+        return;
+    }
+
+    let mut current_model = if rollup.model.is_empty() {
+        default_model.to_string()
+    } else {
+        rollup.model.clone()
+    };
+
+    let reader = BufReader::new(&file);
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        let Some(TranscriptEvent::Message(message)) = parse_line(&line) else {
+            continue;
+        };
+
+        if let Some(model) = message.model {
+            current_model = shorten_model(&model);
+            rollup.model = current_model.clone();
+        }
+
+        let Some(usage) = message.usage else {
+            continue;
+        };
+
+        rollup.input_tokens += usage.input_tokens;
+        rollup.output_tokens += usage.output_tokens;
+        rollup.cache_read_tokens += usage.cache_read_input_tokens;
+        rollup.cache_write_tokens += usage.cache_creation_input_tokens;
+        rollup.usage_metrics_available = true;
+
+        let input_with_cache =
+            usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+        let model_for_cost = if current_model.is_empty() {
+            default_model
+        } else {
+            current_model.as_str()
+        };
+        let (delta_cost, unverified) = estimate_cost_components(
+            model_for_cost,
+            input_with_cache,
+            usage.output_tokens,
+            usage.cache_read_input_tokens,
+            usage.cache_creation_input_tokens,
+        );
+        rollup.cost_usd += delta_cost;
+        rollup.cost_estimate_unverified |= unverified;
+    }
+
+    rollup.jsonl_offset = file_len;
+}
+
+fn estimate_cost_components(
+    model: &str,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+) -> (f64, bool) {
+    let plain_input = total_input_tokens
+        .saturating_sub(cache_read_tokens)
+        .saturating_sub(cache_write_tokens);
+    let resolved = models::resolve(model);
+
+    let cost = (plain_input as f64 / 1_000_000.0) * resolved.profile.input_per_m
+        + (total_output_tokens as f64 / 1_000_000.0) * resolved.profile.output_per_m
+        + (cache_read_tokens as f64 / 1_000_000.0) * resolved.profile.cache_read_per_m
+        + (cache_write_tokens as f64 / 1_000_000.0) * resolved.profile.cache_write_per_m;
+
+    (
+        cost,
+        resolved.source == models::ModelProfileSource::Fallback,
+    )
 }

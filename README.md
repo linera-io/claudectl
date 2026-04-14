@@ -2,7 +2,7 @@
 
 **Mission control for Claude Code.**
 
-Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked agents, control token burn, approve actions, and orchestrate work across tmux, iTerm2, Ghostty, Warp, and more.
+Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked agents, control token burn, approve actions, and orchestrate work across GNOME Terminal, tmux, iTerm2, Ghostty, Warp, and more.
 
 [![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)
@@ -17,7 +17,7 @@ Monitor multiple Claude Code sessions in one terminal dashboard. Catch blocked a
 ## Install
 
 ```bash
-brew install mercurialsolo/tap/claudectl     # Homebrew (macOS)
+brew install mercurialsolo/tap/claudectl     # Homebrew (macOS / Linux)
 cargo install claudectl                       # Cargo (any platform)
 ```
 
@@ -186,6 +186,7 @@ claudectl --demo --record demo.gif  # One-command GIF for your README
 
 ### Dashboard
 - Live table: PID, project, status, context %, cost, $/hr burn rate, elapsed, CPU%, memory, tokens, sparkline
+- Parent sessions expand into subagent rows so you can see completed-subagent totals and currently active subagents separately
 - Detail panel (`Enter`) with full session metadata
 - Grouped view (`g`) by project with aggregate stats
 - Sort by status, context, cost, burn rate, or elapsed (`s`)
@@ -224,7 +225,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `i` | Input mode (type text to session) |
 | `d`/`x` | Kill session (double-tap to confirm) |
 | `a` | Toggle auto-approve (double-tap to confirm) |
-| `n` | Launch wizard for cwd, prompt, and resume (`tmux`, Kitty, WezTerm) |
+| `n` | Launch wizard for cwd, prompt, and resume (GNOME Terminal, `tmux`, Kitty, WezTerm) |
 | `g` | Toggle grouped view by project |
 | `s` | Cycle sort column |
 | `f` | Cycle status filter |
@@ -243,6 +244,7 @@ Use `claudectl --doctor` to check the current terminal's launch/switch/input sup
 
 | Terminal | Tab Switch | Approve/Input | Method |
 |----------|-----------|---------------|--------|
+| **GNOME Terminal** | - | - | Visible launch via `gnome-terminal --window` |
 | **Ghostty** | Background | Background | Native AppleScript API |
 | **Kitty** | Background | Background | `kitty @` remote control |
 | **tmux** | Background | Background | `tmux send-keys` |
@@ -251,7 +253,7 @@ Use `claudectl --doctor` to check the current terminal's launch/switch/input sup
 | **iTerm2** | Focus switch | Focus switch | AppleScript + System Events |
 | **Terminal.app** | Focus switch | Focus switch | AppleScript + System Events |
 
-**Notes:** Ghostty has the best support — no config needed. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux is auto-detected. Run `claudectl --doctor` from the same terminal you use for Claude to verify the current setup.
+**Notes:** GNOME Terminal launch works on Linux and is verified under Docker/X11, but remote focus/input automation is intentionally not exposed yet. Ghostty has the best support on macOS with no extra config. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux is auto-detected. Run `claudectl --doctor` from the same terminal you use for Claude to verify the current setup.
 
 ### Themes
 - Dark, light, and monochrome (`--theme`)
@@ -360,6 +362,7 @@ Status inference combines multiple signals: `waiting_for_task` events, CPU usage
 
 **Tab switching doesn't work**
 - Run `claudectl --doctor` first to see the detected terminal, missing prerequisites, and supported actions
+- GNOME Terminal: launch support is available; use tmux or Kitty if you need remote switching or input automation
 - Ghostty: should work out of the box
 - Kitty: add `allow_remote_control yes` to `~/.config/kitty/kitty.conf`
 - Warp/iTerm2/Terminal.app: grant Automation/Accessibility permission in System Settings > Privacy & Security

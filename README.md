@@ -389,7 +389,7 @@ It monitors any Claude Code process, regardless of how it was launched. Terminal
 Yes, but the value increases with concurrency. If you run one session, you already know where it is.
 
 **What about Windows?**
-Not yet. macOS and Linux only. WSL support is planned.
+Native Windows is not supported yet. WSL detection is now wired into `claudectl --doctor`, and today the recommended setup is WSL plus `tmux` for reliable launch/switch/input automation.
 
 ## Security
 

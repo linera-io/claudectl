@@ -136,8 +136,66 @@ fn terminal_name(t: &Terminal) -> &str {
     }
 }
 
-fn platform_name() -> &'static str {
-    std::env::consts::OS
+fn platform_label(os: &str, is_wsl: bool) -> String {
+    if is_wsl && os == "linux" {
+        "linux (WSL)".to_string()
+    } else {
+        os.to_string()
+    }
+}
+
+fn platform_name() -> String {
+    platform_label(std::env::consts::OS, is_wsl())
+}
+
+fn environment_notes(is_wsl: bool, has_wt_interop: bool) -> Vec<String> {
+    if !is_wsl {
+        return Vec::new();
+    }
+
+    let mut notes = vec![
+        "WSL detected. Linux session discovery should work normally inside the distro."
+            .to_string(),
+        "For reliable launch, switch, input, and approval automation in WSL today, prefer tmux inside WSL."
+            .to_string(),
+    ];
+
+    if has_wt_interop {
+        notes.push(
+            "Windows Terminal interop (`wt.exe`) is reachable from WSL, but direct Windows Terminal control is not implemented yet."
+                .to_string(),
+        );
+    } else {
+        notes.push(
+            "Windows Terminal interop (`wt.exe`) was not detected in PATH, so claudectl currently relies on Linux-native terminals inside WSL."
+                .to_string(),
+        );
+    }
+
+    notes
+}
+
+fn is_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WSL_DISTRO_NAME").is_some()
+            || std::env::var_os("WSL_INTEROP").is_some()
+        {
+            return true;
+        }
+
+        for path in ["/proc/sys/kernel/osrelease", "/proc/version"] {
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            if contents.to_ascii_lowercase().contains("microsoft") {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn supported_actions(terminal: &Terminal) -> Vec<TerminalAction> {
@@ -385,6 +443,7 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
             .to_string(),
         "`n` and `--new` use the same launch capability shown here.".to_string(),
     ];
+    notes.extend(environment_notes(is_wsl(), command_ready("wt.exe")));
 
     match terminal {
         Terminal::Gnome => {
@@ -729,7 +788,7 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
 
     DoctorReport {
         terminal: terminal_label,
-        platform: platform_name().to_string(),
+        platform: platform_name(),
         actions,
         prerequisites,
         notes,
@@ -933,5 +992,18 @@ mod tests {
                 .iter()
                 .all(|action| action.status == DoctorStatus::Unsupported)
         );
+    }
+
+    #[test]
+    fn platform_label_marks_wsl_explicitly() {
+        assert_eq!(platform_label("linux", true), "linux (WSL)");
+        assert_eq!(platform_label("macos", false), "macos");
+    }
+
+    #[test]
+    fn environment_notes_describe_wsl_interop_state() {
+        let notes = environment_notes(true, true);
+        assert!(notes.iter().any(|note| note.contains("WSL detected")));
+        assert!(notes.iter().any(|note| note.contains("wt.exe")));
     }
 }

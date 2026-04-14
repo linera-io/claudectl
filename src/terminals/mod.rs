@@ -118,7 +118,7 @@ pub enum Terminal {
     ITerm2,
     Kitty,
     WezTerm,
-    WindowsTerminal,
+    WindowsTerm,
     Apple,
     Tmux,
     Unknown(String),
@@ -132,7 +132,7 @@ fn terminal_name(t: &Terminal) -> &str {
         Terminal::ITerm2 => "iTerm2",
         Terminal::Kitty => "Kitty",
         Terminal::WezTerm => "WezTerm",
-        Terminal::WindowsTerminal => "Windows Terminal",
+        Terminal::WindowsTerm => "Windows Terminal",
         Terminal::Apple => "Apple Terminal",
         Terminal::Tmux => "tmux",
         Terminal::Unknown(name) => name,
@@ -238,7 +238,7 @@ fn is_wsl() -> bool {
 
 fn supported_actions(terminal: &Terminal) -> Vec<TerminalAction> {
     match terminal {
-        Terminal::Gnome | Terminal::WindowsTerminal => vec![TerminalAction::Launch],
+        Terminal::Gnome | Terminal::WindowsTerm => vec![TerminalAction::Launch],
         Terminal::Kitty | Terminal::Tmux => vec![
             TerminalAction::Launch,
             TerminalAction::Switch,
@@ -288,7 +288,7 @@ pub fn detect_terminal() -> Terminal {
     }
 
     if is_wsl() && std::env::var_os("WT_SESSION").is_some() {
-        return Terminal::WindowsTerminal;
+        return Terminal::WindowsTerm;
     }
 
     match std::env::var("TERM_PROGRAM").as_deref() {
@@ -537,7 +537,7 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
                     .to_string(),
             );
         }
-        Terminal::WindowsTerminal => {
+        Terminal::WindowsTerm => {
             let cmd_check = binary_check("cmd.exe");
             let cmd_ready = cmd_check.status == DoctorStatus::Ready;
             prerequisites.push(cmd_check);
@@ -950,7 +950,7 @@ pub fn launch_session(
         Terminal::Kitty => kitty::launch(cwd, prompt, resume),
         Terminal::Tmux => tmux::launch(cwd, prompt, resume),
         Terminal::WezTerm => wezterm::launch(cwd, prompt, resume),
-        Terminal::WindowsTerminal => windows_terminal::launch(cwd, prompt, resume),
+        Terminal::WindowsTerm => windows_terminal::launch(cwd, prompt, resume),
         other => Err(format!(
             "Visible session launch is not supported in {}. Start `claude` manually, use tmux/Kitty/WezTerm/GNOME Terminal/Windows Terminal on WSL, or run `claudectl --doctor` for setup guidance.",
             terminal_name(&other)
@@ -979,7 +979,7 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
         Terminal::Kitty => kitty::switch(session),
         Terminal::WezTerm => wezterm::switch(session),
         Terminal::Tmux => tmux::switch(session),
-        Terminal::WindowsTerminal => Err(
+        Terminal::WindowsTerm => Err(
             "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for session switching."
                 .into(),
         ),
@@ -1006,7 +1006,7 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
         Terminal::Ghostty => ghostty::send_input(session, text),
         Terminal::Kitty => kitty::send_input(session, text),
         Terminal::Tmux => tmux::send_input(session, text),
-        Terminal::WindowsTerminal => Err(
+        Terminal::WindowsTerm => Err(
             "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for session input automation."
                 .into(),
         ),
@@ -1034,7 +1034,7 @@ pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
         Terminal::Ghostty => ghostty::approve(session),
         Terminal::Kitty => kitty::approve(session),
         Terminal::Tmux => tmux::send_input(session, "\r"),
-        Terminal::WindowsTerminal => Err(
+        Terminal::WindowsTerm => Err(
             "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for approval automation."
                 .into(),
         ),
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn help_summary_lists_windows_terminal_launch() {
-        let summary = help_capability_summary_for(&Terminal::WindowsTerminal);
+        let summary = help_capability_summary_for(&Terminal::WindowsTerm);
         assert_eq!(summary, "Current terminal: Windows Terminal (launch)");
     }
 

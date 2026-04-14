@@ -16,6 +16,8 @@ Run 3, 5, or 8 Claude Code sessions without tab hunting. `claudectl` shows which
 
 README is the quick technical entry point. Use the [landing page](https://mercurialsolo.github.io/claudectl/) for the full overview, screenshots, and shareable launch surface.
 
+[![Watch the claudectl demo](docs/assets/claudectl-demo-hero.gif)](https://asciinema.org/a/bovJrUq2vEmC08NU)
+
 ## Install
 
 ```bash

@@ -99,6 +99,7 @@ claudectl                   # Interactive TUI dashboard
 claudectl --watch           # Stream status changes (no TUI)
 claudectl --list            # Print session table and exit
 claudectl --json            # Machine-readable output for scripting
+claudectl --doctor          # Diagnose terminal control support and setup
 claudectl --filter-status needs-input --search api
 claudectl --watch --focus attention
 ```
@@ -231,6 +232,8 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `?` | Toggle help overlay |
 | `q`/`Esc` | Quit |
 
+Use `claudectl --doctor` to check the current terminal's launch/switch/input support, CLI dependencies, and setup requirements.
+
 ### Terminal Support
 
 | Terminal | Tab Switch | Approve/Input | Method |
@@ -243,7 +246,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | **iTerm2** | Focus switch | Focus switch | AppleScript + System Events |
 | **Terminal.app** | Focus switch | Focus switch | AppleScript + System Events |
 
-**Notes:** Ghostty has the best support — no config needed. Kitty requires `allow_remote_control yes` in config. Warp requires Accessibility permission. tmux is auto-detected.
+**Notes:** Ghostty has the best support — no config needed. Kitty requires `allow_remote_control yes` in config. Warp, iTerm2, and Terminal.app require macOS Automation/Accessibility permission. tmux is auto-detected. Run `claudectl --doctor` from the same terminal you use for Claude to verify the current setup.
 
 ### Themes
 - Dark, light, and monochrome (`--theme`)
@@ -351,9 +354,10 @@ Status inference combines multiple signals: `waiting_for_task` events, CPU usage
 - Run `claudectl --log /tmp/claudectl.log` and check the log
 
 **Tab switching doesn't work**
+- Run `claudectl --doctor` first to see the detected terminal, missing prerequisites, and supported actions
 - Ghostty: should work out of the box
 - Kitty: add `allow_remote_control yes` to `~/.config/kitty/kitty.conf`
-- Warp: grant Accessibility permission in System Settings > Privacy & Security
+- Warp/iTerm2/Terminal.app: grant Automation/Accessibility permission in System Settings > Privacy & Security
 - tmux: must be running inside a tmux session
 
 **Cost shows $0.00**

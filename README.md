@@ -219,7 +219,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `i` | Input mode (type text to session) |
 | `d`/`x` | Kill session (double-tap to confirm) |
 | `a` | Toggle auto-approve (double-tap to confirm) |
-| `n` | Launch new Claude session (`tmux`, Kitty, WezTerm) |
+| `n` | Launch wizard for cwd, prompt, and resume (`tmux`, Kitty, WezTerm) |
 | `g` | Toggle grouped view by project |
 | `s` | Cycle sort column |
 | `f` | Cycle status filter |

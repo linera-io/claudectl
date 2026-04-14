@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     // Empty state: show onboarding message when no sessions found
     if app.sessions.is_empty() {
         let launch_hint = if crate::terminals::can_launch_session() {
-            "  Press n to launch a new session, or start claude in another terminal."
+            "  Press n for the launch wizard, or start claude in another terminal."
         } else {
             "  Start claude in tmux, Kitty, WezTerm, or another terminal."
         };

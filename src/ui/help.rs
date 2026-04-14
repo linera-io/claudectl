@@ -74,7 +74,15 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("  n              ", Style::default().fg(t.highlight_key)),
-            Span::raw("  Launch new Claude session (tmux/Kitty/WezTerm)"),
+            Span::raw("  Launch wizard for cwd, prompt, and resume (tmux/Kitty/WezTerm)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter/Tab      ", Style::default().fg(t.highlight_key)),
+            Span::raw("  In launch wizard: next field / move fields"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+Enter     ", Style::default().fg(t.highlight_key)),
+            Span::raw("  In launch wizard: launch immediately"),
         ]),
         Line::from(vec![
             Span::styled("  c              ", Style::default().fg(t.highlight_key)),

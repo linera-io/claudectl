@@ -5,6 +5,7 @@ use ratatui::widgets::TableState;
 
 use crate::discovery;
 use crate::hooks::{HookEvent, HookRegistry};
+use crate::launch::{self, LaunchRequest};
 use crate::monitor;
 use crate::process;
 use crate::session::{ClaudeSession, SessionStatus};
@@ -121,6 +122,129 @@ impl FocusFilter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchField {
+    Cwd,
+    Prompt,
+    Resume,
+}
+
+impl LaunchField {
+    fn next(self) -> Self {
+        match self {
+            Self::Cwd => Self::Prompt,
+            Self::Prompt => Self::Resume,
+            Self::Resume => Self::Resume,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::Cwd => Self::Cwd,
+            Self::Prompt => Self::Cwd,
+            Self::Resume => Self::Prompt,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cwd => "cwd",
+            Self::Prompt => "prompt",
+            Self::Resume => "resume",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchForm {
+    pub field: LaunchField,
+    pub cwd: String,
+    pub prompt: String,
+    pub resume: String,
+}
+
+impl Default for LaunchForm {
+    fn default() -> Self {
+        Self {
+            field: LaunchField::Cwd,
+            cwd: ".".into(),
+            prompt: String::new(),
+            resume: String::new(),
+        }
+    }
+}
+
+impl LaunchForm {
+    pub fn active_buffer(&self) -> &str {
+        match self.field {
+            LaunchField::Cwd => &self.cwd,
+            LaunchField::Prompt => &self.prompt,
+            LaunchField::Resume => &self.resume,
+        }
+    }
+
+    fn active_buffer_mut(&mut self) -> &mut String {
+        match self.field {
+            LaunchField::Cwd => &mut self.cwd,
+            LaunchField::Prompt => &mut self.prompt,
+            LaunchField::Resume => &mut self.resume,
+        }
+    }
+
+    fn advance(&mut self) {
+        self.field = self.field.next();
+    }
+
+    fn retreat(&mut self) {
+        self.field = self.field.prev();
+    }
+
+    fn is_last_field(&self) -> bool {
+        self.field == LaunchField::Resume
+    }
+
+    pub fn status_hint(&self) -> String {
+        format!(
+            "New session [{}] Enter next, Tab move, Ctrl+Enter launch, Esc cancel",
+            self.field.label()
+        )
+    }
+
+    fn request(&self) -> Result<LaunchRequest, String> {
+        launch::prepare(
+            &self.cwd,
+            Some(self.prompt.as_str()),
+            Some(self.resume.as_str()),
+        )
+    }
+
+    pub fn summary(&self) -> String {
+        let cwd = compact_value(&self.cwd, ".");
+        let prompt = if self.prompt.trim().is_empty() {
+            "skip".to_string()
+        } else {
+            "set".to_string()
+        };
+        let resume = compact_value(&self.resume, "skip");
+        format!("cwd={cwd} | prompt={prompt} | resume={resume}")
+    }
+}
+
+fn compact_value(value: &str, empty_label: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return empty_label.to_string();
+    }
+
+    const MAX_LEN: usize = 24;
+    if trimmed.chars().count() <= MAX_LEN {
+        trimmed.to_string()
+    } else {
+        let prefix: String = trimmed.chars().take(MAX_LEN - 1).collect();
+        format!("{prefix}…")
+    }
+}
+
 pub struct App {
     pub sessions: Vec<ClaudeSession>,
     pub table_state: TableState,
@@ -143,8 +267,8 @@ pub struct App {
     pub detail_panel: bool, // Show expanded detail for selected session
     pub webhook_url: Option<String>,
     pub webhook_filter: Option<Vec<String>>, // Only fire on these status names
-    pub launch_mode: bool,                   // Capturing directory path for new session
-    pub launch_buffer: String,
+    pub launch_mode: bool,                   // Capturing launch wizard fields
+    pub launch_form: LaunchForm,
     pub search_mode: bool,
     pub search_buffer: String,
     pub search_query: String,
@@ -244,7 +368,7 @@ impl App {
             webhook_url: None,
             webhook_filter: None,
             launch_mode: false,
-            launch_buffer: String::new(),
+            launch_form: LaunchForm::default(),
             search_mode: false,
             search_buffer: String::new(),
             search_query: String::new(),
@@ -1144,10 +1268,7 @@ impl App {
             (KeyCode::Char('n'), _) => {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
-                self.launch_mode = true;
-                self.launch_buffer.clear();
-                self.status_msg =
-                    "New session — enter directory path (Enter to launch, Esc to cancel): ".into();
+                self.enter_launch_mode();
             }
             (KeyCode::Char('g'), _) => {
                 self.cancel_pending_kill();
@@ -1178,42 +1299,69 @@ impl App {
 
     fn handle_launch_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.submit_launch_form();
+            }
             KeyCode::Enter => {
-                let dir = if self.launch_buffer.is_empty() {
-                    ".".to_string()
+                if self.launch_form.is_last_field() {
+                    self.submit_launch_form();
                 } else {
-                    self.launch_buffer.clone()
-                };
-
-                let cwd_path = std::path::Path::new(&dir)
-                    .canonicalize()
-                    .unwrap_or_else(|_| std::path::PathBuf::from(&dir));
-
-                match terminals::launch_session(cwd_path.to_string_lossy().as_ref(), None, None) {
-                    Ok(target) => {
-                        self.status_msg =
-                            format!("Launched session in {target} at {}", cwd_path.display());
-                    }
-                    Err(e) => {
-                        self.status_msg = format!("Launch failed: {e}");
-                    }
+                    self.launch_form.advance();
+                    self.status_msg = self.launch_form.status_hint();
                 }
-
-                self.launch_mode = false;
-                self.launch_buffer.clear();
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                self.launch_form.advance();
+                self.status_msg = self.launch_form.status_hint();
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.launch_form.retreat();
+                self.status_msg = self.launch_form.status_hint();
             }
             KeyCode::Esc => {
                 self.launch_mode = false;
-                self.launch_buffer.clear();
+                self.launch_form = LaunchForm::default();
                 self.status_msg = "Launch cancelled".into();
             }
             KeyCode::Backspace => {
-                self.launch_buffer.pop();
+                self.launch_form.active_buffer_mut().pop();
             }
             KeyCode::Char(c) => {
-                self.launch_buffer.push(c);
+                self.launch_form.active_buffer_mut().push(c);
             }
             _ => {}
+        }
+    }
+
+    fn enter_launch_mode(&mut self) {
+        self.launch_mode = true;
+        self.launch_form = LaunchForm::default();
+        self.status_msg = self.launch_form.status_hint();
+    }
+
+    fn submit_launch_form(&mut self) {
+        let request = match self.launch_form.request() {
+            Ok(request) => request,
+            Err(err) => {
+                self.launch_form.field = LaunchField::Cwd;
+                self.status_msg = format!("Launch failed: {err}");
+                return;
+            }
+        };
+
+        match launch::launch(&request) {
+            Ok(target) => {
+                self.launch_mode = false;
+                self.launch_form = LaunchForm::default();
+                self.status_msg = format!(
+                    "Launched session in {target} at {}{}",
+                    request.cwd_path.display(),
+                    request.option_summary()
+                );
+            }
+            Err(err) => {
+                self.status_msg = format!("Launch failed: {err}");
+            }
         }
     }
 
@@ -1784,5 +1932,49 @@ mod tests {
         app.normalize_selection();
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.selected_session().map(|s| s.pid), Some(11));
+    }
+
+    #[test]
+    fn launch_wizard_starts_with_cli_defaults() {
+        let mut app = App::new();
+        app.enter_launch_mode();
+
+        assert!(app.launch_mode);
+        assert_eq!(app.launch_form.field, LaunchField::Cwd);
+        assert_eq!(app.launch_form.cwd, ".");
+        assert!(app.launch_form.prompt.is_empty());
+        assert!(app.launch_form.resume.is_empty());
+    }
+
+    #[test]
+    fn launch_wizard_moves_between_fields() {
+        let mut app = App::new();
+        app.enter_launch_mode();
+
+        app.handle_launch_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.launch_form.field, LaunchField::Prompt);
+
+        app.handle_launch_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.launch_form.field, LaunchField::Resume);
+
+        app.handle_launch_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.launch_form.field, LaunchField::Prompt);
+    }
+
+    #[test]
+    fn invalid_launch_keeps_wizard_open_and_reports_error() {
+        let mut app = App::new();
+        app.enter_launch_mode();
+        app.launch_form.cwd = "/tmp/claudectl-this-path-should-not-exist".into();
+        app.launch_form.field = LaunchField::Resume;
+
+        app.submit_launch_form();
+
+        assert!(app.launch_mode);
+        assert_eq!(app.launch_form.field, LaunchField::Cwd);
+        assert!(
+            app.status_msg
+                .starts_with("Launch failed: Directory not found:")
+        );
     }
 }

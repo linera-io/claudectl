@@ -130,15 +130,17 @@ claudectl --webhook https://hooks.slack.com/... --webhook-on NeedsInput,Finished
 
 ### Orchestrate multi-session work
 
-Run coordinated tasks with dependency ordering:
+Run coordinated tasks with dependency ordering, retries, and resumable sessions:
 
 ```json
 {
+  "retries": 1,
   "tasks": [
     {
       "name": "Add auth middleware",
       "cwd": "./backend",
-      "prompt": "Add JWT auth middleware to all API routes"
+      "prompt": "Add JWT auth middleware to all API routes",
+      "retries": 2
     },
     {
       "name": "Update tests",
@@ -149,7 +151,8 @@ Run coordinated tasks with dependency ordering:
     {
       "name": "Update docs",
       "cwd": "./docs",
-      "prompt": "Document the new auth flow"
+      "prompt": "Document the new auth flow",
+      "resume": "session-123"
     }
   ]
 }
@@ -158,6 +161,8 @@ Run coordinated tasks with dependency ordering:
 ```bash
 claudectl --run tasks.json --parallel
 ```
+
+Each run writes live progress to `.claudectl-runs/.../status.json`, final results to `.claudectl-runs/.../summary.json`, and per-attempt stdout/stderr logs for every task. Press `Ctrl-C` to abort a run cleanly.
 
 ### Record and share
 

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::models::{ModelOverride, ModelProfile};
+use crate::rules::{AutoRule, RuleAction};
 
 /// Configuration loaded from TOML files, merged with CLI flags.
 /// Priority: CLI flags > project config > global config > defaults.
@@ -20,6 +21,7 @@ pub struct Config {
     pub weekly_limit: Option<f64>,
     pub context_warn_threshold: u8, // 0-100, fires on_context_high when context % crosses this
     pub model_overrides: Vec<ModelOverride>,
+    pub rules: Vec<AutoRule>,
 }
 
 impl Default for Config {
@@ -38,6 +40,7 @@ impl Default for Config {
             weekly_limit: None,
             context_warn_threshold: 75,
             model_overrides: Vec::new(),
+            rules: Vec::new(),
         }
     }
 }
@@ -58,6 +61,7 @@ struct RawConfig {
     weekly_limit: Option<f64>,
     context_warn_threshold: Option<u8>,
     model_overrides: Vec<ModelOverride>,
+    rules: Vec<AutoRule>,
 }
 
 impl Config {
@@ -120,6 +124,14 @@ impl Config {
         }
         for override_ in raw.model_overrides {
             upsert_model_override(&mut self.model_overrides, override_);
+        }
+        for rule in raw.rules {
+            // Replace rule with same name, or append
+            if let Some(pos) = self.rules.iter().position(|r| r.name == rule.name) {
+                self.rules[pos] = rule;
+            } else {
+                self.rules.push(rule);
+            }
         }
     }
 
@@ -303,6 +315,27 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     _ => {}
                 }
             }
+            _ if parse_rule_section(&section).is_some() => {
+                let Some(rule_name) = parse_rule_section(&section) else {
+                    continue;
+                };
+                let rule = ensure_rule(&mut raw.rules, &rule_name);
+                match key {
+                    "match_status" => rule.match_status = parse_string_array(value),
+                    "match_tool" => rule.match_tool = parse_string_array(value),
+                    "match_command" => rule.match_command = parse_string_array(value),
+                    "match_project" => rule.match_project = parse_string_array(value),
+                    "match_cost_above" => rule.match_cost_above = value.parse().ok(),
+                    "match_last_error" => rule.match_last_error = parse_bool(value),
+                    "action" => {
+                        if let Some(a) = RuleAction::parse(&unquote(value)) {
+                            rule.action = a;
+                        }
+                    }
+                    "message" => rule.message = Some(unquote(value)),
+                    _ => {}
+                }
+            }
             _ => {} // Ignore unknown keys
         }
     }
@@ -418,6 +451,18 @@ fn upsert_model_override(overrides: &mut Vec<ModelOverride>, incoming: ModelOver
     }
 }
 
+fn parse_rule_section(section: &str) -> Option<String> {
+    section.strip_prefix("rules.").map(unquote)
+}
+
+fn ensure_rule<'a>(rules: &'a mut Vec<AutoRule>, name: &str) -> &'a mut AutoRule {
+    if let Some(index) = rules.iter().position(|r| r.name == name) {
+        return &mut rules[index];
+    }
+    rules.push(AutoRule::new(name.to_string(), RuleAction::Approve));
+    rules.last_mut().expect("rule was just pushed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,5 +562,60 @@ context_max = 128000
         assert!(config.notify); // Unchanged
         assert_eq!(config.budget, Some(10.0)); // Overridden
         assert!(config.grouped); // New
+    }
+
+    #[test]
+    fn test_parse_rules_from_config() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[rules.approve_reads]
+match_status = ["Needs Input"]
+match_tool = ["Read", "Glob", "Grep"]
+action = "approve"
+
+[rules.deny_destructive]
+match_status = ["Needs Input"]
+match_tool = ["Bash"]
+match_command = ["rm -rf", "git push --force"]
+action = "deny"
+
+[rules.auto_continue]
+match_status = ["Waiting"]
+action = "send"
+message = "continue"
+
+[rules.kill_expensive]
+match_cost_above = 10.0
+action = "terminate"
+"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let raw = parse_config_file(&file.path().to_path_buf()).unwrap();
+        assert_eq!(raw.rules.len(), 4);
+
+        let r0 = &raw.rules[0];
+        assert_eq!(r0.name, "approve_reads");
+        assert_eq!(r0.match_tool, vec!["Read", "Glob", "Grep"]);
+        assert_eq!(r0.action, RuleAction::Approve);
+
+        let r1 = &raw.rules[1];
+        assert_eq!(r1.name, "deny_destructive");
+        assert_eq!(r1.match_command, vec!["rm -rf", "git push --force"]);
+        assert_eq!(r1.action, RuleAction::Deny);
+
+        let r2 = &raw.rules[2];
+        assert_eq!(r2.name, "auto_continue");
+        assert_eq!(r2.action, RuleAction::Send);
+        assert_eq!(r2.message, Some("continue".into()));
+
+        let r3 = &raw.rules[3];
+        assert_eq!(r3.name, "kill_expensive");
+        assert_eq!(r3.match_cost_above, Some(10.0));
+        assert_eq!(r3.action, RuleAction::Terminate);
     }
 }

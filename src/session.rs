@@ -139,6 +139,10 @@ pub struct ClaudeSession {
     pub last_msg_type: String,
     pub last_stop_reason: String,
     pub is_waiting_for_task: bool,
+    /// Pending tool call details for rule-based auto-actions.
+    pub pending_tool_name: Option<String>,
+    pub pending_tool_input: Option<String>, // Extracted command string (for Bash)
+    pub last_tool_error: bool,
 }
 
 /// Per-tool usage statistics.
@@ -304,6 +308,9 @@ impl ClaudeSession {
             last_msg_type: String::new(),
             last_stop_reason: String::new(),
             is_waiting_for_task: false,
+            pending_tool_name: None,
+            pending_tool_input: None,
+            last_tool_error: false,
         }
     }
 

@@ -18,6 +18,7 @@ mod monitor;
 mod orchestrator;
 mod process;
 mod recorder;
+mod rules;
 mod session;
 mod session_recorder;
 mod terminals;
@@ -923,6 +924,7 @@ fn run_tui<W: io::Write>(
     app.daily_limit = cfg.daily_limit;
     app.weekly_limit = cfg.weekly_limit;
     app.context_warn_threshold = cfg.context_warn_threshold;
+    app.rules = cfg.rules.clone();
     app.demo_mode = demo_mode;
     apply_filters(&mut app, filters);
 

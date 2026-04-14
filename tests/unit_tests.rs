@@ -6,7 +6,8 @@ fn test_session_status_sort_order() {
     use claudectl::session::SessionStatus;
     assert!(SessionStatus::NeedsInput.sort_key() < SessionStatus::Processing.sort_key());
     assert!(SessionStatus::Processing.sort_key() < SessionStatus::WaitingInput.sort_key());
-    assert!(SessionStatus::WaitingInput.sort_key() < SessionStatus::Idle.sort_key());
+    assert!(SessionStatus::WaitingInput.sort_key() < SessionStatus::Unknown.sort_key());
+    assert!(SessionStatus::Unknown.sort_key() < SessionStatus::Idle.sort_key());
     assert!(SessionStatus::Idle.sort_key() < SessionStatus::Finished.sort_key());
 }
 
@@ -16,6 +17,7 @@ fn test_session_status_display() {
     assert_eq!(SessionStatus::NeedsInput.to_string(), "Needs Input");
     assert_eq!(SessionStatus::Processing.to_string(), "Processing");
     assert_eq!(SessionStatus::WaitingInput.to_string(), "Waiting");
+    assert_eq!(SessionStatus::Unknown.to_string(), "Unknown");
     assert_eq!(SessionStatus::Idle.to_string(), "Idle");
     assert_eq!(SessionStatus::Finished.to_string(), "Finished");
 }
@@ -68,7 +70,7 @@ fn test_format_elapsed() {
 
 #[test]
 fn test_format_tokens() {
-    use claudectl::session::{ClaudeSession, RawSession};
+    use claudectl::session::{ClaudeSession, RawSession, TelemetryStatus};
     let raw = RawSession {
         pid: 1,
         session_id: "x".to_string(),
@@ -77,8 +79,10 @@ fn test_format_tokens() {
     };
     let mut session = ClaudeSession::from_raw(raw);
 
-    assert_eq!(session.format_tokens(), "-");
+    assert_eq!(session.format_tokens(), "n/a");
 
+    session.telemetry_status = TelemetryStatus::Available;
+    session.usage_metrics_available = true;
     session.total_input_tokens = 1_500_000;
     session.total_output_tokens = 42_000;
     assert_eq!(session.format_tokens(), "1.5M/42.0k");
@@ -86,7 +90,7 @@ fn test_format_tokens() {
 
 #[test]
 fn test_format_cost() {
-    use claudectl::session::{ClaudeSession, RawSession};
+    use claudectl::session::{ClaudeSession, RawSession, TelemetryStatus};
     let raw = RawSession {
         pid: 1,
         session_id: "x".to_string(),
@@ -95,8 +99,10 @@ fn test_format_cost() {
     };
     let mut session = ClaudeSession::from_raw(raw);
 
-    assert_eq!(session.format_cost(), "-");
+    assert_eq!(session.format_cost(), "n/a");
 
+    session.telemetry_status = TelemetryStatus::Available;
+    session.usage_metrics_available = true;
     session.cost_usd = 0.42;
     assert_eq!(session.format_cost(), "$0.42");
 

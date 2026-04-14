@@ -166,7 +166,7 @@ fn expand_template(template: &str, session: &ClaudeSession) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{ClaudeSession, RawSession};
+    use crate::session::{ClaudeSession, RawSession, TelemetryStatus};
 
     fn make_session() -> ClaudeSession {
         let raw = RawSession {
@@ -180,6 +180,8 @@ mod tests {
         s.cost_usd = 3.45;
         s.total_input_tokens = 500_000;
         s.total_output_tokens = 50_000;
+        s.telemetry_status = TelemetryStatus::Available;
+        s.usage_metrics_available = true;
         s
     }
 

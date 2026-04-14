@@ -24,7 +24,6 @@ case "$ARCH" in
 esac
 
 TARGET="${ARCH_TARGET}-${OS_TARGET}"
-ARCHIVE="claudectl-${TARGET}.tar.gz"
 
 # Get latest release tag
 echo "Fetching latest release..."
@@ -37,6 +36,7 @@ fi
 
 echo "Installing claudectl ${LATEST} for ${TARGET}..."
 
+ARCHIVE="claudectl-${LATEST}-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${ARCHIVE}"
 CHECKSUM_URL="${URL}.sha256"
 

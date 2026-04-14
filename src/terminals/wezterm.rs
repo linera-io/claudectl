@@ -1,5 +1,23 @@
 use crate::session::ClaudeSession;
 
+pub fn launch(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("wezterm");
+    cmd.args(["cli", "spawn", "--cwd", cwd, "--", "claude"]);
+    for arg in super::build_claude_args(prompt, resume) {
+        cmd.arg(arg);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("wezterm cli spawn failed: {e}"))?;
+
+    if output.status.success() {
+        Ok("wezterm pane".into())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 pub fn switch(session: &ClaudeSession) -> Result<(), String> {
     // WezTerm has `wezterm cli list` and `wezterm cli activate-pane`.
     // `wezterm cli list --format json` shows all panes with their cwd and tty.

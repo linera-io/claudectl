@@ -2,7 +2,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use claudectl::monitor;
-use claudectl::session::{ClaudeSession, RawSession, SessionStatus};
+use claudectl::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus};
 
 /// Helper: create a minimal session for testing status inference.
 fn make_session(cpu: f32, last_message_age_secs: u64) -> ClaudeSession {
@@ -14,6 +14,8 @@ fn make_session(cpu: f32, last_message_age_secs: u64) -> ClaudeSession {
     };
     let mut s = ClaudeSession::from_raw(raw);
     s.cpu_percent = cpu;
+    s.telemetry_status = TelemetryStatus::Available;
+    s.usage_metrics_available = true;
 
     // Set last_message_ts relative to now
     let now_ms = std::time::SystemTime::now()
@@ -132,6 +134,19 @@ fn status_no_signals_idle() {
     let mut s = make_session(0.0, 0);
     monitor::infer_status(&mut s, "", "", false);
     assert_eq!(s.status, SessionStatus::Idle);
+}
+
+#[test]
+fn status_no_telemetry_unknown() {
+    let raw = RawSession {
+        pid: 1,
+        session_id: "test-session".into(),
+        cwd: "/tmp/test-project".into(),
+        started_at: 0,
+    };
+    let mut s = ClaudeSession::from_raw(raw);
+    monitor::infer_status(&mut s, "", "", false);
+    assert_eq!(s.status, SessionStatus::Unknown);
 }
 
 #[test]

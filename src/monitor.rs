@@ -1,20 +1,37 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
-use crate::session::{ClaudeSession, SessionStatus};
+use serde_json::Value;
+
+use crate::models;
+use crate::session::{ClaudeSession, SessionStatus, TelemetryStatus};
+use crate::transcript::{TranscriptBlock, TranscriptEvent, TranscriptRole, parse_line};
 
 /// Read new JSONL entries since last offset, accumulate token stats.
 pub fn update_tokens(session: &mut ClaudeSession) {
     let Some(ref path) = session.jsonl_path else {
+        session.telemetry_status = TelemetryStatus::MissingTranscript;
         return;
     };
 
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(_) => return,
+        Err(_) => {
+            session.telemetry_status = TelemetryStatus::UnreadableTranscript;
+            return;
+        }
     };
 
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+    if file_len == 0 {
+        session.telemetry_status = TelemetryStatus::Pending;
+        return;
+    }
+
+    if session.jsonl_offset > file_len {
+        session.jsonl_offset = 0;
+    }
 
     if session.jsonl_offset > 0 && session.jsonl_offset >= file_len {
         return;
@@ -28,6 +45,8 @@ pub fn update_tokens(session: &mut ClaudeSession) {
     let mut last_type = String::new();
     let mut last_stop_reason = String::new();
     let mut is_waiting_for_task = false;
+    let mut saw_non_empty_line = false;
+    let mut recognized_events = 0usize;
 
     for line in reader.lines() {
         let line = match line {
@@ -35,67 +54,44 @@ pub fn update_tokens(session: &mut ClaudeSession) {
             Err(_) => break,
         };
 
-        if !line.contains("\"type\"") {
+        if line.trim().is_empty() {
             continue;
         }
+        saw_non_empty_line = true;
 
-        // Detect "waiting_for_task" progress events (user confirmation needed)
-        if line.contains("waiting_for_task") {
-            is_waiting_for_task = true;
-        }
+        let Some(event) = parse_line(&line) else {
+            continue;
+        };
+        recognized_events += 1;
 
-        // Extract tool usage and file paths from tool_use content blocks
-        if line.contains("tool_use") {
-            extract_tool_usage(&line, session);
-        }
+        match event {
+            TranscriptEvent::WaitingForTask => {
+                is_waiting_for_task = true;
+            }
+            TranscriptEvent::Message(message) => {
+                is_waiting_for_task = false;
+                last_type = match message.role {
+                    TranscriptRole::Assistant => "assistant".to_string(),
+                    TranscriptRole::User => "user".to_string(),
+                };
 
-        // Extract message type — resets waiting_for_task when conversation continues
-        if line.contains("\"type\":\"user\"") || line.contains("\"type\": \"user\"") {
-            last_type = "user".to_string();
-            last_stop_reason.clear();
-            is_waiting_for_task = false;
-        } else if line.contains("\"type\":\"assistant\"")
-            || line.contains("\"type\": \"assistant\"")
-        {
-            last_type = "assistant".to_string();
-            is_waiting_for_task = false;
-        }
-
-        // Parse assistant messages for stop_reason and usage
-        if line.contains("\"usage\"") || line.contains("\"stop_reason\"") {
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
-                // Extract stop_reason: "end_turn" = done, "tool_use" = still working
-                if let Some(reason) = entry
-                    .get("message")
-                    .and_then(|m| m.get("stop_reason"))
-                    .and_then(|v| v.as_str())
-                {
-                    last_stop_reason = reason.to_string();
+                if let Some(reason) = message.stop_reason {
+                    last_stop_reason = reason;
+                } else {
+                    last_stop_reason.clear();
                 }
 
-                // Extract token usage
-                if let Some(usage) = entry.get("message").and_then(|m| m.get("usage")) {
-                    let input = usage
-                        .get("input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let cache_read = usage
-                        .get("cache_read_input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let cache_create = usage
-                        .get("cache_creation_input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let output = usage
-                        .get("output_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                if let Some(usage) = message.usage {
+                    let input = usage.input_tokens;
+                    let cache_read = usage.cache_read_input_tokens;
+                    let cache_create = usage.cache_creation_input_tokens;
+                    let output = usage.output_tokens;
 
                     session.total_input_tokens += input + cache_read + cache_create;
                     session.total_output_tokens += output;
                     session.cache_read_tokens += cache_read;
                     session.cache_write_tokens += cache_create;
+                    session.usage_metrics_available = true;
 
                     // Track context window: the input_tokens of the LAST API call
                     // represents the current prompt/context size
@@ -103,19 +99,27 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                     if context_size > 0 {
                         session.context_tokens = context_size;
                     }
+                }
 
-                    if session.model.is_empty() {
-                        if let Some(model) = entry
-                            .get("message")
-                            .and_then(|m| m.get("model"))
-                            .and_then(|v| v.as_str())
-                        {
-                            session.model = shorten_model(model);
-                        }
+                if let Some(model) = message.model {
+                    session.model = shorten_model(&model);
+                }
+
+                for block in message.content {
+                    if let TranscriptBlock::ToolUse { name, input } = block {
+                        record_tool_usage(&name, &input, session);
                     }
                 }
             }
         }
+    }
+
+    if recognized_events > 0 || session.telemetry_status.is_available() {
+        session.telemetry_status = TelemetryStatus::Available;
+    } else if saw_non_empty_line {
+        session.telemetry_status = TelemetryStatus::UnsupportedTranscript;
+    } else {
+        session.telemetry_status = TelemetryStatus::Pending;
     }
 
     session.jsonl_offset = file_len;
@@ -133,11 +137,18 @@ pub fn update_tokens(session: &mut ClaudeSession) {
         }
     }
 
-    // Set context window max based on model
-    session.context_max = model_context_max(&session.model);
+    let resolved_profile = models::resolve(&session.model);
+    session.context_max = resolved_profile.profile.context_max;
+    session.cost_estimate_unverified =
+        resolved_profile.source == models::ModelProfileSource::Fallback;
+    session.model_profile_source = resolved_profile.source.label().to_string();
 
     // Compute cost estimate based on model pricing
-    session.cost_usd = estimate_cost(session);
+    session.cost_usd = if session.usage_metrics_available {
+        estimate_cost(session)
+    } else {
+        0.0
+    };
 
     infer_status(session, &last_type, &last_stop_reason, is_waiting_for_task);
 }
@@ -158,6 +169,11 @@ pub fn infer_status(
     // NeedsInput: JSONL says waiting_for_task and CPU is low (confirmed idle)
     if is_waiting_for_task {
         session.status = SessionStatus::NeedsInput;
+        return;
+    }
+
+    if !session.telemetry_status.is_available() && last_msg_type.is_empty() {
+        session.status = SessionStatus::Unknown;
         return;
     }
 
@@ -219,91 +235,38 @@ pub fn estimate_cost(session: &ClaudeSession) -> f64 {
         .saturating_sub(session.cache_read_tokens)
         .saturating_sub(session.cache_write_tokens);
 
-    let (input_per_m, output_per_m, cache_read_per_m, cache_write_per_m) =
-        if session.model.contains("opus") {
-            (15.0, 75.0, 1.875, 18.75)
-        } else if session.model.contains("sonnet") {
-            (3.0, 15.0, 0.375, 3.75)
-        } else if session.model.contains("haiku") {
-            (0.80, 4.0, 0.10, 1.0)
-        } else {
-            // Default to opus pricing (conservative)
-            (15.0, 75.0, 1.875, 18.75)
-        };
+    let profile = models::resolve(&session.model).profile;
 
-    (plain_input as f64 / 1_000_000.0) * input_per_m
-        + (session.total_output_tokens as f64 / 1_000_000.0) * output_per_m
-        + (session.cache_read_tokens as f64 / 1_000_000.0) * cache_read_per_m
-        + (session.cache_write_tokens as f64 / 1_000_000.0) * cache_write_per_m
+    (plain_input as f64 / 1_000_000.0) * profile.input_per_m
+        + (session.total_output_tokens as f64 / 1_000_000.0) * profile.output_per_m
+        + (session.cache_read_tokens as f64 / 1_000_000.0) * profile.cache_read_per_m
+        + (session.cache_write_tokens as f64 / 1_000_000.0) * profile.cache_write_per_m
 }
 
 /// Max context window tokens by model.
 pub fn model_context_max(model: &str) -> u64 {
-    if model.contains("opus") {
-        // Opus 4.6 with extended thinking supports up to 1M
-        1_000_000
-    } else {
-        // Sonnet, Haiku, and other models default to 200k
-        200_000
-    }
+    models::resolve(model).profile.context_max
 }
 
 /// Extract tool usage stats and file paths from tool_use content blocks.
-fn extract_tool_usage(line: &str, session: &mut ClaudeSession) {
-    if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-        let content = entry
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array());
-        if let Some(blocks) = content {
-            for block in blocks {
-                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                if block_type != "tool_use" {
-                    continue;
-                }
-                let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                if tool_name.is_empty() {
-                    continue;
-                }
+fn record_tool_usage(tool_name: &str, input: &Value, session: &mut ClaudeSession) {
+    if tool_name.is_empty() {
+        return;
+    }
 
-                // Count tool calls
-                session
-                    .tool_usage
-                    .entry(tool_name.to_string())
-                    .or_default()
-                    .calls += 1;
+    session
+        .tool_usage
+        .entry(tool_name.to_string())
+        .or_default()
+        .calls += 1;
 
-                // Track file modifications for Edit/Write
-                if matches!(tool_name, "Edit" | "Write" | "NotebookEdit") {
-                    if let Some(path) = block
-                        .get("input")
-                        .and_then(|i| i.get("file_path"))
-                        .and_then(|p| p.as_str())
-                    {
-                        *session.files_modified.entry(path.to_string()).or_insert(0) += 1;
-                    }
-                }
-            }
+    if matches!(tool_name, "Edit" | "Write" | "NotebookEdit") {
+        if let Some(path) = input.get("file_path").and_then(|p| p.as_str()) {
+            *session.files_modified.entry(path.to_string()).or_insert(0) += 1;
         }
     }
 }
 
 pub fn shorten_model(model: &str) -> String {
-    if model.contains("opus") {
-        if model.contains("4-6") {
-            "opus-4.6".into()
-        } else {
-            "opus".into()
-        }
-    } else if model.contains("sonnet") {
-        if model.contains("4-6") {
-            "sonnet-4.6".into()
-        } else {
-            "sonnet".into()
-        }
-    } else if model.contains("haiku") {
-        "haiku".into()
-    } else {
-        model.to_string()
-    }
+    models::shorten_model(model)
 }

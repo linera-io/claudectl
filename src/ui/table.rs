@@ -37,6 +37,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     // Empty state: show onboarding message when no sessions found
     if app.sessions.is_empty() {
+        let launch_hint = if crate::terminals::can_launch_session() {
+            "  Press n to launch a new session, or start claude in another terminal."
+        } else {
+            "  Start claude in tmux, Kitty, WezTerm, or another terminal."
+        };
         let empty_lines = vec![
             Line::from(""),
             Line::from(""),
@@ -47,24 +52,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("  Press ", Style::default().fg(t.text_muted)),
-                Span::styled(
-                    "n",
-                    Style::default()
-                        .fg(t.highlight_key)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    " to launch a new session, or start ",
-                    Style::default().fg(t.text_muted),
-                ),
-                Span::styled(
-                    "claude",
-                    Style::default().fg(t.success).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" in another terminal.", Style::default().fg(t.text_muted)),
-            ]),
+            Line::from(launch_hint),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Press ", Style::default().fg(t.text_muted)),
@@ -196,6 +184,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|s| s.total_input_tokens + s.total_output_tokens)
         .sum();
+    let missing_usage = app.sessions.iter().filter(|s| !s.has_usage_metrics()).count();
     let selected = app.table_state.selected().map(|i| i + 1).unwrap_or(0);
 
     let cost_str = if total_cost < 1.0 {
@@ -205,6 +194,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let tokens_str = format_token_count(total_tokens);
+    let partial_str = if missing_usage > 0 {
+        format!(" +{missing_usage} n/a")
+    } else {
+        String::new()
+    };
 
     let sort_name = SORT_COLUMNS[app.sort_column];
 
@@ -214,7 +208,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(t.footer),
         ),
         Span::styled(format!("{cost_str} "), Style::default().fg(t.cost)),
-        Span::styled(format!("{tokens_str} "), Style::default().fg(t.footer)),
+        Span::styled(
+            format!("{tokens_str}{partial_str} "),
+            Style::default().fg(t.footer),
+        ),
         Span::styled(
             format!("[{selected}/{count}]"),
             Style::default().fg(t.footer),
@@ -365,6 +362,8 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
 
     let status_text = if app.auto_approve.contains(&s.pid) {
         format!("{}*", s.status)
+    } else if s.status == SessionStatus::Unknown {
+        s.telemetry_status.short_label().to_string()
     } else if s.status == SessionStatus::NeedsInput {
         match app.format_wait_time(s.pid) {
             Some(wait) => format!("{} ({})", s.status, wait),
@@ -389,7 +388,9 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
     };
 
     let ctx_pct = s.context_percent();
-    let ctx_color = if ctx_pct > 80.0 {
+    let ctx_color = if !s.has_usage_metrics() {
+        t.text_muted
+    } else if ctx_pct > 80.0 {
         t.context_danger
     } else if ctx_pct > 50.0 {
         t.context_warning
@@ -397,7 +398,9 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
         t.context_ok
     };
 
-    let burn_color = if s.burn_rate_per_hr > 10.0 {
+    let burn_color = if !s.has_usage_metrics() {
+        t.text_muted
+    } else if s.burn_rate_per_hr > 10.0 {
         t.burn_rate_high
     } else if s.burn_rate_per_hr > 1.0 {
         t.burn_rate_mid
@@ -406,7 +409,9 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
     };
 
     // Cost cell with budget indicator
-    let (cost_text, cost_color) = if let Some(budget) = app.budget_usd {
+    let (cost_text, cost_color) = if !s.has_usage_metrics() {
+        (s.format_cost(), t.text_muted)
+    } else if let Some(budget) = app.budget_usd {
         let pct = s.cost_usd / budget * 100.0;
         let text = format!("{} {:.0}%", s.format_cost(), pct);
         let color = if pct >= 100.0 {

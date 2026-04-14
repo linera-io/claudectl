@@ -1036,16 +1036,10 @@ impl App {
                     .canonicalize()
                     .unwrap_or_else(|_| std::path::PathBuf::from(&dir));
 
-                match std::process::Command::new("claude")
-                    .current_dir(&cwd_path)
-                    .spawn()
-                {
-                    Ok(child) => {
-                        self.status_msg = format!(
-                            "Launched session (PID {}) in {}",
-                            child.id(),
-                            cwd_path.display()
-                        );
+                match terminals::launch_session(cwd_path.to_string_lossy().as_ref(), None, None) {
+                    Ok(target) => {
+                        self.status_msg =
+                            format!("Launched session in {target} at {}", cwd_path.display());
                     }
                     Err(e) => {
                         self.status_msg = format!("Launch failed: {e}");
@@ -1132,6 +1126,11 @@ impl App {
                 SessionStatus::Processing => {
                     self.status_msg =
                         "Cannot compact — session is processing (wait until idle)".into();
+                }
+                SessionStatus::Unknown => {
+                    self.status_msg =
+                        "Cannot compact — transcript telemetry is unavailable for this session"
+                            .into();
                 }
                 SessionStatus::Finished => {
                     self.status_msg = "Cannot compact — session has finished".into();
@@ -1230,9 +1229,12 @@ fn fire_webhook(url: &str, session: &ClaudeSession, old_status: String) {
             "project": session.display_name(),
             "old_status": old_status,
             "new_status": session.status.to_string(),
-            "cost_usd": (session.cost_usd * 100.0).round() / 100.0,
-            "context_pct": (session.context_percent() * 100.0).round() / 100.0,
+            "telemetry": session.telemetry_label(),
+            "cost_usd": if session.has_usage_metrics() { serde_json::json!((session.cost_usd * 100.0).round() / 100.0) } else { serde_json::Value::Null },
+            "context_pct": if session.has_usage_metrics() { serde_json::json!((session.context_percent() * 100.0).round() / 100.0) } else { serde_json::Value::Null },
             "elapsed_secs": session.elapsed.as_secs(),
+            "estimate_verified": !session.cost_estimate_unverified,
+            "profile_source": session.model_profile_source,
         },
         "timestamp": chrono_now_iso(),
     });

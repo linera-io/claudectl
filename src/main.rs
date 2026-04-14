@@ -13,6 +13,7 @@ mod history;
 mod hooks;
 mod logger;
 mod monitor;
+mod models;
 mod orchestrator;
 mod process;
 mod recorder;
@@ -20,6 +21,7 @@ mod session;
 mod session_recorder;
 mod terminals;
 mod theme;
+mod transcript;
 mod ui;
 
 use std::io;
@@ -210,6 +212,8 @@ fn main() -> io::Result<()> {
         });
     }
 
+    models::set_overrides(cfg.model_overrides.clone());
+
     // Load event hooks from config
     let hook_registry = config::load_hooks();
 
@@ -333,31 +337,16 @@ fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> io::
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(cwd));
 
-    let mut cmd = std::process::Command::new("claude");
-
-    if let Some(resume_id) = resume {
-        cmd.arg("--resume").arg(resume_id);
-    }
-
-    if let Some(prompt_text) = prompt {
-        cmd.arg("-p").arg(prompt_text);
-    }
-
-    cmd.current_dir(&cwd_path);
-
-    match cmd.spawn() {
-        Ok(child) => {
+    match terminals::launch_session(cwd_path.to_string_lossy().as_ref(), prompt, resume) {
+        Ok(target) => {
             println!(
-                "Launched Claude session (PID {}) in {}",
-                child.id(),
+                "Launched Claude session in {} at {}",
+                target,
                 cwd_path.display()
             );
             Ok(())
         }
-        Err(e) => {
-            eprintln!("Failed to launch claude: {e}");
-            Err(e)
-        }
+        Err(e) => Err(io::Error::other(e)),
     }
 }
 
@@ -542,17 +531,23 @@ fn print_summary(since: &str) -> io::Result<()> {
             session::SessionStatus::Processing => "\x1b[32m",
             session::SessionStatus::NeedsInput => "\x1b[35m",
             session::SessionStatus::WaitingInput => "\x1b[33m",
+            session::SessionStatus::Unknown => "\x1b[34m",
             session::SessionStatus::Idle => "\x1b[90m",
             session::SessionStatus::Finished => "\x1b[31m",
         };
         let reset = "\x1b[0m";
+        let status_text = if s.status == session::SessionStatus::Unknown {
+            format!("Unknown: {}", s.telemetry_label())
+        } else {
+            s.status.to_string()
+        };
 
         println!(
             "=== {} ({}, {}, {status_color}{}{reset}) ===",
             s.display_name(),
             s.format_elapsed(),
             s.format_cost(),
-            s.status,
+            status_text,
         );
 
         // Git stats from session's cwd
@@ -606,11 +601,27 @@ fn print_summary(since: &str) -> io::Result<()> {
 
         // Model and context
         if !s.model.is_empty() {
+            let context_text = if s.has_usage_metrics() {
+                format!("{}%", s.context_percent() as u32)
+            } else {
+                "n/a".to_string()
+            };
+            let estimate_note = if s.cost_estimate_unverified {
+                " [fallback estimate]"
+            } else if s.model_profile_source == "override" {
+                " [config override]"
+            } else {
+                ""
+            };
             println!(
-                "  Model: {} (context: {}%)",
+                "  Model: {}{} (context: {})",
                 s.model,
-                s.context_percent() as u32
+                estimate_note,
+                context_text
             );
+        }
+        if s.status == session::SessionStatus::Unknown || !s.has_usage_metrics() {
+            println!("  Telemetry: {}", s.telemetry_label());
         }
 
         if s.subagent_count > 0 {
@@ -670,11 +681,16 @@ fn print_list(demo: bool) -> io::Result<()> {
     println!("{}", "-".repeat(105));
 
     for s in &app.sessions {
+        let status_text = if s.status == session::SessionStatus::Unknown {
+            s.telemetry_status.short_label().to_string()
+        } else {
+            s.status.to_string()
+        };
         println!(
             "{:<7} {:<16} {:<12} {:<8} {:<8} {:<9} {:<10} {:<6.1} {:<6} {}",
             s.pid,
             s.display_name(),
-            s.status.to_string(),
+            status_text,
             s.format_context(),
             s.format_cost(),
             s.format_burn_rate(),
@@ -708,8 +724,9 @@ fn run_watch(tick_rate: Duration, json_mode: bool, format_str: &str) -> io::Resu
                 "pid": s.pid,
                 "project": s.display_name(),
                 "status": s.status.to_string(),
-                "cost_usd": (s.cost_usd * 100.0).round() / 100.0,
-                "context_pct": (s.context_percent() * 100.0).round() / 100.0,
+                "telemetry": s.telemetry_label(),
+                "cost_usd": if s.has_usage_metrics() { serde_json::json!((s.cost_usd * 100.0).round() / 100.0) } else { serde_json::Value::Null },
+                "context_pct": if s.has_usage_metrics() { serde_json::json!((s.context_percent() * 100.0).round() / 100.0) } else { serde_json::Value::Null },
                 "elapsed_secs": s.elapsed.as_secs(),
             });
             println!("{}", serde_json::to_string(&obj).unwrap_or_default());
@@ -737,8 +754,9 @@ fn run_watch(tick_rate: Duration, json_mode: bool, format_str: &str) -> io::Resu
                     "project": s.display_name(),
                     "old_status": prev.map(|p| p.to_string()).unwrap_or_default(),
                     "new_status": s.status.to_string(),
-                    "cost_usd": (s.cost_usd * 100.0).round() / 100.0,
-                    "context_pct": (s.context_percent() * 100.0).round() / 100.0,
+                    "telemetry": s.telemetry_label(),
+                    "cost_usd": if s.has_usage_metrics() { serde_json::json!((s.cost_usd * 100.0).round() / 100.0) } else { serde_json::Value::Null },
+                    "context_pct": if s.has_usage_metrics() { serde_json::json!((s.context_percent() * 100.0).round() / 100.0) } else { serde_json::Value::Null },
                     "elapsed_secs": s.elapsed.as_secs(),
                 });
                 println!("{}", serde_json::to_string(&obj).unwrap_or_default());
@@ -752,11 +770,21 @@ fn run_watch(tick_rate: Duration, json_mode: bool, format_str: &str) -> io::Resu
 }
 
 fn format_session(fmt: &str, s: &session::ClaudeSession) -> String {
+    let cost = if s.has_usage_metrics() {
+        format!("{:.2}", s.cost_usd)
+    } else {
+        "n/a".to_string()
+    };
+    let context = if s.has_usage_metrics() {
+        format!("{}", s.context_percent() as u32)
+    } else {
+        "n/a".to_string()
+    };
     fmt.replace("{pid}", &s.pid.to_string())
         .replace("{project}", s.display_name())
         .replace("{status}", &s.status.to_string())
-        .replace("{cost}", &format!("{:.2}", s.cost_usd))
-        .replace("{context}", &format!("{}", s.context_percent() as u32))
+        .replace("{cost}", &cost)
+        .replace("{context}", &context)
 }
 
 fn run_tui<W: io::Write>(

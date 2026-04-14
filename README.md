@@ -193,6 +193,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | **Needs Input** | Magenta | Waiting for user to approve/confirm a tool use |
 | **Processing** | Green | Actively generating or executing tools |
 | **Waiting** | Yellow | Done responding, waiting for user's next prompt |
+| **Unknown** | Blue | Session is alive, but transcript telemetry is missing or unsupported |
 | **Idle** | Gray | No recent activity (>10 min since last message) |
 | **Finished** | Red | Process exited |
 
@@ -214,7 +215,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `i` | Input mode (type text to session) |
 | `d`/`x` | Kill session (double-tap to confirm) |
 | `a` | Toggle auto-approve (double-tap to confirm) |
-| `n` | Launch new Claude session |
+| `n` | Launch new Claude session (`tmux`, Kitty, WezTerm) |
 | `g` | Toggle grouped view by project |
 | `s` | Cycle sort column |
 | `c` | Send /compact to session (when idle) |
@@ -306,6 +307,13 @@ events = ["NeedsInput", "Finished"]
 
 [context]
 warn_threshold = 75
+
+[models."gpt-4o"]
+input_per_m = 1.25
+output_per_m = 5.0
+cache_read_per_m = 0.15
+cache_write_per_m = 0.9
+context_max = 128000
 ```
 
 Show resolved config: `claudectl --config`

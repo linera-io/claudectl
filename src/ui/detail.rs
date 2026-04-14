@@ -29,14 +29,23 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
     let output_tok = format_tokens(session.total_output_tokens);
     let cache_read = format_tokens(session.cache_read_tokens);
     let cache_write = format_tokens(session.cache_write_tokens);
-    let context_str = format!(
-        "{} / {} ({}%)",
-        format_tokens(session.context_tokens),
-        format_tokens(session.context_max),
-        session.context_percent() as u32
-    );
+    let context_str = if session.has_usage_metrics() {
+        format!(
+            "{} / {} ({}%)",
+            format_tokens(session.context_tokens),
+            format_tokens(session.context_max),
+            session.context_percent() as u32
+        )
+    } else {
+        "n/a".to_string()
+    };
     let cost = session.format_cost();
     let burn_rate = session.format_burn_rate();
+    let estimate = if session.cost_estimate_unverified {
+        format!("{} (unverified)", session.model_profile_source)
+    } else {
+        session.model_profile_source.clone()
+    };
     let command = if session.command_args.is_empty() {
         "claude".to_string()
     } else {
@@ -48,6 +57,11 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "-".into());
     let subagents = session.subagent_count.to_string();
+    let telemetry = if session.has_usage_metrics() {
+        format!("{} (usage metrics available)", session.telemetry_label())
+    } else {
+        session.telemetry_label().to_string()
+    };
 
     let mut lines = vec![
         detail_line("PID", &pid, t),
@@ -56,6 +70,7 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         detail_line("Project", &session.project_name, t),
         detail_line("Model", &model, t),
         detail_line("Status", &status, t),
+        detail_line("Telemetry", &telemetry, t),
         detail_line("TTY", &tty, t),
         detail_line("Elapsed", &elapsed, t),
         Line::from(""),
@@ -75,6 +90,7 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         )),
         detail_line("  Total", &cost, t),
         detail_line("  Burn Rate", &burn_rate, t),
+        detail_line("  Estimate", &estimate, t),
         Line::from(""),
         detail_line("Command", &command, t),
         detail_line("JSONL", &jsonl, t),

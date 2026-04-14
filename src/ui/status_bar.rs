@@ -25,11 +25,22 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     } else if app.launch_mode {
         let msg = Paragraph::new(Line::from(vec![
             Span::styled(
-                " new> ",
+                format!(" new[{}]> ", app.launch_form.field.label()),
                 Style::default().fg(t.success).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&*app.launch_buffer, Style::default().fg(t.text_primary)),
+            Span::styled(
+                app.launch_form.active_buffer(),
+                Style::default().fg(t.text_primary),
+            ),
             Span::styled("_", Style::default().fg(t.text_muted)),
+            Span::styled(
+                format!("  {}", app.launch_form.summary()),
+                Style::default().fg(t.text_muted),
+            ),
+            Span::styled(
+                "  Enter next  Ctrl+Enter launch",
+                Style::default().fg(t.text_muted),
+            ),
         ]));
         frame.render_widget(msg, area);
     } else if app.input_mode {

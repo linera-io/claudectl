@@ -11,6 +11,7 @@ pub mod demo;
 pub mod discovery;
 pub mod history;
 pub mod hooks;
+pub mod launch;
 pub mod logger;
 pub mod models;
 pub mod monitor;

@@ -11,6 +11,7 @@ mod demo;
 mod discovery;
 mod history;
 mod hooks;
+mod launch;
 mod logger;
 mod models;
 mod monitor;
@@ -372,16 +373,15 @@ fn main() -> io::Result<()> {
 }
 
 fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> io::Result<()> {
-    let cwd_path = std::path::Path::new(cwd)
-        .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    let request = launch::prepare(cwd, prompt, resume).map_err(io::Error::other)?;
 
-    match terminals::launch_session(cwd_path.to_string_lossy().as_ref(), prompt, resume) {
+    match launch::launch(&request) {
         Ok(target) => {
             println!(
-                "Launched Claude session in {} at {}",
+                "Launched Claude session in {} at {}{}",
                 target,
-                cwd_path.display()
+                request.cwd_path.display(),
+                request.option_summary()
             );
             Ok(())
         }

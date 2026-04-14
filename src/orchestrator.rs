@@ -1,44 +1,95 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A task definition from the tasks file.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TaskDef {
     pub name: String,
     pub cwd: Option<String>,
     pub prompt: String,
-    #[allow(dead_code)]
-    pub budget: Option<f64>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub resume: Option<String>,
+    #[serde(default)]
+    pub retries: Option<u32>,
 }
 
 /// Task file containing a list of tasks.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskFile {
     pub tasks: Vec<TaskDef>,
-    #[allow(dead_code)]
-    pub budget: Option<f64>,
+    #[serde(default)]
+    pub retries: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum TaskState {
     Pending,
+    RetryQueued(String),
     Running,
     Completed,
     Failed(String),
+    Skipped(String),
+    Aborted(String),
+}
+
+impl TaskState {
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed(_) | Self::Skipped(_) | Self::Aborted(_)
+        )
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::RetryQueued(_) => "retrying",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed(_) => "failed",
+            Self::Skipped(_) => "skipped",
+            Self::Aborted(_) => "aborted",
+        }
+    }
+
+    fn message(&self) -> Option<&str> {
+        match self {
+            Self::RetryQueued(msg)
+            | Self::Failed(msg)
+            | Self::Skipped(msg)
+            | Self::Aborted(msg) => Some(msg),
+            _ => None,
+        }
+    }
 }
 
 type SharedTail = Arc<Mutex<VecDeque<String>>>;
+
+#[derive(Debug, Clone, Serialize)]
+struct AttemptArtifact {
+    attempt: u32,
+    pid: Option<u32>,
+    stdout_log: Option<String>,
+    stderr_log: Option<String>,
+    outcome: Option<String>,
+    duration_secs: Option<u64>,
+}
 
 struct TaskRun {
     def: TaskDef,
@@ -49,6 +100,10 @@ struct TaskRun {
     stdout_log: Option<PathBuf>,
     stderr_log: Option<PathBuf>,
     log_tail: SharedTail,
+    attempts_started: u32,
+    max_attempts: u32,
+    next_retry_at: Option<Instant>,
+    attempts: Vec<AttemptArtifact>,
 }
 
 struct LaunchedTask {
@@ -56,6 +111,58 @@ struct LaunchedTask {
     stdout_log: PathBuf,
     stderr_log: PathBuf,
     log_tail: SharedTail,
+}
+
+#[derive(Default)]
+struct RunCounts {
+    completed: usize,
+    running: usize,
+    pending: usize,
+    retrying: usize,
+    failed: usize,
+    skipped: usize,
+    aborted: usize,
+}
+
+#[derive(Serialize)]
+struct RunReport {
+    status: String,
+    parallel: bool,
+    generated_at_ms: u128,
+    logs_dir: String,
+    counts: RunReportCounts,
+    tasks: Vec<TaskReport>,
+}
+
+#[derive(Serialize)]
+struct RunReportCounts {
+    total: usize,
+    completed: usize,
+    running: usize,
+    pending: usize,
+    retrying: usize,
+    failed: usize,
+    skipped: usize,
+    aborted: usize,
+}
+
+#[derive(Serialize)]
+struct TaskReport {
+    name: String,
+    status: String,
+    message: Option<String>,
+    cwd: Option<String>,
+    prompt: String,
+    depends_on: Vec<String>,
+    resume: Option<String>,
+    attempts_started: u32,
+    max_attempts: u32,
+    running_pid: Option<u32>,
+    duration_secs: Option<u64>,
+    latest_stdout_log: Option<String>,
+    latest_stderr_log: Option<String>,
+    recent_output: Vec<String>,
+    attempts: Vec<AttemptArtifact>,
 }
 
 /// Load tasks from a JSON file.
@@ -66,10 +173,13 @@ pub fn load_tasks(path: &str) -> io::Result<TaskFile> {
 
 /// Run tasks with dependency resolution and parallel execution.
 pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
+    validate_task_file(&task_file)?;
+
     let mut tasks: Vec<TaskRun> = task_file
         .tasks
         .into_iter()
         .map(|def| TaskRun {
+            max_attempts: resolved_max_attempts(task_file.retries, def.retries),
             def,
             state: TaskState::Pending,
             pid: None,
@@ -78,113 +188,73 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
             stdout_log: None,
             stderr_log: None,
             log_tail: Arc::new(Mutex::new(VecDeque::new())),
+            attempts_started: 0,
+            next_retry_at: None,
+            attempts: Vec::new(),
         })
         .collect();
-
-    // Validate dependencies exist
-    let names: Vec<String> = tasks.iter().map(|t| t.def.name.clone()).collect();
-    for task in &tasks {
-        for dep in &task.def.depends_on {
-            if !names.contains(dep) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Task '{}' depends on '{}' which doesn't exist",
-                        task.def.name, dep
-                    ),
-                ));
-            }
-        }
-    }
 
     let total = tasks.len();
     println!("Running {total} tasks...");
     println!();
 
-    let poll_interval = Duration::from_secs(2);
     let run_dir = create_run_dir()?;
+    let status_path = run_dir.join("status.json");
+    let summary_path = run_dir.join("summary.json");
     let print_lock = Arc::new(Mutex::new(()));
     println!("Logs: {}", run_dir.display());
+    println!("Status: {}", status_path.display());
     println!();
 
+    let cancel_requested = Arc::new(AtomicBool::new(false));
+    install_abort_handler(Arc::clone(&cancel_requested));
+    let mut abort_notified = false;
+
     loop {
-        let completed: Vec<String> = tasks
-            .iter()
-            .filter(|t| t.state == TaskState::Completed)
-            .map(|t| t.def.name.clone())
-            .collect();
-
-        let failed: Vec<String> = tasks
-            .iter()
-            .filter(|t| matches!(t.state, TaskState::Failed(_)))
-            .map(|t| t.def.name.clone())
-            .collect();
-
-        let running_count = tasks
-            .iter()
-            .filter(|t| t.state == TaskState::Running)
-            .count();
-        let pending_count = tasks
-            .iter()
-            .filter(|t| t.state == TaskState::Pending)
-            .count();
-
-        print_status(&tasks);
-
-        if completed.len() + failed.len() == total {
-            println!();
-            if failed.is_empty() {
-                println!("All {total} tasks completed successfully.");
-            } else {
-                println!("{} completed, {} failed.", completed.len(), failed.len());
-                for task in &tasks {
-                    if let TaskState::Failed(ref msg) = task.state {
-                        println!("  FAILED: {} — {}", task.def.name, msg);
-                        print_task_logs(task);
-                    }
-                }
+        if cancel_requested.load(Ordering::SeqCst) {
+            if !abort_notified {
+                println!();
+                println!("Abort requested — stopping running tasks and cancelling pending work...");
+                abort_notified = true;
             }
-
-            #[cfg(target_os = "macos")]
-            {
-                let msg = if failed.is_empty() {
-                    format!("All {total} tasks completed")
-                } else {
-                    format!("{} completed, {} failed", completed.len(), failed.len())
-                };
-                let _ = Command::new("osascript")
-                    .args([
-                        "-e",
-                        &format!("display notification \"{msg}\" with title \"claudectl run\""),
-                    ])
-                    .spawn();
-            }
-
-            return if failed.is_empty() {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!("{} tasks failed", failed.len())))
-            };
+            abort_tasks(&mut tasks);
         }
 
+        mark_dependency_failures(&mut tasks);
+
+        let completed: HashSet<String> = tasks
+            .iter()
+            .filter(|task| matches!(task.state, TaskState::Completed))
+            .map(|task| task.def.name.clone())
+            .collect();
+
+        let mut running_count = tasks
+            .iter()
+            .filter(|task| matches!(task.state, TaskState::Running))
+            .count();
+
         for task in &mut tasks {
-            if task.state != TaskState::Pending {
+            if !matches!(task.state, TaskState::Pending | TaskState::RetryQueued(_)) {
                 continue;
             }
 
-            let deps_met = task
+            if cancel_requested.load(Ordering::SeqCst) {
+                break;
+            }
+
+            if task
+                .next_retry_at
+                .is_some_and(|ready_at| Instant::now() < ready_at)
+            {
+                continue;
+            }
+
+            if !task
                 .def
                 .depends_on
                 .iter()
-                .all(|dep| completed.contains(dep));
-            let deps_failed = task.def.depends_on.iter().any(|dep| failed.contains(dep));
-
-            if deps_failed {
-                task.state = TaskState::Failed("dependency failed".into());
-                continue;
-            }
-
-            if !deps_met {
+                .all(|dep| completed.contains(dep))
+            {
                 continue;
             }
 
@@ -192,25 +262,63 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
                 break;
             }
 
-            match launch_claude_session(&task.def, &run_dir, Arc::clone(&print_lock)) {
+            let attempt = task.attempts_started + 1;
+            match launch_claude_session(&task.def, &run_dir, Arc::clone(&print_lock), attempt) {
                 Ok(launched) => {
                     let pid = launched.child.id();
-                    println!("  Started: {} (PID {})", task.def.name, pid);
-                    println!(
-                        "    logs: {}, {}",
-                        launched.stdout_log.display(),
-                        launched.stderr_log.display()
-                    );
+                    task.attempts_started = attempt;
                     task.pid = Some(pid);
                     task.start_time = Some(Instant::now());
-                    task.stdout_log = Some(launched.stdout_log);
-                    task.stderr_log = Some(launched.stderr_log);
+                    task.stdout_log = Some(launched.stdout_log.clone());
+                    task.stderr_log = Some(launched.stderr_log.clone());
                     task.log_tail = launched.log_tail;
                     task.child = Some(launched.child);
                     task.state = TaskState::Running;
+                    task.next_retry_at = None;
+                    task.attempts.push(AttemptArtifact {
+                        attempt,
+                        pid: Some(pid),
+                        stdout_log: Some(launched.stdout_log.display().to_string()),
+                        stderr_log: Some(launched.stderr_log.display().to_string()),
+                        outcome: None,
+                        duration_secs: None,
+                    });
+
+                    println!(
+                        "  Started: {} (attempt {}/{}, PID {})",
+                        task.def.name, attempt, task.max_attempts, pid
+                    );
+                    println!(
+                        "    logs: {}, {}",
+                        task.stdout_log.as_ref().unwrap().display(),
+                        task.stderr_log.as_ref().unwrap().display()
+                    );
+                    running_count += 1;
                 }
                 Err(e) => {
-                    task.state = TaskState::Failed(format!("launch error: {e}"));
+                    task.attempts_started = attempt;
+                    let reason = format!("launch error: {e}");
+                    task.attempts.push(AttemptArtifact {
+                        attempt,
+                        pid: None,
+                        stdout_log: None,
+                        stderr_log: None,
+                        outcome: Some(reason.clone()),
+                        duration_secs: None,
+                    });
+
+                    if queue_retry(task, &reason) {
+                        println!(
+                            "  Retry queued: {} (attempt {}/{}) — {}",
+                            task.def.name,
+                            task.attempts_started + 1,
+                            task.max_attempts,
+                            reason
+                        );
+                    } else {
+                        println!("  Failed: {} ({reason})", task.def.name);
+                        task.state = TaskState::Failed(reason);
+                    }
                 }
             }
         }
@@ -228,53 +336,296 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
 
             match wait_result {
                 Ok(Some(status)) => {
-                    let elapsed = task.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+                    let elapsed = task.start_time.map(|started| started.elapsed().as_secs());
                     task.child = None;
+                    task.pid = None;
+                    task.start_time = None;
                     if status.success() {
-                        println!("  Finished: {} ({}s)", task.def.name, elapsed);
+                        set_latest_attempt_outcome(task, "completed".into(), elapsed);
+                        println!(
+                            "  Finished: {} (attempt {}/{}, {}s)",
+                            task.def.name,
+                            task.attempts_started,
+                            task.max_attempts,
+                            elapsed.unwrap_or(0)
+                        );
                         task.state = TaskState::Completed;
                     } else {
                         let reason = format!("exit {}", format_exit_status(status));
-                        println!("  Failed: {} ({reason})", task.def.name);
-                        print_task_tail(task);
-                        task.state = TaskState::Failed(reason);
+                        set_latest_attempt_outcome(task, reason.clone(), elapsed);
+                        if queue_retry(task, &reason) {
+                            println!(
+                                "  Retry queued: {} (attempt {}/{}) — {}",
+                                task.def.name,
+                                task.attempts_started + 1,
+                                task.max_attempts,
+                                reason
+                            );
+                            print_task_tail(task);
+                        } else {
+                            println!("  Failed: {} ({reason})", task.def.name);
+                            print_task_tail(task);
+                            task.state = TaskState::Failed(reason);
+                        }
                     }
                 }
                 Ok(None) => {}
                 Err(e) => {
                     let reason = format!("wait error: {e}");
-                    println!("  Failed: {} ({reason})", task.def.name);
-                    print_task_tail(task);
-                    task.state = TaskState::Failed(reason);
+                    let elapsed = task.start_time.map(|started| started.elapsed().as_secs());
                     task.child = None;
-                }
-            }
-        }
-
-        if pending_count > 0 && running_count == 0 {
-            let launchable = tasks.iter().any(|t| {
-                t.state == TaskState::Pending
-                    && t.def.depends_on.iter().all(|dep| completed.contains(dep))
-                    && !t.def.depends_on.iter().any(|dep| failed.contains(dep))
-            });
-            if !launchable {
-                for task in &mut tasks {
-                    if task.state == TaskState::Pending {
-                        task.state = TaskState::Failed("unresolvable dependency".into());
+                    task.pid = None;
+                    task.start_time = None;
+                    set_latest_attempt_outcome(task, reason.clone(), elapsed);
+                    if queue_retry(task, &reason) {
+                        println!(
+                            "  Retry queued: {} (attempt {}/{}) — {}",
+                            task.def.name,
+                            task.attempts_started + 1,
+                            task.max_attempts,
+                            reason
+                        );
+                        print_task_tail(task);
+                    } else {
+                        println!("  Failed: {} ({reason})", task.def.name);
+                        print_task_tail(task);
+                        task.state = TaskState::Failed(reason);
                     }
                 }
-                continue;
             }
         }
 
-        std::thread::sleep(poll_interval);
+        print_status(&tasks);
+        write_run_report(&status_path, &run_dir, &tasks, parallel)?;
+
+        if tasks.iter().all(|task| task.state.is_terminal()) {
+            break;
+        }
+
+        std::thread::sleep(POLL_INTERVAL);
     }
+
+    println!();
+    write_run_report(&summary_path, &run_dir, &tasks, parallel)?;
+    println!("Summary: {}", summary_path.display());
+    print_final_summary(&tasks);
+
+    #[cfg(target_os = "macos")]
+    {
+        let counts = compute_counts(&tasks);
+        let msg = if counts.failed == 0 && counts.aborted == 0 && counts.skipped == 0 {
+            format!("All {total} tasks completed")
+        } else {
+            format!(
+                "{} completed, {} failed, {} skipped, {} aborted",
+                counts.completed, counts.failed, counts.skipped, counts.aborted
+            )
+        };
+        let _ = Command::new("osascript")
+            .args([
+                "-e",
+                &format!("display notification \"{msg}\" with title \"claudectl run\""),
+            ])
+            .spawn();
+    }
+
+    let counts = compute_counts(&tasks);
+    if counts.failed == 0 && counts.aborted == 0 && counts.skipped == 0 {
+        Ok(())
+    } else if counts.aborted > 0 {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!(
+                "{} failed, {} skipped, {} aborted",
+                counts.failed, counts.skipped, counts.aborted
+            ),
+        ))
+    } else {
+        Err(io::Error::other(format!(
+            "{} failed, {} skipped",
+            counts.failed, counts.skipped
+        )))
+    }
+}
+
+fn validate_task_file(task_file: &TaskFile) -> io::Result<()> {
+    let mut seen = HashSet::new();
+    let names: HashSet<String> = task_file
+        .tasks
+        .iter()
+        .map(|task| task.name.clone())
+        .collect();
+
+    for task in &task_file.tasks {
+        if !seen.insert(task.name.clone()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Duplicate task name: '{}'", task.name),
+            ));
+        }
+
+        for dep in &task.depends_on {
+            if !names.contains(dep) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Task '{}' depends on '{}' which doesn't exist",
+                        task.name, dep
+                    ),
+                ));
+            }
+        }
+    }
+
+    validate_acyclic_graph(&task_file.tasks)
+}
+
+fn validate_acyclic_graph(tasks: &[TaskDef]) -> io::Result<()> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Done,
+    }
+
+    fn visit(
+        name: &str,
+        tasks: &HashMap<String, &TaskDef>,
+        states: &mut HashMap<String, VisitState>,
+        stack: &mut Vec<String>,
+    ) -> io::Result<()> {
+        if let Some(state) = states.get(name) {
+            if *state == VisitState::Done {
+                return Ok(());
+            }
+            if *state == VisitState::Visiting {
+                stack.push(name.to_string());
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Task dependencies contain a cycle: {}", stack.join(" -> ")),
+                ));
+            }
+        }
+
+        states.insert(name.to_string(), VisitState::Visiting);
+        stack.push(name.to_string());
+
+        if let Some(task) = tasks.get(name) {
+            for dep in &task.depends_on {
+                visit(dep, tasks, states, stack)?;
+            }
+        }
+
+        stack.pop();
+        states.insert(name.to_string(), VisitState::Done);
+        Ok(())
+    }
+
+    let task_map: HashMap<String, &TaskDef> =
+        tasks.iter().map(|task| (task.name.clone(), task)).collect();
+    let mut states = HashMap::new();
+
+    for task in tasks {
+        let mut stack = Vec::new();
+        visit(&task.name, &task_map, &mut states, &mut stack)?;
+    }
+
+    Ok(())
+}
+
+fn resolved_max_attempts(default_retries: Option<u32>, task_retries: Option<u32>) -> u32 {
+    1 + task_retries.or(default_retries).unwrap_or(0)
+}
+
+fn install_abort_handler(cancel_requested: Arc<AtomicBool>) {
+    if let Err(err) = ctrlc::set_handler(move || {
+        cancel_requested.store(true, Ordering::SeqCst);
+    }) {
+        crate::logger::log(
+            "WARN",
+            &format!("Could not install orchestration abort handler: {err}"),
+        );
+    }
+}
+
+fn mark_dependency_failures(tasks: &mut [TaskRun]) {
+    let failed_dependencies: HashSet<String> = tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.state,
+                TaskState::Failed(_) | TaskState::Skipped(_) | TaskState::Aborted(_)
+            )
+        })
+        .map(|task| task.def.name.clone())
+        .collect();
+
+    for task in tasks {
+        if !matches!(task.state, TaskState::Pending | TaskState::RetryQueued(_)) {
+            continue;
+        }
+
+        let deps_failed: Vec<String> = task
+            .def
+            .depends_on
+            .iter()
+            .filter(|dep| failed_dependencies.contains(dep.as_str()))
+            .cloned()
+            .collect();
+
+        if !deps_failed.is_empty() {
+            task.state =
+                TaskState::Skipped(format!("dependency failed: {}", deps_failed.join(", ")));
+        }
+    }
+}
+
+fn abort_tasks(tasks: &mut [TaskRun]) {
+    for task in tasks {
+        match task.state {
+            TaskState::Running => {
+                let elapsed = task.start_time.map(|started| started.elapsed().as_secs());
+                if let Some(child) = task.child.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                task.child = None;
+                task.pid = None;
+                task.start_time = None;
+                set_latest_attempt_outcome(task, "aborted".into(), elapsed);
+                task.state = TaskState::Aborted("aborted by user".into());
+            }
+            TaskState::Pending | TaskState::RetryQueued(_) => {
+                task.state = TaskState::Aborted("not started (aborted by user)".into());
+                task.next_retry_at = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn queue_retry(task: &mut TaskRun, reason: &str) -> bool {
+    if task.attempts_started >= task.max_attempts {
+        return false;
+    }
+
+    let delay_secs = u64::from(task.attempts_started.min(3));
+    let next_attempt = task.attempts_started + 1;
+    task.state = TaskState::RetryQueued(format!(
+        "{reason}; retrying attempt {next_attempt}/{}",
+        task.max_attempts
+    ));
+    task.next_retry_at = Some(Instant::now() + Duration::from_secs(delay_secs.max(1)));
+    task.child = None;
+    task.pid = None;
+    task.start_time = None;
+    true
 }
 
 fn launch_claude_session(
     task: &TaskDef,
     run_dir: &Path,
     print_lock: Arc<Mutex<()>>,
+    attempt: u32,
 ) -> io::Result<LaunchedTask> {
     let cwd = task.cwd.as_deref().unwrap_or(".");
 
@@ -294,8 +645,8 @@ fn launch_claude_session(
         .spawn()?;
 
     let slug = sanitize_task_name(&task.name);
-    let stdout_log = run_dir.join(format!("{slug}.stdout.log"));
-    let stderr_log = run_dir.join(format!("{slug}.stderr.log"));
+    let stdout_log = run_dir.join(format!("{slug}.attempt-{attempt}.stdout.log"));
+    let stderr_log = run_dir.join(format!("{slug}.attempt-{attempt}.stderr.log"));
     let log_tail = Arc::new(Mutex::new(VecDeque::new()));
 
     if let Some(stdout) = child.stdout.take() {
@@ -330,37 +681,198 @@ fn launch_claude_session(
 }
 
 fn print_status(tasks: &[TaskRun]) {
+    let counts = compute_counts(tasks);
+    let done = counts.completed + counts.failed + counts.skipped + counts.aborted;
     let total = tasks.len();
-    let completed = tasks
-        .iter()
-        .filter(|t| t.state == TaskState::Completed)
-        .count();
+
     let running = tasks
         .iter()
-        .filter(|t| t.state == TaskState::Running)
-        .count();
-    let failed = tasks
-        .iter()
-        .filter(|t| matches!(t.state, TaskState::Failed(_)))
-        .count();
-    let pending = tasks
-        .iter()
-        .filter(|t| t.state == TaskState::Pending)
-        .count();
+        .filter(|task| matches!(task.state, TaskState::Running))
+        .take(3)
+        .map(|task| {
+            let elapsed = task
+                .start_time
+                .map(|started| format!("{}s", started.elapsed().as_secs()))
+                .unwrap_or_else(|| "?s".to_string());
+            format!(
+                "{} {}/{} {elapsed}",
+                task.def.name, task.attempts_started, task.max_attempts
+            )
+        })
+        .collect::<Vec<_>>();
 
-    eprint!("\r  [{completed}/{total}] {running} running, {pending} pending, {failed} failed    ");
+    let retrying = tasks
+        .iter()
+        .filter(|task| matches!(task.state, TaskState::RetryQueued(_)))
+        .take(2)
+        .map(|task| {
+            format!(
+                "{} {}/{}",
+                task.def.name,
+                task.attempts_started + 1,
+                task.max_attempts
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut line = format!(
+        "\r  [{done}/{total}] {} running, {} pending, {} retrying, {} failed, {} skipped, {} aborted",
+        counts.running,
+        counts.pending,
+        counts.retrying,
+        counts.failed,
+        counts.skipped,
+        counts.aborted
+    );
+    if !running.is_empty() {
+        line.push_str(&format!(" | running: {}", running.join(", ")));
+    }
+    if !retrying.is_empty() {
+        line.push_str(&format!(" | retry: {}", retrying.join(", ")));
+    }
+
+    eprint!("{line:<220}");
+    let _ = io::stderr().flush();
+}
+
+fn compute_counts(tasks: &[TaskRun]) -> RunCounts {
+    let mut counts = RunCounts::default();
+    for task in tasks {
+        match task.state {
+            TaskState::Pending => counts.pending += 1,
+            TaskState::RetryQueued(_) => counts.retrying += 1,
+            TaskState::Running => counts.running += 1,
+            TaskState::Completed => counts.completed += 1,
+            TaskState::Failed(_) => counts.failed += 1,
+            TaskState::Skipped(_) => counts.skipped += 1,
+            TaskState::Aborted(_) => counts.aborted += 1,
+        }
+    }
+    counts
+}
+
+fn run_status_label(tasks: &[TaskRun]) -> &'static str {
+    let counts = compute_counts(tasks);
+    if counts.aborted > 0 {
+        "aborted"
+    } else if counts.failed > 0 || counts.skipped > 0 {
+        "failed"
+    } else if counts.running > 0 || counts.pending > 0 || counts.retrying > 0 {
+        "running"
+    } else {
+        "completed"
+    }
+}
+
+fn write_run_report(
+    path: &Path,
+    run_dir: &Path,
+    tasks: &[TaskRun],
+    parallel: bool,
+) -> io::Result<()> {
+    let counts = compute_counts(tasks);
+    let report = RunReport {
+        status: run_status_label(tasks).to_string(),
+        parallel,
+        generated_at_ms: now_epoch_ms(),
+        logs_dir: run_dir.display().to_string(),
+        counts: RunReportCounts {
+            total: tasks.len(),
+            completed: counts.completed,
+            running: counts.running,
+            pending: counts.pending,
+            retrying: counts.retrying,
+            failed: counts.failed,
+            skipped: counts.skipped,
+            aborted: counts.aborted,
+        },
+        tasks: tasks.iter().map(build_task_report).collect(),
+    };
+
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(path, json)
+}
+
+fn build_task_report(task: &TaskRun) -> TaskReport {
+    let recent_output = task
+        .log_tail
+        .lock()
+        .ok()
+        .map(|tail| tail.iter().cloned().collect())
+        .unwrap_or_default();
+
+    TaskReport {
+        name: task.def.name.clone(),
+        status: task.state.label().to_string(),
+        message: task.state.message().map(|msg| msg.to_string()),
+        cwd: task.def.cwd.clone(),
+        prompt: task.def.prompt.clone(),
+        depends_on: task.def.depends_on.clone(),
+        resume: task.def.resume.clone(),
+        attempts_started: task.attempts_started,
+        max_attempts: task.max_attempts,
+        running_pid: task.pid,
+        duration_secs: task
+            .start_time
+            .map(|started| started.elapsed().as_secs())
+            .or_else(|| {
+                task.attempts
+                    .last()
+                    .and_then(|attempt| attempt.duration_secs)
+            }),
+        latest_stdout_log: task
+            .stdout_log
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        latest_stderr_log: task
+            .stderr_log
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        recent_output,
+        attempts: task.attempts.clone(),
+    }
+}
+
+fn print_final_summary(tasks: &[TaskRun]) {
+    println!();
+    println!("Task summary:");
+    for task in tasks {
+        let status = task.state.label().to_ascii_uppercase();
+        let duration = task
+            .attempts
+            .last()
+            .and_then(|attempt| attempt.duration_secs)
+            .map(|secs| format!("{secs}s"))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  {:<9} {} (attempts {}/{}, duration {})",
+            status, task.def.name, task.attempts_started, task.max_attempts, duration
+        );
+        if let Some(message) = task.state.message() {
+            println!("    reason: {message}");
+        }
+        print_task_logs(task);
+        if matches!(task.state, TaskState::Failed(_) | TaskState::Aborted(_)) {
+            print_task_tail(task);
+        }
+    }
 }
 
 fn create_run_dir() -> io::Result<PathBuf> {
     let base = std::env::current_dir()?.join(".claudectl-runs");
     fs::create_dir_all(&base)?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let now_ms = now_epoch_ms();
     let run_dir = base.join(format!("run-{now_ms}-{}", std::process::id()));
     fs::create_dir_all(&run_dir)?;
     Ok(run_dir)
+}
+
+fn now_epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 fn sanitize_task_name(name: &str) -> String {
@@ -425,6 +937,13 @@ fn push_tail(log_tail: &SharedTail, line: String) {
     }
 }
 
+fn set_latest_attempt_outcome(task: &mut TaskRun, outcome: String, duration_secs: Option<u64>) {
+    if let Some(attempt) = task.attempts.last_mut() {
+        attempt.outcome = Some(outcome);
+        attempt.duration_secs = duration_secs;
+    }
+}
+
 fn format_exit_status(status: ExitStatus) -> String {
     status
         .code()
@@ -447,11 +966,22 @@ fn print_task_tail(task: &TaskRun) {
 }
 
 fn print_task_logs(task: &TaskRun) {
-    if let Some(path) = &task.stdout_log {
-        println!("    stdout: {}", path.display());
+    if task.attempts.is_empty() {
+        return;
     }
-    if let Some(path) = &task.stderr_log {
-        println!("    stderr: {}", path.display());
+
+    println!("    logs:");
+    for attempt in &task.attempts {
+        if attempt.stdout_log.is_none() && attempt.stderr_log.is_none() {
+            continue;
+        }
+        println!("      attempt {}:", attempt.attempt);
+        if let Some(path) = &attempt.stdout_log {
+            println!("        stdout: {path}");
+        }
+        if let Some(path) = &attempt.stderr_log {
+            println!("        stderr: {path}");
+        }
     }
 }
 
@@ -466,25 +996,43 @@ mod tests {
                 {
                     "name": "task1",
                     "prompt": "Do something",
-                    "cwd": "./src"
+                    "cwd": "./src",
+                    "retries": 2
                 },
                 {
                     "name": "task2",
                     "prompt": "Do something else",
                     "depends_on": ["task1"],
-                    "budget": 2.0
+                    "resume": "session-123"
                 }
             ],
-            "budget": 10.0
+            "retries": 1
         }"#;
 
         let task_file: TaskFile = serde_json::from_str(json).unwrap();
         assert_eq!(task_file.tasks.len(), 2);
         assert_eq!(task_file.tasks[0].name, "task1");
         assert_eq!(task_file.tasks[0].cwd, Some("./src".into()));
+        assert_eq!(task_file.tasks[0].retries, Some(2));
         assert_eq!(task_file.tasks[1].depends_on, vec!["task1"]);
-        assert_eq!(task_file.tasks[1].budget, Some(2.0));
-        assert_eq!(task_file.budget, Some(10.0));
+        assert_eq!(task_file.tasks[1].resume.as_deref(), Some("session-123"));
+        assert_eq!(task_file.retries, Some(1));
+    }
+
+    #[test]
+    fn test_load_tasks_rejects_unsupported_budget_fields() {
+        let json = r#"{
+            "tasks": [
+                {
+                    "name": "task1",
+                    "prompt": "test",
+                    "budget": 2.0
+                }
+            ]
+        }"#;
+
+        let err = serde_json::from_str::<TaskFile>(json).unwrap_err();
+        assert!(err.to_string().contains("budget"));
     }
 
     #[test]
@@ -494,17 +1042,52 @@ mod tests {
                 name: "task1".into(),
                 prompt: "test".into(),
                 cwd: None,
-                budget: None,
                 depends_on: vec!["nonexistent".into()],
                 resume: None,
+                retries: None,
             }],
-            budget: None,
+            retries: None,
         };
 
         let result = run_tasks(task_file, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_dependency_cycle_validation() {
+        let task_file = TaskFile {
+            tasks: vec![
+                TaskDef {
+                    name: "task1".into(),
+                    prompt: "test".into(),
+                    cwd: None,
+                    depends_on: vec!["task2".into()],
+                    resume: None,
+                    retries: None,
+                },
+                TaskDef {
+                    name: "task2".into(),
+                    prompt: "test".into(),
+                    cwd: None,
+                    depends_on: vec!["task1".into()],
+                    resume: None,
+                    retries: None,
+                },
+            ],
+            retries: None,
+        };
+
+        let err = validate_task_file(&task_file).unwrap_err();
+        assert!(err.to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn test_resolved_max_attempts_prefers_task_override() {
+        assert_eq!(resolved_max_attempts(Some(1), None), 2);
+        assert_eq!(resolved_max_attempts(Some(1), Some(3)), 4);
+        assert_eq!(resolved_max_attempts(None, None), 1);
     }
 
     #[test]

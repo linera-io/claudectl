@@ -412,7 +412,9 @@ fn parse_events(line: &str) -> Vec<SessionEvent> {
                     events.push(SessionEvent::AssistantText(trimmed.to_string()));
                 }
             }
-            TranscriptBlock::ToolUse { name, input } if message.role == TranscriptRole::Assistant => {
+            TranscriptBlock::ToolUse { name, input }
+                if message.role == TranscriptRole::Assistant =>
+            {
                 let summary = summarize_tool_use(&name, Some(&input));
                 let diff = extract_diff(&name, Some(&input));
                 events.push(SessionEvent::ToolUse {

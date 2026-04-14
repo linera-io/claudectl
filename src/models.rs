@@ -97,7 +97,11 @@ pub(crate) fn resolve_with_overrides(
         .copied()
     {
         return ResolvedModelProfile {
-            key: if raw_key.is_empty() { short_key } else { raw_key },
+            key: if raw_key.is_empty() {
+                short_key
+            } else {
+                raw_key
+            },
             profile,
             source: ModelProfileSource::Override,
         };

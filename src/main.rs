@@ -12,8 +12,8 @@ mod discovery;
 mod history;
 mod hooks;
 mod logger;
-mod monitor;
 mod models;
+mod monitor;
 mod orchestrator;
 mod process;
 mod recorder;
@@ -615,9 +615,7 @@ fn print_summary(since: &str) -> io::Result<()> {
             };
             println!(
                 "  Model: {}{} (context: {})",
-                s.model,
-                estimate_note,
-                context_text
+                s.model, estimate_note, context_text
             );
         }
         if s.status == session::SessionStatus::Unknown || !s.has_usage_metrics() {

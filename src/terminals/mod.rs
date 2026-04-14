@@ -77,7 +77,11 @@ pub fn can_launch_session() -> bool {
     )
 }
 
-pub fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> Result<String, String> {
+pub fn launch_session(
+    cwd: &str,
+    prompt: Option<&str>,
+    resume: Option<&str>,
+) -> Result<String, String> {
     let terminal = detect_terminal();
     match terminal {
         Terminal::Kitty => kitty::launch(cwd, prompt, resume),

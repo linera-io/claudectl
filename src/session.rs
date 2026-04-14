@@ -263,13 +263,21 @@ impl ClaudeSession {
             format!(
                 "${:.2}{}",
                 self.cost_usd,
-                if self.cost_estimate_unverified { "?" } else { "" }
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
             )
         } else {
             format!(
                 "${:.1}{}",
                 self.cost_usd,
-                if self.cost_estimate_unverified { "?" } else { "" }
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
             )
         }
     }
@@ -382,13 +390,21 @@ impl ClaudeSession {
             format!(
                 "${:.2}/h{}",
                 self.burn_rate_per_hr,
-                if self.cost_estimate_unverified { "?" } else { "" }
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
             )
         } else {
             format!(
                 "${:.1}/h{}",
                 self.burn_rate_per_hr,
-                if self.cost_estimate_unverified { "?" } else { "" }
+                if self.cost_estimate_unverified {
+                    "?"
+                } else {
+                    ""
+                }
             )
         }
     }

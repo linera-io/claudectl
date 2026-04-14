@@ -404,7 +404,10 @@ fn ensure_model_override<'a>(
         },
     });
 
-    &mut overrides.last_mut().expect("override was just pushed").profile
+    &mut overrides
+        .last_mut()
+        .expect("override was just pushed")
+        .profile
 }
 
 fn upsert_model_override(overrides: &mut Vec<ModelOverride>, incoming: ModelOverride) {

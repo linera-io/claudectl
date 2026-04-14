@@ -184,7 +184,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|s| s.total_input_tokens + s.total_output_tokens)
         .sum();
-    let missing_usage = app.sessions.iter().filter(|s| !s.has_usage_metrics()).count();
+    let missing_usage = app
+        .sessions
+        .iter()
+        .filter(|s| !s.has_usage_metrics())
+        .count();
     let selected = app.table_state.selected().map(|i| i + 1).unwrap_or(0);
 
     let cost_str = if total_cost < 1.0 {

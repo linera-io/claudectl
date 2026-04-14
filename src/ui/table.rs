@@ -58,6 +58,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             )),
             Line::from(""),
             Line::from(launch_hint),
+            Line::from("  Run claudectl --doctor if terminal switching or launch fails."),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Press ", Style::default().fg(t.text_muted)),

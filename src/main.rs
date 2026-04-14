@@ -158,6 +158,10 @@ struct Cli {
     #[arg(long)]
     stats: bool,
 
+    /// Diagnose terminal integration and setup requirements
+    #[arg(long)]
+    doctor: bool,
+
     /// Run tasks from a JSON file (e.g., claudectl --run tasks.json)
     #[arg(long)]
     run: Option<String>,
@@ -249,6 +253,10 @@ fn main() -> io::Result<()> {
     if cli.hooks {
         hook_registry.print_list();
         return Ok(());
+    }
+
+    if cli.doctor {
+        return print_doctor();
     }
 
     if let Some(ref run_file) = cli.run {
@@ -379,6 +387,12 @@ fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> io::
         }
         Err(e) => Err(io::Error::other(e)),
     }
+}
+
+fn print_doctor() -> io::Result<()> {
+    let report = terminals::doctor_report();
+    println!("{}", terminals::format_doctor_report(&report));
+    Ok(())
 }
 
 fn parse_duration_str(s: &str) -> Duration {

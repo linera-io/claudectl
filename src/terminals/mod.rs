@@ -11,7 +11,104 @@ mod warp;
 mod wezterm;
 
 use crate::session::ClaudeSession;
+use std::path::PathBuf;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalAction {
+    Launch,
+    Switch,
+    Input,
+    Approve,
+}
+
+impl TerminalAction {
+    fn label(&self) -> &'static str {
+        match self {
+            TerminalAction::Launch => "Launch new session",
+            TerminalAction::Switch => "Switch to session terminal",
+            TerminalAction::Input => "Send input to session",
+            TerminalAction::Approve => "Approve prompt",
+        }
+    }
+
+    fn summary_name(&self) -> &'static str {
+        match self {
+            TerminalAction::Launch => "launch",
+            TerminalAction::Switch => "switch",
+            TerminalAction::Input => "input",
+            TerminalAction::Approve => "approve",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoctorStatus {
+    Ready,
+    Blocked,
+    Unsupported,
+}
+
+impl DoctorStatus {
+    fn label(&self) -> &'static str {
+        match self {
+            DoctorStatus::Ready => "ok",
+            DoctorStatus::Blocked => "blocked",
+            DoctorStatus::Unsupported => "n/a",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoctorCheck {
+    pub name: &'static str,
+    pub status: DoctorStatus,
+    pub detail: String,
+    pub fix: Option<String>,
+}
+
+impl DoctorCheck {
+    fn ready(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: DoctorStatus::Ready,
+            detail: detail.into(),
+            fix: None,
+        }
+    }
+
+    fn blocked(
+        name: &'static str,
+        detail: impl Into<String>,
+        fix: impl Into<Option<String>>,
+    ) -> Self {
+        Self {
+            name,
+            status: DoctorStatus::Blocked,
+            detail: detail.into(),
+            fix: fix.into(),
+        }
+    }
+
+    fn unsupported(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: DoctorStatus::Unsupported,
+            detail: detail.into(),
+            fix: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoctorReport {
+    pub terminal: String,
+    pub platform: String,
+    pub actions: Vec<DoctorCheck>,
+    pub prerequisites: Vec<DoctorCheck>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Terminal {
     Ghostty,
     Warp,
@@ -33,6 +130,31 @@ fn terminal_name(t: &Terminal) -> &str {
         Terminal::Apple => "Apple Terminal",
         Terminal::Tmux => "tmux",
         Terminal::Unknown(name) => name,
+    }
+}
+
+fn platform_name() -> &'static str {
+    std::env::consts::OS
+}
+
+fn supported_actions(terminal: &Terminal) -> Vec<TerminalAction> {
+    match terminal {
+        Terminal::Kitty | Terminal::Tmux => vec![
+            TerminalAction::Launch,
+            TerminalAction::Switch,
+            TerminalAction::Input,
+            TerminalAction::Approve,
+        ],
+        Terminal::WezTerm => vec![TerminalAction::Launch, TerminalAction::Switch],
+        #[cfg(target_os = "macos")]
+        Terminal::Ghostty | Terminal::Warp | Terminal::ITerm2 | Terminal::Apple => vec![
+            TerminalAction::Switch,
+            TerminalAction::Input,
+            TerminalAction::Approve,
+        ],
+        Terminal::Unknown(_) => Vec::new(),
+        #[cfg(not(target_os = "macos"))]
+        _ => Vec::new(),
     }
 }
 
@@ -71,10 +193,500 @@ pub fn detect_terminal() -> Terminal {
 }
 
 pub fn can_launch_session() -> bool {
-    matches!(
-        detect_terminal(),
-        Terminal::Kitty | Terminal::Tmux | Terminal::WezTerm
-    )
+    supported_actions(&detect_terminal()).contains(&TerminalAction::Launch)
+}
+
+pub fn help_capability_summary() -> String {
+    help_capability_summary_for(&detect_terminal())
+}
+
+fn help_capability_summary_for(terminal: &Terminal) -> String {
+    let actions = supported_actions(terminal);
+    if actions.is_empty() {
+        format!(
+            "Current terminal: {} (monitor-only)",
+            terminal_name(terminal)
+        )
+    } else {
+        let summary = actions
+            .iter()
+            .map(TerminalAction::summary_name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("Current terminal: {} ({summary})", terminal_name(terminal))
+    }
+}
+
+fn find_command_path(name: &str) -> Option<PathBuf> {
+    if name.contains(std::path::MAIN_SEPARATOR) {
+        let path = PathBuf::from(name);
+        return path.is_file().then_some(path);
+    }
+
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn binary_check(name: &'static str) -> DoctorCheck {
+    match find_command_path(name) {
+        Some(path) => DoctorCheck::ready(name, format!("Found at {}", path.display())),
+        None => DoctorCheck::blocked(
+            name,
+            format!("`{name}` is not on PATH."),
+            Some(format!("Install `{name}` or add it to PATH.")),
+        ),
+    }
+}
+
+fn command_ready(name: &'static str) -> bool {
+    find_command_path(name).is_some()
+}
+
+fn output_message(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    format!("Command exited with status {}", output.status)
+}
+
+fn probe_kitty_remote_control() -> Result<(), String> {
+    let output = std::process::Command::new("kitty")
+        .args(["@", "ls"])
+        .output()
+        .map_err(|e| format!("kitty @ ls failed: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output_message(&output))
+    }
+}
+
+fn probe_tmux_connectivity() -> Result<(), String> {
+    let output = std::process::Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{pane_tty}"])
+        .output()
+        .map_err(|e| format!("tmux list-panes failed: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output_message(&output))
+    }
+}
+
+fn probe_wezterm_cli() -> Result<(), String> {
+    let output = std::process::Command::new("wezterm")
+        .args(["cli", "list", "--format", "json"])
+        .output()
+        .map_err(|e| format!("wezterm cli list failed: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output_message(&output))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_system_events_access() -> Result<(), String> {
+    let script = r#"tell application "System Events" to return UI elements enabled"#;
+    let output = std::process::Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .map_err(|e| format!("osascript probe failed: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output_message(&output))
+    }
+}
+
+fn action_check(
+    action: TerminalAction,
+    status: DoctorStatus,
+    detail: impl Into<String>,
+    fix: impl Into<Option<String>>,
+) -> DoctorCheck {
+    match status {
+        DoctorStatus::Ready => DoctorCheck::ready(action.label(), detail),
+        DoctorStatus::Blocked => DoctorCheck::blocked(action.label(), detail, fix),
+        DoctorStatus::Unsupported => DoctorCheck::unsupported(action.label(), detail.into()),
+    }
+}
+
+pub fn doctor_report() -> DoctorReport {
+    doctor_report_for(detect_terminal())
+}
+
+fn doctor_report_for(terminal: Terminal) -> DoctorReport {
+    let terminal_label = terminal_name(&terminal).to_string();
+    let mut prerequisites = vec![binary_check("claude")];
+    let mut actions = Vec::new();
+    let mut notes = vec![
+        "Run `claudectl --doctor` inside the same terminal family that launches Claude."
+            .to_string(),
+        "`n` and `--new` use the same launch capability shown here.".to_string(),
+    ];
+
+    match terminal {
+        Terminal::Kitty => {
+            let kitty_check = binary_check("kitty");
+            let kitty_ready = kitty_check.status == DoctorStatus::Ready;
+            prerequisites.push(kitty_check);
+
+            let remote_check = if kitty_ready {
+                match probe_kitty_remote_control() {
+                    Ok(()) => DoctorCheck::ready(
+                        "kitty remote control",
+                        "`kitty @` is reachable from this shell.",
+                    ),
+                    Err(err) => DoctorCheck::blocked(
+                        "kitty remote control",
+                        format!("`kitty @` is unavailable: {err}"),
+                        Some(
+                            "Set `allow_remote_control yes` or `allow_remote_control socket-only` in kitty.conf, then restart Kitty."
+                                .to_string(),
+                        ),
+                    ),
+                }
+            } else {
+                DoctorCheck::blocked(
+                    "kitty remote control",
+                    "Kitty CLI is unavailable, so `kitty @` cannot be used.",
+                    Some("Install Kitty and ensure `kitty` is on PATH.".to_string()),
+                )
+            };
+            let remote_ready = remote_check.status == DoctorStatus::Ready;
+            prerequisites.push(remote_check);
+
+            let action_status = if kitty_ready && remote_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let detail = if action_status == DoctorStatus::Ready {
+                "Kitty can focus tabs and send text through `kitty @`."
+            } else {
+                "Kitty support is configured, but remote control is not currently available."
+            };
+            let fix = Some(
+                "Enable Kitty remote control in kitty.conf and rerun `claudectl --doctor`."
+                    .to_string(),
+            );
+
+            for action in supported_actions(&Terminal::Kitty) {
+                actions.push(action_check(action, action_status, detail, fix.clone()));
+            }
+        }
+        Terminal::Tmux => {
+            let tmux_check = binary_check("tmux");
+            let tmux_ready = tmux_check.status == DoctorStatus::Ready;
+            prerequisites.push(tmux_check);
+
+            let session_check = if tmux_ready {
+                match probe_tmux_connectivity() {
+                    Ok(()) => DoctorCheck::ready(
+                        "tmux session access",
+                        "`tmux list-panes` can see the active server.",
+                    ),
+                    Err(err) => DoctorCheck::blocked(
+                        "tmux session access",
+                        format!("tmux is installed, but pane discovery failed: {err}"),
+                        Some("Run claudectl from inside the tmux session that owns the Claude panes.".to_string()),
+                    ),
+                }
+            } else {
+                DoctorCheck::blocked(
+                    "tmux session access",
+                    "tmux is unavailable, so pane discovery cannot run.",
+                    Some("Install tmux and rerun `claudectl --doctor`.".to_string()),
+                )
+            };
+            let session_ready = session_check.status == DoctorStatus::Ready;
+            prerequisites.push(session_check);
+
+            let action_status = if tmux_ready && session_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let detail = if action_status == DoctorStatus::Ready {
+                "tmux can open windows, locate panes by TTY, and send keys."
+            } else {
+                "tmux support needs a reachable tmux server from this shell."
+            };
+            let fix = Some(
+                "Run claudectl inside tmux or connect it to the same tmux server.".to_string(),
+            );
+
+            for action in supported_actions(&Terminal::Tmux) {
+                actions.push(action_check(action, action_status, detail, fix.clone()));
+            }
+        }
+        Terminal::WezTerm => {
+            let wezterm_check = binary_check("wezterm");
+            let wezterm_ready = wezterm_check.status == DoctorStatus::Ready;
+            prerequisites.push(wezterm_check);
+
+            let cli_check = if wezterm_ready {
+                match probe_wezterm_cli() {
+                    Ok(()) => DoctorCheck::ready(
+                        "wezterm cli",
+                        "`wezterm cli` can query panes from this shell.",
+                    ),
+                    Err(err) => DoctorCheck::blocked(
+                        "wezterm cli",
+                        format!("WezTerm CLI is installed, but pane discovery failed: {err}"),
+                        Some(
+                            "Run claudectl inside WezTerm with a reachable mux server.".to_string(),
+                        ),
+                    ),
+                }
+            } else {
+                DoctorCheck::blocked(
+                    "wezterm cli",
+                    "WezTerm CLI is unavailable, so pane discovery cannot run.",
+                    Some("Install WezTerm and ensure `wezterm` is on PATH.".to_string()),
+                )
+            };
+            let cli_ready = cli_check.status == DoctorStatus::Ready;
+            prerequisites.push(cli_check);
+
+            let action_status = if wezterm_ready && cli_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let detail = if action_status == DoctorStatus::Ready {
+                "WezTerm supports visible launch and pane activation through `wezterm cli`."
+            } else {
+                "WezTerm support needs a reachable mux server from this shell."
+            };
+            let fix = Some(
+                "Start claudectl from the same WezTerm environment that owns the Claude panes."
+                    .to_string(),
+            );
+
+            for action in [TerminalAction::Launch, TerminalAction::Switch] {
+                actions.push(action_check(action, action_status, detail, fix.clone()));
+            }
+            for action in [TerminalAction::Input, TerminalAction::Approve] {
+                actions.push(action_check(
+                    action,
+                    DoctorStatus::Unsupported,
+                    "WezTerm integration currently supports launch and pane focus only.",
+                    None::<String>,
+                ));
+            }
+            notes.push("WezTerm input injection is not implemented yet.".to_string());
+        }
+        #[cfg(target_os = "macos")]
+        Terminal::Ghostty => {
+            let apple_script_check = binary_check("osascript");
+            let apple_script_ready = apple_script_check.status == DoctorStatus::Ready;
+            prerequisites.push(apple_script_check);
+
+            let detail = if apple_script_ready {
+                "Ghostty exposes switch/input/approve through its AppleScript API."
+            } else {
+                "Ghostty support requires `osascript`."
+            };
+            let status = if apple_script_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let fix = Some(
+                "Ensure macOS automation tools are available and Ghostty is running normally."
+                    .to_string(),
+            );
+
+            for action in supported_actions(&Terminal::Ghostty) {
+                actions.push(action_check(action, status, detail, fix.clone()));
+            }
+            actions.push(action_check(
+                TerminalAction::Launch,
+                DoctorStatus::Unsupported,
+                "Visible launch is only implemented for tmux, Kitty, and WezTerm.",
+                None::<String>,
+            ));
+            notes.push("Ghostty does not need Kitty-style remote control setup, but macOS may still prompt for automation access.".to_string());
+        }
+        #[cfg(target_os = "macos")]
+        Terminal::Warp | Terminal::ITerm2 | Terminal::Apple => {
+            let apple_script_check = binary_check("osascript");
+            let apple_script_ready = apple_script_check.status == DoctorStatus::Ready;
+            prerequisites.push(apple_script_check);
+
+            let system_events_check = if apple_script_ready {
+                match probe_system_events_access() {
+                    Ok(()) => DoctorCheck::ready(
+                        "System Events access",
+                        "AppleScript can talk to System Events from this shell.",
+                    ),
+                    Err(err) => DoctorCheck::blocked(
+                        "System Events access",
+                        format!("macOS UI scripting is not currently available: {err}"),
+                        Some(
+                            "Grant Automation/Accessibility access in System Settings > Privacy & Security, then rerun `claudectl --doctor`."
+                                .to_string(),
+                        ),
+                    ),
+                }
+            } else {
+                DoctorCheck::blocked(
+                    "System Events access",
+                    "`osascript` is unavailable, so macOS UI scripting cannot run.",
+                    Some(
+                        "Ensure `/usr/bin/osascript` is available and rerun the doctor."
+                            .to_string(),
+                    ),
+                )
+            };
+            let system_events_ready = system_events_check.status == DoctorStatus::Ready;
+            prerequisites.push(system_events_check);
+
+            actions.push(action_check(
+                TerminalAction::Launch,
+                DoctorStatus::Unsupported,
+                "Visible launch is only implemented for tmux, Kitty, and WezTerm.",
+                None::<String>,
+            ));
+
+            let status = if apple_script_ready && system_events_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let detail = format!(
+                "{} uses AppleScript and System Events for focus and input control.",
+                terminal_name(&terminal)
+            );
+            let fix = Some(
+                "Grant Automation/Accessibility permissions to the terminal and rerun `claudectl --doctor`."
+                    .to_string(),
+            );
+            for action in [
+                TerminalAction::Switch,
+                TerminalAction::Input,
+                TerminalAction::Approve,
+            ] {
+                actions.push(action_check(action, status, &detail, fix.clone()));
+            }
+        }
+        Terminal::Unknown(name) => {
+            for action in [
+                TerminalAction::Launch,
+                TerminalAction::Switch,
+                TerminalAction::Input,
+                TerminalAction::Approve,
+            ] {
+                actions.push(action_check(
+                    action,
+                    DoctorStatus::Unsupported,
+                    format!(
+                        "No integration is configured for `{name}`. Supported terminals: tmux, Kitty, WezTerm, Ghostty, Warp, iTerm2, Terminal.app."
+                    ),
+                    None::<String>,
+                ));
+            }
+            notes.push(
+                "Monitoring still works in unsupported terminals, but control actions stay manual."
+                    .to_string(),
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        Terminal::Ghostty | Terminal::Warp | Terminal::ITerm2 | Terminal::Apple => {
+            for action in [
+                TerminalAction::Launch,
+                TerminalAction::Switch,
+                TerminalAction::Input,
+                TerminalAction::Approve,
+            ] {
+                actions.push(action_check(
+                    action,
+                    DoctorStatus::Unsupported,
+                    format!(
+                        "{} control hooks are currently only implemented on macOS.",
+                        terminal_name(&terminal)
+                    ),
+                    None::<String>,
+                ));
+            }
+            notes.push(format!(
+                "{} was detected, but terminal control for it is only available on macOS right now.",
+                terminal_name(&terminal)
+            ));
+        }
+    }
+
+    if !command_ready("claude") {
+        notes.push("Launching a new session will fail until `claude` is on PATH.".to_string());
+    }
+
+    DoctorReport {
+        terminal: terminal_label,
+        platform: platform_name().to_string(),
+        actions,
+        prerequisites,
+        notes,
+    }
+}
+
+pub fn format_doctor_report(report: &DoctorReport) -> String {
+    let mut lines = vec![
+        "claudectl doctor".to_string(),
+        String::new(),
+        format!("Platform: {}", report.platform),
+        format!("Detected terminal: {}", report.terminal),
+        String::new(),
+        "Prerequisites".to_string(),
+    ];
+
+    for check in &report.prerequisites {
+        lines.push(format!(
+            "  [{}] {}: {}",
+            check.status.label(),
+            check.name,
+            check.detail
+        ));
+        if let Some(fix) = &check.fix {
+            lines.push(format!("      fix: {fix}"));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Capabilities".to_string());
+    for action in &report.actions {
+        lines.push(format!(
+            "  [{}] {}: {}",
+            action.status.label(),
+            action.name,
+            action.detail
+        ));
+        if let Some(fix) = &action.fix {
+            lines.push(format!("      fix: {fix}"));
+        }
+    }
+
+    if !report.notes.is_empty() {
+        lines.push(String::new());
+        lines.push("Notes".to_string());
+        for note in &report.notes {
+            lines.push(format!("  - {note}"));
+        }
+    }
+
+    lines.join("\n")
 }
 
 pub fn launch_session(
@@ -88,7 +700,7 @@ pub fn launch_session(
         Terminal::Tmux => tmux::launch(cwd, prompt, resume),
         Terminal::WezTerm => wezterm::launch(cwd, prompt, resume),
         other => Err(format!(
-            "Visible session launch is not supported in {}. Start `claude` manually, or use tmux, Kitty, or WezTerm.",
+            "Visible session launch is not supported in {}. Start `claude` manually, use tmux/Kitty/WezTerm, or run `claudectl --doctor` for setup guidance.",
             terminal_name(&other)
         )),
     }
@@ -123,10 +735,10 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         Terminal::Apple => apple::switch(session),
         Terminal::Unknown(name) => Err(format!(
-            "Unsupported terminal: {name}. Supported: Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux"
+            "Unsupported terminal: {name}. Supported: Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux. Run `claudectl --doctor` for details."
         )),
         #[cfg(not(target_os = "macos"))]
-        _ => Err("Terminal switching not supported on this platform".into()),
+        _ => Err("Terminal switching not supported on this platform. Run `claudectl --doctor` for details.".into()),
     }
 }
 
@@ -149,7 +761,7 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
             ))
         }
         #[cfg(not(target_os = "macos"))]
-        _ => Err("Input injection not supported for this terminal".into()),
+        _ => Err("Input injection not supported for this terminal. Run `claudectl --doctor` for details.".into()),
     }
 }
 
@@ -169,7 +781,7 @@ pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
             run_osascript(r#"tell application "System Events" to key code 36"#)
         }
         #[cfg(not(target_os = "macos"))]
-        _ => Err("Input injection not supported for this terminal".into()),
+        _ => Err("Input injection not supported for this terminal. Run `claudectl --doctor` for details.".into()),
     }
 }
 
@@ -185,5 +797,37 @@ pub fn run_osascript(script: &str) -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("AppleScript error: {}", stderr.trim()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_summary_lists_kitty_actions() {
+        let summary = help_capability_summary_for(&Terminal::Kitty);
+        assert_eq!(
+            summary,
+            "Current terminal: Kitty (launch, switch, input, approve)"
+        );
+    }
+
+    #[test]
+    fn help_summary_marks_unknown_terminal_monitor_only() {
+        let summary = help_capability_summary_for(&Terminal::Unknown("foot".into()));
+        assert_eq!(summary, "Current terminal: foot (monitor-only)");
+    }
+
+    #[test]
+    fn doctor_report_for_unknown_terminal_marks_actions_unsupported() {
+        let report = doctor_report_for(Terminal::Unknown("foot".into()));
+        assert_eq!(report.actions.len(), 4);
+        assert!(
+            report
+                .actions
+                .iter()
+                .all(|action| action.status == DoctorStatus::Unsupported)
+        );
     }
 }

@@ -158,6 +158,18 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            " Current Terminal",
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("  {}", crate::terminals::help_capability_summary())),
+        Line::from(vec![
+            Span::raw("  Run "),
+            Span::styled("claudectl --doctor", Style::default().fg(t.highlight_key)),
+            Span::raw(" for prerequisite checks and setup guidance."),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "  Press any key to dismiss",
             Style::default().fg(t.text_muted),
         )),

@@ -26,9 +26,10 @@ impl UsageRollup {
 
 /// Read new JSONL entries since last offset, accumulate token stats.
 pub fn update_tokens(session: &mut ClaudeSession) {
-    let mut last_type = String::new();
-    let mut last_stop_reason = String::new();
-    let mut is_waiting_for_task = false;
+    // Seed from persisted state so status inference works on ticks with no new JSONL.
+    let mut last_type = session.last_msg_type.clone();
+    let mut last_stop_reason = session.last_stop_reason.clone();
+    let mut is_waiting_for_task = session.is_waiting_for_task;
     let mut saw_non_empty_line = false;
     let mut recognized_events = 0usize;
     let mut saw_parent_usage = false;
@@ -62,6 +63,10 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                     session.own_output_tokens = 0;
                     session.own_cache_read_tokens = 0;
                     session.own_cache_write_tokens = 0;
+                    // Reset persisted inference state on file truncation
+                    last_type.clear();
+                    last_stop_reason.clear();
+                    is_waiting_for_task = false;
                 }
 
                 if session.jsonl_offset < file_len {
@@ -223,6 +228,11 @@ fn finalize_usage(
         own_usage_metrics_available || subagent_rollup.usage_metrics_available;
     session.cost_estimate_unverified = (own_usage_metrics_available && own_cost_unverified)
         || subagent_rollup.cost_estimate_unverified;
+
+    // Persist for next tick (so status inference works when no new JSONL arrives).
+    session.last_msg_type = last_type.to_string();
+    session.last_stop_reason = last_stop_reason.to_string();
+    session.is_waiting_for_task = is_waiting_for_task;
 
     infer_status(session, last_type, last_stop_reason, is_waiting_for_task);
 }

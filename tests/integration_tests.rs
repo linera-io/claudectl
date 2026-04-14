@@ -164,6 +164,31 @@ fn status_cpu_threshold_boundary() {
     assert_eq!(s2.status, SessionStatus::Processing);
 }
 
+#[test]
+fn status_persisted_tool_use_survives_empty_tick() {
+    // Reproduces the bug: session blocked on permission prompt ("Do you want to
+    // proceed?"), first tick correctly detects NeedsInput via tool_use + low CPU,
+    // but second tick has no new JSONL data (empty signals) and must NOT fall
+    // through to Idle.
+    let mut s = make_session(0.5, 30);
+
+    // Tick 1: new JSONL data — tool_use detected
+    monitor::infer_status(&mut s, "assistant", "tool_use", false);
+    assert_eq!(s.status, SessionStatus::NeedsInput);
+
+    // Simulate what update_tokens() now does: persist the signals
+    s.last_msg_type = "assistant".into();
+    s.last_stop_reason = "tool_use".into();
+    s.is_waiting_for_task = false;
+
+    // Tick 2: no new JSONL data — signals come from persisted fields
+    let msg_type = s.last_msg_type.clone();
+    let stop_reason = s.last_stop_reason.clone();
+    let waiting = s.is_waiting_for_task;
+    monitor::infer_status(&mut s, &msg_type, &stop_reason, waiting);
+    assert_eq!(s.status, SessionStatus::NeedsInput);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Cost Estimation Tests
 // ────────────────────────────────────────────────────────────────────────────

@@ -135,6 +135,10 @@ pub struct ClaudeSession {
     pub usage_metrics_available: bool,
     pub cost_estimate_unverified: bool,
     pub model_profile_source: String,
+    /// Persisted across ticks so status inference works when no new JSONL arrives.
+    pub last_msg_type: String,
+    pub last_stop_reason: String,
+    pub is_waiting_for_task: bool,
 }
 
 /// Per-tool usage statistics.
@@ -297,6 +301,9 @@ impl ClaudeSession {
             usage_metrics_available: false,
             cost_estimate_unverified: false,
             model_profile_source: "built-in".into(),
+            last_msg_type: String::new(),
+            last_stop_reason: String::new(),
+            is_waiting_for_task: false,
         }
     }
 

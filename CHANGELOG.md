@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.16.1] - 2026-04-14
+
+### Fixed
+- Sessions blocked on a permission prompt ("Do you want to proceed?") no longer misclassify as Idle after the first refresh tick; status inference now persists JSONL signals across ticks so tool_use-based NeedsInput survives when no new transcript data arrives
+
 ## [0.16.0] - 2026-04-14
 
 ### Added

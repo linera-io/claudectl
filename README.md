@@ -99,6 +99,8 @@ claudectl                   # Interactive TUI dashboard
 claudectl --watch           # Stream status changes (no TUI)
 claudectl --list            # Print session table and exit
 claudectl --json            # Machine-readable output for scripting
+claudectl --filter-status needs-input --search api
+claudectl --watch --focus attention
 ```
 
 ### Control spend
@@ -181,6 +183,7 @@ claudectl --demo --record demo.gif  # One-command GIF for your README
 - Detail panel (`Enter`) with full session metadata
 - Grouped view (`g`) by project with aggregate stats
 - Sort by status, context, cost, burn rate, or elapsed (`s`)
+- Live triage filters: status cycle (`f`), focus cycle (`v`), text search (`/`), clear (`z`)
 - Conflict detection when 2+ sessions share the same git worktree (`!!`)
 - Permission wait time — shows how long sessions have been waiting, longest first
 
@@ -218,6 +221,10 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `n` | Launch new Claude session (`tmux`, Kitty, WezTerm) |
 | `g` | Toggle grouped view by project |
 | `s` | Cycle sort column |
+| `f` | Cycle status filter |
+| `v` | Cycle focus filter (`attention`, budget, context, telemetry, conflicts) |
+| `/` | Search project/model/session text |
+| `z` | Clear all active filters |
 | `c` | Send /compact to session (when idle) |
 | `R` | Record session highlight reel (toggle) |
 | `r` | Force refresh |

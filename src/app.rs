@@ -13,6 +13,114 @@ use crate::theme::Theme;
 
 pub const SORT_COLUMNS: &[&str] = &["Status", "Context", "Cost", "$/hr", "Elapsed"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusFilter {
+    All,
+    NeedsInput,
+    Processing,
+    WaitingInput,
+    Unknown,
+    Idle,
+    Finished,
+}
+
+impl StatusFilter {
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::NeedsInput,
+            Self::NeedsInput => Self::Processing,
+            Self::Processing => Self::WaitingInput,
+            Self::WaitingInput => Self::Unknown,
+            Self::Unknown => Self::Idle,
+            Self::Idle => Self::Finished,
+            Self::Finished => Self::All,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "all" => Some(Self::All),
+            "needsinput" | "needs-input" => Some(Self::NeedsInput),
+            "processing" => Some(Self::Processing),
+            "waiting" | "waitinginput" | "waiting-input" => Some(Self::WaitingInput),
+            "unknown" => Some(Self::Unknown),
+            "idle" => Some(Self::Idle),
+            "finished" => Some(Self::Finished),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::NeedsInput => "Needs Input",
+            Self::Processing => "Processing",
+            Self::WaitingInput => "Waiting",
+            Self::Unknown => "Unknown",
+            Self::Idle => "Idle",
+            Self::Finished => "Finished",
+        }
+    }
+
+    fn matches(self, status: SessionStatus) -> bool {
+        match self {
+            Self::All => true,
+            Self::NeedsInput => status == SessionStatus::NeedsInput,
+            Self::Processing => status == SessionStatus::Processing,
+            Self::WaitingInput => status == SessionStatus::WaitingInput,
+            Self::Unknown => status == SessionStatus::Unknown,
+            Self::Idle => status == SessionStatus::Idle,
+            Self::Finished => status == SessionStatus::Finished,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusFilter {
+    All,
+    Attention,
+    OverBudget,
+    HighContext,
+    UnknownTelemetry,
+    Conflict,
+}
+
+impl FocusFilter {
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Attention,
+            Self::Attention => Self::OverBudget,
+            Self::OverBudget => Self::HighContext,
+            Self::HighContext => Self::UnknownTelemetry,
+            Self::UnknownTelemetry => Self::Conflict,
+            Self::Conflict => Self::All,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "all" => Some(Self::All),
+            "attention" => Some(Self::Attention),
+            "overbudget" | "over-budget" => Some(Self::OverBudget),
+            "highcontext" | "high-context" => Some(Self::HighContext),
+            "unknowntelemetry" | "unknown-telemetry" => Some(Self::UnknownTelemetry),
+            "conflict" | "conflicts" => Some(Self::Conflict),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Attention => "Attention",
+            Self::OverBudget => "Over Budget",
+            Self::HighContext => "High Context",
+            Self::UnknownTelemetry => "Unknown Telemetry",
+            Self::Conflict => "Conflict",
+        }
+    }
+}
+
 pub struct App {
     pub sessions: Vec<ClaudeSession>,
     pub table_state: TableState,
@@ -37,6 +145,11 @@ pub struct App {
     pub webhook_filter: Option<Vec<String>>, // Only fire on these status names
     pub launch_mode: bool,                   // Capturing directory path for new session
     pub launch_buffer: String,
+    pub search_mode: bool,
+    pub search_buffer: String,
+    pub search_query: String,
+    pub status_filter: StatusFilter,
+    pub focus_filter: FocusFilter,
     pub budget_usd: Option<f64>,     // Per-session budget
     pub kill_on_budget: bool,        // Auto-kill when budget exceeded
     pub budget_warned: HashSet<u32>, // PIDs that have been warned at 80%
@@ -132,6 +245,11 @@ impl App {
             webhook_filter: None,
             launch_mode: false,
             launch_buffer: String::new(),
+            search_mode: false,
+            search_buffer: String::new(),
+            search_query: String::new(),
+            status_filter: StatusFilter::All,
+            focus_filter: FocusFilter::All,
             budget_usd: None,
             kill_on_budget: false,
             budget_warned: HashSet::new(),
@@ -154,7 +272,7 @@ impl App {
             session_recordings: HashMap::new(),
         };
         app.refresh();
-        if !app.sessions.is_empty() {
+        if app.visible_session_count() > 0 {
             app.table_state.select(Some(0));
         }
         app
@@ -497,16 +615,7 @@ impl App {
         self.prev_statuses = sessions.iter().map(|s| (s.pid, s.status)).collect();
 
         self.sessions = sessions;
-
-        // Fix selection bounds
-        let len = self.sessions.len();
-        if len == 0 {
-            self.table_state.select(None);
-        } else if let Some(sel) = self.table_state.selected() {
-            if sel >= len {
-                self.table_state.select(Some(len - 1));
-            }
-        }
+        self.normalize_selection();
 
         // Record debug timings
         if self.debug {
@@ -596,18 +705,7 @@ impl App {
         }
 
         self.sessions = sessions;
-
-        // Fix selection bounds
-        let len = self.sessions.len();
-        if len == 0 {
-            self.table_state.select(None);
-        } else if self.table_state.selected().is_none() {
-            self.table_state.select(Some(0));
-        } else if let Some(sel) = self.table_state.selected() {
-            if sel >= len {
-                self.table_state.select(Some(len - 1));
-            }
-        }
+        self.normalize_selection();
     }
 
     pub fn tick(&mut self) {
@@ -807,11 +905,12 @@ impl App {
     }
 
     pub fn next(&mut self) {
-        if self.sessions.is_empty() {
+        let len = self.visible_session_count();
+        if len == 0 {
             return;
         }
         let i = match self.table_state.selected() {
-            Some(i) if i >= self.sessions.len() - 1 => 0,
+            Some(i) if i >= len - 1 => 0,
             Some(i) => i + 1,
             None => 0,
         };
@@ -819,11 +918,12 @@ impl App {
     }
 
     pub fn previous(&mut self) {
-        if self.sessions.is_empty() {
+        let len = self.visible_session_count();
+        if len == 0 {
             return;
         }
         let i = match self.table_state.selected() {
-            Some(0) => self.sessions.len() - 1,
+            Some(0) => len - 1,
             Some(i) => i - 1,
             None => 0,
         };
@@ -831,9 +931,10 @@ impl App {
     }
 
     pub fn selected_session(&self) -> Option<&ClaudeSession> {
-        self.table_state
-            .selected()
-            .and_then(|i| self.sessions.get(i))
+        let visible = self.visible_session_indices();
+        let selected = self.table_state.selected()?;
+        let session_idx = *visible.get(selected)?;
+        self.sessions.get(session_idx)
     }
 
     pub fn handle_kill(&mut self) {
@@ -882,6 +983,11 @@ impl App {
             return true;
         }
 
+        if self.search_mode {
+            self.handle_search_key(key);
+            return true;
+        }
+
         // Input mode: capture text for sending to a session
         if self.input_mode {
             self.handle_input_key(key);
@@ -922,6 +1028,33 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.input_buffer.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                self.search_query = self.search_buffer.trim().to_string();
+                self.search_mode = false;
+                self.normalize_selection();
+                if self.search_query.is_empty() {
+                    self.status_msg = "Search cleared".into();
+                } else {
+                    self.status_msg = format!("Search: {}", self.search_query);
+                }
+            }
+            KeyCode::Esc => {
+                self.search_mode = false;
+                self.search_buffer.clear();
+                self.status_msg = "Search cancelled".into();
+            }
+            KeyCode::Backspace => {
+                self.search_buffer.pop();
+            }
+            KeyCode::Char(c) => {
+                self.search_buffer.push(c);
             }
             _ => {}
         }
@@ -983,6 +1116,26 @@ impl App {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
                 self.cycle_sort();
+            }
+            (KeyCode::Char('f'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.cycle_status_filter();
+            }
+            (KeyCode::Char('v'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.cycle_focus_filter();
+            }
+            (KeyCode::Char('z'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.clear_filters();
+            }
+            (KeyCode::Char('/'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.enter_search_mode();
             }
             (KeyCode::Char('a'), _) => {
                 self.cancel_pending_kill();
@@ -1062,6 +1215,141 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn enter_search_mode(&mut self) {
+        self.search_mode = true;
+        self.search_buffer = self.search_query.clone();
+    }
+
+    pub fn clear_filters(&mut self) {
+        self.status_filter = StatusFilter::All;
+        self.focus_filter = FocusFilter::All;
+        self.search_query.clear();
+        self.search_buffer.clear();
+        self.search_mode = false;
+        self.normalize_selection();
+        self.status_msg = "Filters cleared".into();
+    }
+
+    pub fn cycle_status_filter(&mut self) {
+        self.status_filter = self.status_filter.next();
+        self.normalize_selection();
+        self.status_msg = format!("Status filter: {}", self.status_filter.label());
+    }
+
+    pub fn cycle_focus_filter(&mut self) {
+        self.focus_filter = self.focus_filter.next();
+        self.normalize_selection();
+        self.status_msg = format!("Focus filter: {}", self.focus_filter.label());
+    }
+
+    pub fn has_active_filters(&self) -> bool {
+        self.status_filter != StatusFilter::All
+            || self.focus_filter != FocusFilter::All
+            || !self.search_query.trim().is_empty()
+    }
+
+    pub fn filter_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.status_filter != StatusFilter::All {
+            parts.push(format!("status={}", self.status_filter.label()));
+        }
+        if self.focus_filter != FocusFilter::All {
+            parts.push(format!("focus={}", self.focus_filter.label()));
+        }
+        if !self.search_query.trim().is_empty() {
+            parts.push(format!("search=\"{}\"", self.search_query));
+        }
+        if parts.is_empty() {
+            "filters: none".to_string()
+        } else {
+            format!("filters: {}", parts.join(" | "))
+        }
+    }
+
+    pub fn visible_session_indices(&self) -> Vec<usize> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, session)| self.matches_filters(session).then_some(idx))
+            .collect()
+    }
+
+    pub fn visible_sessions(&self) -> Vec<&ClaudeSession> {
+        self.visible_session_indices()
+            .into_iter()
+            .filter_map(|idx| self.sessions.get(idx))
+            .collect()
+    }
+
+    pub fn visible_session_count(&self) -> usize {
+        self.visible_session_indices().len()
+    }
+
+    fn normalize_selection(&mut self) {
+        let len = self.visible_session_count();
+        if len == 0 {
+            self.table_state.select(None);
+        } else if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
+        } else if let Some(sel) = self.table_state.selected() {
+            if sel >= len {
+                self.table_state.select(Some(len - 1));
+            }
+        }
+    }
+
+    fn matches_filters(&self, session: &ClaudeSession) -> bool {
+        self.status_filter.matches(session.status)
+            && self.matches_focus_filter(session)
+            && self.matches_search_query(session)
+    }
+
+    fn matches_focus_filter(&self, session: &ClaudeSession) -> bool {
+        let over_budget = self
+            .budget_usd
+            .map(|budget| session.has_usage_metrics() && session.cost_usd >= budget)
+            .unwrap_or(false);
+        let high_context = session.has_usage_metrics()
+            && session.context_percent() >= self.context_warn_threshold as f64;
+        let unknown_telemetry = !session.has_usage_metrics();
+        let conflict = self.conflict_pids.contains(&session.pid);
+
+        match self.focus_filter {
+            FocusFilter::All => true,
+            FocusFilter::Attention => {
+                session.status == SessionStatus::NeedsInput
+                    || over_budget
+                    || high_context
+                    || unknown_telemetry
+                    || conflict
+            }
+            FocusFilter::OverBudget => over_budget,
+            FocusFilter::HighContext => high_context,
+            FocusFilter::UnknownTelemetry => unknown_telemetry,
+            FocusFilter::Conflict => conflict,
+        }
+    }
+
+    fn matches_search_query(&self, session: &ClaudeSession) -> bool {
+        let query = self.search_query.trim();
+        if query.is_empty() {
+            return true;
+        }
+
+        let query = query.to_ascii_lowercase();
+        let fields = [
+            session.display_name().to_string(),
+            session.project_name.clone(),
+            session.model.clone(),
+            session.cwd.clone(),
+            session.session_id.clone(),
+        ];
+
+        fields
+            .iter()
+            .any(|field| field.to_ascii_lowercase().contains(&query))
     }
 
     fn handle_approve(&mut self) {
@@ -1179,7 +1467,7 @@ pub struct ProjectGroup {
 impl App {
     pub fn project_groups(&self) -> Vec<ProjectGroup> {
         let mut groups: HashMap<String, Vec<&ClaudeSession>> = HashMap::new();
-        for s in &self.sessions {
+        for s in self.visible_sessions() {
             groups.entry(s.project_name.clone()).or_default().push(s);
         }
 
@@ -1218,6 +1506,128 @@ impl App {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{RawSession, TelemetryStatus};
+
+    fn make_session(
+        pid: u32,
+        project: &str,
+        model: &str,
+        status: SessionStatus,
+        cost_usd: f64,
+        context_pct: f64,
+        telemetry_available: bool,
+    ) -> ClaudeSession {
+        let raw = RawSession {
+            pid,
+            session_id: format!("session-{pid}"),
+            cwd: format!("/tmp/{project}"),
+            started_at: 0,
+        };
+        let mut session = ClaudeSession::from_raw(raw);
+        session.project_name = project.to_string();
+        session.model = model.to_string();
+        session.status = status;
+        session.cost_usd = cost_usd;
+        session.context_max = 100;
+        session.context_tokens = context_pct as u64;
+        session.telemetry_status = if telemetry_available {
+            TelemetryStatus::Available
+        } else {
+            TelemetryStatus::MissingTranscript
+        };
+        session.usage_metrics_available = telemetry_available;
+        session
+    }
+
+    fn make_test_app() -> App {
+        let mut app = App::new();
+        app.sessions = vec![
+            make_session(
+                11,
+                "blocked-api",
+                "sonnet-4.6",
+                SessionStatus::NeedsInput,
+                2.0,
+                40.0,
+                true,
+            ),
+            make_session(
+                12,
+                "hot-cost",
+                "opus-4.6",
+                SessionStatus::Processing,
+                7.5,
+                30.0,
+                true,
+            ),
+            make_session(
+                13,
+                "high-context",
+                "haiku",
+                SessionStatus::WaitingInput,
+                1.0,
+                90.0,
+                true,
+            ),
+            make_session(
+                14,
+                "unknown-metrics",
+                "",
+                SessionStatus::Unknown,
+                0.0,
+                0.0,
+                false,
+            ),
+        ];
+        app.budget_usd = Some(5.0);
+        app.context_warn_threshold = 75;
+        app.conflict_pids.insert(13);
+        app.normalize_selection();
+        app
+    }
+
+    #[test]
+    fn status_filter_returns_only_matching_sessions() {
+        let mut app = make_test_app();
+        app.status_filter = StatusFilter::NeedsInput;
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![11]);
+    }
+
+    #[test]
+    fn focus_filter_attention_matches_high_signal_sessions() {
+        let mut app = make_test_app();
+        app.focus_filter = FocusFilter::Attention;
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn search_query_matches_project_and_model() {
+        let mut app = make_test_app();
+        app.search_query = "sonnet".into();
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![11]);
+
+        app.search_query = "unknown-metrics".into();
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![14]);
+    }
+
+    #[test]
+    fn normalize_selection_clamps_to_filtered_session_count() {
+        let mut app = make_test_app();
+        app.table_state.select(Some(3));
+        app.status_filter = StatusFilter::NeedsInput;
+        app.normalize_selection();
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.selected_session().map(|s| s.pid), Some(11));
     }
 }
 

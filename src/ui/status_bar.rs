@@ -10,7 +10,19 @@ use crate::app::App;
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
-    if app.launch_mode {
+    if app.search_mode {
+        let msg = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " / ",
+                Style::default()
+                    .fg(t.highlight_key)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(&*app.search_buffer, Style::default().fg(t.text_primary)),
+            Span::styled("_", Style::default().fg(t.text_muted)),
+        ]));
+        frame.render_widget(msg, area);
+    } else if app.launch_mode {
         let msg = Paragraph::new(Line::from(vec![
             Span::styled(
                 " new> ",
@@ -41,6 +53,12 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         let msg = Paragraph::new(Span::styled(
             format!(" {}", app.status_msg),
             Style::default().fg(color),
+        ));
+        frame.render_widget(msg, area);
+    } else if app.has_active_filters() {
+        let msg = Paragraph::new(Span::styled(
+            format!(" {}", app.filter_summary()),
+            Style::default().fg(t.header),
         ));
         frame.render_widget(msg, area);
     } else if !app.session_recordings.is_empty() {

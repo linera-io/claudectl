@@ -115,7 +115,18 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                 if let Some(reason) = message.stop_reason {
                                     last_stop_reason = reason;
                                 } else {
-                                    last_stop_reason.clear();
+                                    // Claude Code sometimes writes assistant messages
+                                    // with stop_reason: null when a tool_use block is
+                                    // awaiting user approval.  Infer from content.
+                                    let has_tool_use = message
+                                        .content
+                                        .iter()
+                                        .any(|b| matches!(b, TranscriptBlock::ToolUse { .. }));
+                                    if has_tool_use {
+                                        last_stop_reason = "tool_use".to_string();
+                                    } else {
+                                        last_stop_reason.clear();
+                                    }
                                 }
 
                                 if let Some(usage) = message.usage {

@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.16.2] - 2026-04-14
+
+### Fixed
+- Sessions blocked on a permission prompt now correctly show Needs Input when Claude Code writes `stop_reason: null` with a tool_use content block; the monitor infers `tool_use` from the message content instead of requiring the explicit stop_reason field
+
 ## [0.16.1] - 2026-04-14
 
 ### Fixed

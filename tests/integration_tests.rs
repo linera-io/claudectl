@@ -189,6 +189,36 @@ fn status_persisted_tool_use_survives_empty_tick() {
     assert_eq!(s.status, SessionStatus::NeedsInput);
 }
 
+#[test]
+fn status_null_stop_reason_with_tool_use_infers_needs_input() {
+    // Claude Code writes stop_reason: null for tool calls awaiting approval.
+    // The content still has a tool_use block — infer tool_use from content so
+    // that the session shows NeedsInput instead of Idle.
+    let jsonl = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","stop_reason":null,"content":[{"type":"tool_use","id":"toolu_01X","name":"Bash","input":{"command":"echo hi"}}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+
+    let (mut s, _file) = make_session_with_jsonl(jsonl);
+    s.cpu_percent = 0.5;
+    monitor::update_tokens(&mut s);
+
+    // stop_reason was null in JSONL but must be inferred from tool_use content
+    assert_eq!(s.last_stop_reason, "tool_use");
+    // File was just created (age < 5s) → Processing. Once file ages past 5s
+    // with low CPU, infer_status will flip to NeedsInput.
+    assert_eq!(s.status, SessionStatus::Processing);
+
+    // Simulate the passage of time (>5s) by backdating last_message_ts
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    s.last_message_ts = now_ms.saturating_sub(30_000); // 30s ago
+    let msg_type = s.last_msg_type.clone();
+    let stop_reason = s.last_stop_reason.clone();
+    let waiting = s.is_waiting_for_task;
+    monitor::infer_status(&mut s, &msg_type, &stop_reason, waiting);
+    assert_eq!(s.status, SessionStatus::NeedsInput);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Cost Estimation Tests
 // ────────────────────────────────────────────────────────────────────────────

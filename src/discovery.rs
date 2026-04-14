@@ -132,6 +132,10 @@ pub fn scan_subagents(sessions: &mut [ClaudeSession]) {
     let tmp_base = PathBuf::from(format!("/tmp/claude-{uid}"));
 
     if !tmp_base.exists() {
+        for session in sessions.iter_mut() {
+            session.active_subagent_count = 0;
+            session.active_subagent_jsonl_paths.clear();
+        }
         return;
     }
 
@@ -140,18 +144,33 @@ pub fn scan_subagents(sessions: &mut [ClaudeSession]) {
         let tasks_dir = tmp_base.join(&slug).join(&session.session_id).join("tasks");
 
         if !tasks_dir.exists() {
+            session.active_subagent_count = 0;
+            session.active_subagent_jsonl_paths.clear();
             continue;
         }
 
-        let count = match fs::read_dir(&tasks_dir) {
-            Ok(entries) => entries
-                .flatten()
-                .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
-                .count(),
-            Err(_) => 0,
-        };
+        let mut jsonls = Vec::new();
+        collect_subagent_jsonls(&tasks_dir, &mut jsonls);
+        jsonls.sort();
+        session.active_subagent_count = jsonls.len();
+        session.active_subagent_jsonl_paths = jsonls;
+    }
+}
 
-        session.subagent_count = count;
+fn collect_subagent_jsonls(dir: &PathBuf, jsonls: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_subagent_jsonls(&path, jsonls);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            jsonls.push(path);
+        }
     }
 }
 

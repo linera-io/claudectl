@@ -2,6 +2,19 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.16.0] - 2026-04-14
+
+### Added
+- GNOME Terminal support on Linux for `--new` and the `n` launch wizard, with doctor output that makes the current control limitations explicit
+- GNOME Terminal launch support for Ubuntu's default terminal, verified under Docker/X11
+- Homebrew release automation for both macOS and Linux artifacts, updating `mercurialsolo/homebrew-tap` on tagged releases
+
+### Fixed
+- Parent sessions now keep subagent token and cost rollups even when transient task files disappear from `/tmp`
+- Session detail and JSON output now distinguish active subagents from total rolled-up subagent usage
+- The main dashboard now expands parent sessions into child subagent rows, with a completed-subagent aggregate plus live active subagents underneath
+- Release automation now publishes to crates.io instead of stopping at GitHub release assets
+
 ## [0.15.5] - 2026-04-14
 
 ### Fixed

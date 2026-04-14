@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, SORT_COLUMNS};
-use crate::session::SessionStatus;
+use crate::session::{ClaudeSession, SessionStatus, SubagentBreakdown, SubagentState};
 
 use super::detail::render_detail_panel;
 use super::help::render_help_overlay;
@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let launch_hint = if crate::terminals::can_launch_session() {
             "  Press n for the launch wizard, or start claude in another terminal."
         } else {
-            "  Start claude in tmux, Kitty, WezTerm, or another terminal."
+            "  Start claude in GNOME Terminal, tmux, Kitty, WezTerm, or another terminal."
         };
         let empty_lines = vec![
             Line::from(""),
@@ -159,7 +159,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let header = Row::new(header_cells).height(1);
 
     let selected_pid = app.selected_session().map(|s| s.pid);
-    let mut selected_row_idx = app.table_state.selected();
+    let mut selected_row_idx = None;
     let rows: Vec<Row> = if app.grouped_view {
         let groups = app.project_groups();
         let mut rows = Vec::new();
@@ -199,17 +199,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 if Some(s.pid) == selected_pid {
                     selected_row_idx = Some(row_idx);
                 }
-                rows.push(session_row(s, app));
-                row_idx += 1;
+                let session_rows = render_rows_for_session(s, app);
+                row_idx += session_rows.len();
+                rows.extend(session_rows);
             }
         }
         rows
     } else {
-        visible_sessions
-            .iter()
-            .copied()
-            .map(|s| session_row(s, app))
-            .collect()
+        let mut rows = Vec::new();
+        let mut row_idx = 0usize;
+        for s in visible_sessions.iter().copied() {
+            if Some(s.pid) == selected_pid {
+                selected_row_idx = Some(row_idx);
+            }
+            let session_rows = render_rows_for_session(s, app);
+            row_idx += session_rows.len();
+            rows.extend(session_rows);
+        }
+        rows
     };
 
     let widths = [
@@ -417,7 +424,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a> {
+fn render_rows_for_session(s: &ClaudeSession, app: &App) -> Vec<Row<'static>> {
+    let mut rows = vec![session_row(s, app)];
+    let breakdown = s.subagent_breakdown();
+    let total = breakdown.len();
+    for (index, row) in breakdown.iter().enumerate() {
+        rows.push(subagent_row(row, app, index, total));
+    }
+    rows
+}
+
+fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
     let t = &app.theme;
     // Color escalation for NeedsInput based on wait time
     let status_style = if s.status == SessionStatus::NeedsInput {
@@ -512,6 +529,36 @@ fn session_row<'a>(s: &'a crate::session::ClaudeSession, app: &'a App) -> Row<'a
         Cell::from(s.format_mem()),
         Cell::from(s.format_tokens()),
         Cell::from(s.format_sparkline()).style(Style::default().fg(t.sparkline)),
+    ])
+}
+
+fn subagent_row(row: &SubagentBreakdown, app: &App, index: usize, total: usize) -> Row<'static> {
+    let t = &app.theme;
+    let branch = if index + 1 == total {
+        "\u{2514}\u{2500} "
+    } else {
+        "\u{251c}\u{2500} "
+    };
+    let project_text = format!("{branch}{}", row.display_label());
+    let status_text = row.state_label();
+    let status_style = match row.state {
+        SubagentState::Active => Style::default().fg(t.status_processing),
+        SubagentState::Completed => Style::default().fg(t.text_muted),
+    };
+    let row_style = Style::default().fg(t.text_muted);
+
+    Row::new(vec![
+        Cell::from(""),
+        Cell::from(project_text).style(row_style),
+        Cell::from(status_text).style(status_style),
+        Cell::from("-").style(row_style),
+        Cell::from(row.format_cost()).style(Style::default().fg(t.cost)),
+        Cell::from("-").style(row_style),
+        Cell::from("-").style(row_style),
+        Cell::from("-").style(row_style),
+        Cell::from("-").style(row_style),
+        Cell::from(row.format_tokens()).style(row_style),
+        Cell::from("-").style(row_style),
     ])
 }
 

@@ -714,7 +714,7 @@ fn print_summary(since: &str) -> io::Result<()> {
         }
 
         if s.subagent_count > 0 {
-            println!("  Subagents: {}", s.subagent_count);
+            println!("  Subagents: {}", s.format_subagent_summary());
         }
 
         println!();

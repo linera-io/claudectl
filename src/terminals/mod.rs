@@ -2,6 +2,7 @@
 mod apple;
 #[cfg(target_os = "macos")]
 mod ghostty;
+mod gnome_terminal;
 #[cfg(target_os = "macos")]
 mod iterm2;
 mod kitty;
@@ -110,6 +111,7 @@ pub struct DoctorReport {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Terminal {
+    Gnome,
     Ghostty,
     Warp,
     ITerm2,
@@ -122,6 +124,7 @@ pub enum Terminal {
 
 fn terminal_name(t: &Terminal) -> &str {
     match t {
+        Terminal::Gnome => "GNOME Terminal",
         Terminal::Ghostty => "Ghostty",
         Terminal::Warp => "Warp",
         Terminal::ITerm2 => "iTerm2",
@@ -139,6 +142,7 @@ fn platform_name() -> &'static str {
 
 fn supported_actions(terminal: &Terminal) -> Vec<TerminalAction> {
     match terminal {
+        Terminal::Gnome => vec![TerminalAction::Launch],
         Terminal::Kitty | Terminal::Tmux => vec![
             TerminalAction::Launch,
             TerminalAction::Switch,
@@ -180,6 +184,13 @@ pub fn detect_terminal() -> Terminal {
         return Terminal::Tmux;
     }
 
+    if std::env::var("GNOME_TERMINAL_SERVICE").is_ok()
+        || std::env::var("GNOME_TERMINAL_SCREEN").is_ok()
+        || ancestor_process_contains("gnome-terminal")
+    {
+        return Terminal::Gnome;
+    }
+
     match std::env::var("TERM_PROGRAM").as_deref() {
         Ok("ghostty") => Terminal::Ghostty,
         Ok("WarpTerminal") => Terminal::Warp,
@@ -190,6 +201,44 @@ pub fn detect_terminal() -> Terminal {
         Ok(other) => Terminal::Unknown(other.to_string()),
         Err(_) => Terminal::Unknown("unknown".to_string()),
     }
+}
+
+fn ancestor_process_contains(needle: &str) -> bool {
+    let mut pid = unsafe { libc::getppid() } as u32;
+    let needle = needle.to_ascii_lowercase();
+
+    for _ in 0..8 {
+        if pid == 0 {
+            break;
+        }
+
+        let output = match std::process::Command::new("ps")
+            .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return false,
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let line = stdout.trim();
+        if line.is_empty() {
+            break;
+        }
+
+        let mut parts = line.split_whitespace();
+        let parent = parts
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        let command = parts.collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        if command.contains(&needle) {
+            return true;
+        }
+        pid = parent;
+    }
+
+    false
 }
 
 pub fn can_launch_session() -> bool {
@@ -338,6 +387,51 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
     ];
 
     match terminal {
+        Terminal::Gnome => {
+            let gnome_check = binary_check("gnome-terminal");
+            let gnome_ready = gnome_check.status == DoctorStatus::Ready;
+            prerequisites.push(gnome_check);
+
+            let launch_status = if gnome_ready {
+                DoctorStatus::Ready
+            } else {
+                DoctorStatus::Blocked
+            };
+            let launch_detail = if gnome_ready {
+                "GNOME Terminal can launch visible Claude sessions with `gnome-terminal --window`."
+            } else {
+                "GNOME Terminal CLI is unavailable, so visible launch cannot run."
+            };
+            let launch_fix =
+                Some("Install GNOME Terminal and ensure `gnome-terminal` is on PATH.".to_string());
+            actions.push(action_check(
+                TerminalAction::Launch,
+                launch_status,
+                launch_detail,
+                launch_fix.clone(),
+            ));
+
+            for action in [
+                TerminalAction::Switch,
+                TerminalAction::Input,
+                TerminalAction::Approve,
+            ] {
+                actions.push(action_check(
+                    action,
+                    DoctorStatus::Unsupported,
+                    "GNOME Terminal launch is supported, but reliable remote focus/input automation is not currently available.",
+                    Some(
+                        "Use tmux or Kitty when you need remote switching, input, or approval from claudectl."
+                            .to_string(),
+                    ),
+                ));
+            }
+
+            notes.push(
+                "GNOME Terminal launch works on Linux and was smoke-tested under Docker/X11. Remote focus/input automation is intentionally disabled until window targeting is reliable."
+                    .to_string(),
+            );
+        }
         Terminal::Kitty => {
             let kitty_check = binary_check("kitty");
             let kitty_ready = kitty_check.status == DoctorStatus::Ready;
@@ -594,7 +688,7 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
                     action,
                     DoctorStatus::Unsupported,
                     format!(
-                        "No integration is configured for `{name}`. Supported terminals: tmux, Kitty, WezTerm, Ghostty, Warp, iTerm2, Terminal.app."
+                        "No integration is configured for `{name}`. Supported terminals: GNOME Terminal, tmux, Kitty, WezTerm, Ghostty, Warp, iTerm2, Terminal.app."
                     ),
                     None::<String>,
                 ));
@@ -622,10 +716,10 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
                     None::<String>,
                 ));
             }
-            notes.push(format!(
-                "{} was detected, but terminal control for it is only available on macOS right now.",
-                terminal_name(&terminal)
-            ));
+            notes.push(
+                "Monitoring still works in unsupported terminals, but control actions stay manual."
+                    .to_string(),
+            );
         }
     }
 
@@ -696,11 +790,12 @@ pub fn launch_session(
 ) -> Result<String, String> {
     let terminal = detect_terminal();
     match terminal {
+        Terminal::Gnome => gnome_terminal::launch(cwd, prompt, resume),
         Terminal::Kitty => kitty::launch(cwd, prompt, resume),
         Terminal::Tmux => tmux::launch(cwd, prompt, resume),
         Terminal::WezTerm => wezterm::launch(cwd, prompt, resume),
         other => Err(format!(
-            "Visible session launch is not supported in {}. Start `claude` manually, use tmux/Kitty/WezTerm, or run `claudectl --doctor` for setup guidance.",
+            "Visible session launch is not supported in {}. Start `claude` manually, use tmux/Kitty/WezTerm/GNOME Terminal, or run `claudectl --doctor` for setup guidance.",
             terminal_name(&other)
         )),
     }
@@ -723,6 +818,7 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
     );
 
     match terminal {
+        Terminal::Gnome => gnome_terminal::switch(session),
         Terminal::Kitty => kitty::switch(session),
         Terminal::WezTerm => wezterm::switch(session),
         Terminal::Tmux => tmux::switch(session),
@@ -735,7 +831,7 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         Terminal::Apple => apple::switch(session),
         Terminal::Unknown(name) => Err(format!(
-            "Unsupported terminal: {name}. Supported: Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux. Run `claudectl --doctor` for details."
+            "Unsupported terminal: {name}. Supported: GNOME Terminal, Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux. Run `claudectl --doctor` for details."
         )),
         #[cfg(not(target_os = "macos"))]
         _ => Err("Terminal switching not supported on this platform. Run `claudectl --doctor` for details.".into()),
@@ -744,6 +840,7 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
 
 pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
     match detect_terminal() {
+        Terminal::Gnome => gnome_terminal::send_input(session, text),
         #[cfg(target_os = "macos")]
         Terminal::Ghostty => ghostty::send_input(session, text),
         Terminal::Kitty => kitty::send_input(session, text),
@@ -767,6 +864,7 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
 
 pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
     match detect_terminal() {
+        Terminal::Gnome => gnome_terminal::approve(session),
         #[cfg(target_os = "macos")]
         Terminal::Ghostty => ghostty::approve(session),
         Terminal::Kitty => kitty::approve(session),
@@ -817,6 +915,12 @@ mod tests {
     fn help_summary_marks_unknown_terminal_monitor_only() {
         let summary = help_capability_summary_for(&Terminal::Unknown("foot".into()));
         assert_eq!(summary, "Current terminal: foot (monitor-only)");
+    }
+
+    #[test]
+    fn help_summary_mentions_gnome_terminal() {
+        let summary = help_capability_summary_for(&Terminal::Gnome);
+        assert!(summary.starts_with("Current terminal: GNOME Terminal"));
     }
 
     #[test]

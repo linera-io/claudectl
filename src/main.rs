@@ -37,6 +37,13 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, FocusFilter, StatusFilter};
 
+#[derive(Clone)]
+struct ViewFilters {
+    status_filter: StatusFilter,
+    focus_filter: FocusFilter,
+    search: String,
+}
+
 #[derive(Parser)]
 #[command(
     name = "claudectl",
@@ -225,9 +232,11 @@ fn main() -> io::Result<()> {
     }
 
     models::set_overrides(cfg.model_overrides.clone());
-    let status_filter = parse_status_filter(cli.filter_status.as_deref())?;
-    let focus_filter = parse_focus_filter(cli.focus.as_deref())?;
-    let search_query = cli.search.clone().unwrap_or_default();
+    let filters = ViewFilters {
+        status_filter: parse_status_filter(cli.filter_status.as_deref())?,
+        focus_filter: parse_focus_filter(cli.focus.as_deref())?,
+        search: cli.search.clone().unwrap_or_default(),
+    };
 
     // Load event hooks from config
     let hook_registry = config::load_hooks();
@@ -270,11 +279,11 @@ fn main() -> io::Result<()> {
     }
 
     if cli.json && !cli.watch {
-        return print_json(cli.demo, status_filter, focus_filter, &search_query);
+        return print_json(cli.demo, &filters);
     }
 
     if cli.list {
-        return print_list(cli.demo, status_filter, focus_filter, &search_query);
+        return print_list(cli.demo, &filters);
     }
 
     if cli.watch {
@@ -282,9 +291,7 @@ fn main() -> io::Result<()> {
             Duration::from_millis(cfg.interval),
             cli.json,
             &cli.format,
-            status_filter,
-            focus_filter,
-            &search_query,
+            &filters,
         );
     }
 
@@ -312,9 +319,7 @@ fn main() -> io::Result<()> {
             app_theme,
             hook_registry,
             cli.demo,
-            status_filter,
-            focus_filter,
-            &search_query,
+            &filters,
         );
 
         disable_raw_mode()?;
@@ -347,9 +352,7 @@ fn main() -> io::Result<()> {
             app_theme,
             hook_registry,
             cli.demo,
-            status_filter,
-            focus_filter,
-            &search_query,
+            &filters,
         );
 
         disable_raw_mode()?;
@@ -426,15 +429,10 @@ fn parse_focus_filter(value: Option<&str>) -> io::Result<FocusFilter> {
     }
 }
 
-fn apply_filters(
-    app: &mut App,
-    status_filter: StatusFilter,
-    focus_filter: FocusFilter,
-    search_query: &str,
-) {
-    app.status_filter = status_filter;
-    app.focus_filter = focus_filter;
-    app.search_query = search_query.trim().to_string();
+fn apply_filters(app: &mut App, filters: &ViewFilters) {
+    app.status_filter = filters.status_filter;
+    app.focus_filter = filters.focus_filter;
+    app.search_query = filters.search.trim().to_string();
     app.search_buffer.clear();
     app.search_mode = false;
     let len = app.visible_session_count();
@@ -724,12 +722,7 @@ fn format_count(n: u64) -> String {
     }
 }
 
-fn make_app(
-    demo: bool,
-    status_filter: StatusFilter,
-    focus_filter: FocusFilter,
-    search: &str,
-) -> App {
+fn make_app(demo: bool, filters: &ViewFilters) -> App {
     let mut app = if demo {
         let mut app = App::new();
         app.demo_mode = true;
@@ -738,17 +731,12 @@ fn make_app(
     } else {
         App::new()
     };
-    apply_filters(&mut app, status_filter, focus_filter, search);
+    apply_filters(&mut app, filters);
     app
 }
 
-fn print_json(
-    demo: bool,
-    status_filter: StatusFilter,
-    focus_filter: FocusFilter,
-    search: &str,
-) -> io::Result<()> {
-    let app = make_app(demo, status_filter, focus_filter, search);
+fn print_json(demo: bool, filters: &ViewFilters) -> io::Result<()> {
+    let app = make_app(demo, filters);
     let values: Vec<serde_json::Value> = app
         .visible_sessions()
         .iter()
@@ -759,13 +747,8 @@ fn print_json(
     Ok(())
 }
 
-fn print_list(
-    demo: bool,
-    status_filter: StatusFilter,
-    focus_filter: FocusFilter,
-    search: &str,
-) -> io::Result<()> {
-    let app = make_app(demo, status_filter, focus_filter, search);
+fn print_list(demo: bool, filters: &ViewFilters) -> io::Result<()> {
+    let app = make_app(demo, filters);
     let visible_sessions = app.visible_sessions();
 
     if visible_sessions.is_empty() {
@@ -821,15 +804,13 @@ fn run_watch(
     tick_rate: Duration,
     json_mode: bool,
     format_str: &str,
-    status_filter: StatusFilter,
-    focus_filter: FocusFilter,
-    search: &str,
+    filters: &ViewFilters,
 ) -> io::Result<()> {
     use crate::session::SessionStatus;
     use std::collections::HashMap;
 
     let mut app = App::new();
-    apply_filters(&mut app, status_filter, focus_filter, search);
+    apply_filters(&mut app, filters);
     let mut prev_statuses: HashMap<u32, SessionStatus> =
         app.sessions.iter().map(|s| (s.pid, s.status)).collect();
 
@@ -913,9 +894,7 @@ fn run_tui<W: io::Write>(
     app_theme: theme::Theme,
     hook_registry: hooks::HookRegistry,
     demo_mode: bool,
-    status_filter: StatusFilter,
-    focus_filter: FocusFilter,
-    search: &str,
+    filters: &ViewFilters,
 ) -> io::Result<()> {
     let mut app = App::new();
     app.notify = cfg.notify;
@@ -931,7 +910,7 @@ fn run_tui<W: io::Write>(
     app.weekly_limit = cfg.weekly_limit;
     app.context_warn_threshold = cfg.context_warn_threshold;
     app.demo_mode = demo_mode;
-    apply_filters(&mut app, status_filter, focus_filter, search);
+    apply_filters(&mut app, filters);
 
     if demo_mode {
         app.daily_limit = Some(50.0);

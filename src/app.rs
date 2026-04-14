@@ -1509,128 +1509,6 @@ impl App {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::{RawSession, TelemetryStatus};
-
-    fn make_session(
-        pid: u32,
-        project: &str,
-        model: &str,
-        status: SessionStatus,
-        cost_usd: f64,
-        context_pct: f64,
-        telemetry_available: bool,
-    ) -> ClaudeSession {
-        let raw = RawSession {
-            pid,
-            session_id: format!("session-{pid}"),
-            cwd: format!("/tmp/{project}"),
-            started_at: 0,
-        };
-        let mut session = ClaudeSession::from_raw(raw);
-        session.project_name = project.to_string();
-        session.model = model.to_string();
-        session.status = status;
-        session.cost_usd = cost_usd;
-        session.context_max = 100;
-        session.context_tokens = context_pct as u64;
-        session.telemetry_status = if telemetry_available {
-            TelemetryStatus::Available
-        } else {
-            TelemetryStatus::MissingTranscript
-        };
-        session.usage_metrics_available = telemetry_available;
-        session
-    }
-
-    fn make_test_app() -> App {
-        let mut app = App::new();
-        app.sessions = vec![
-            make_session(
-                11,
-                "blocked-api",
-                "sonnet-4.6",
-                SessionStatus::NeedsInput,
-                2.0,
-                40.0,
-                true,
-            ),
-            make_session(
-                12,
-                "hot-cost",
-                "opus-4.6",
-                SessionStatus::Processing,
-                7.5,
-                30.0,
-                true,
-            ),
-            make_session(
-                13,
-                "high-context",
-                "haiku",
-                SessionStatus::WaitingInput,
-                1.0,
-                90.0,
-                true,
-            ),
-            make_session(
-                14,
-                "unknown-metrics",
-                "",
-                SessionStatus::Unknown,
-                0.0,
-                0.0,
-                false,
-            ),
-        ];
-        app.budget_usd = Some(5.0);
-        app.context_warn_threshold = 75;
-        app.conflict_pids.insert(13);
-        app.normalize_selection();
-        app
-    }
-
-    #[test]
-    fn status_filter_returns_only_matching_sessions() {
-        let mut app = make_test_app();
-        app.status_filter = StatusFilter::NeedsInput;
-        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
-        assert_eq!(visible, vec![11]);
-    }
-
-    #[test]
-    fn focus_filter_attention_matches_high_signal_sessions() {
-        let mut app = make_test_app();
-        app.focus_filter = FocusFilter::Attention;
-        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
-        assert_eq!(visible, vec![11, 12, 13, 14]);
-    }
-
-    #[test]
-    fn search_query_matches_project_and_model() {
-        let mut app = make_test_app();
-        app.search_query = "sonnet".into();
-        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
-        assert_eq!(visible, vec![11]);
-
-        app.search_query = "unknown-metrics".into();
-        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
-        assert_eq!(visible, vec![14]);
-    }
-
-    #[test]
-    fn normalize_selection_clamps_to_filtered_session_count() {
-        let mut app = make_test_app();
-        app.table_state.select(Some(3));
-        app.status_filter = StatusFilter::NeedsInput;
-        app.normalize_selection();
-        assert_eq!(app.table_state.selected(), Some(0));
-        assert_eq!(app.selected_session().map(|s| s.pid), Some(11));
-    }
-}
-
 fn fire_webhook(url: &str, session: &ClaudeSession, old_status: String) {
     let payload = serde_json::json!({
         "event": "status_change",
@@ -1785,4 +1663,126 @@ fn create_aggregate_session(total_cost: f64, limit: f64, period: &str) -> Claude
     s.cost_usd = total_cost;
     s.model = format!("limit=${limit:.2}");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{RawSession, TelemetryStatus};
+
+    fn make_session(
+        pid: u32,
+        project: &str,
+        model: &str,
+        status: SessionStatus,
+        cost_usd: f64,
+        context_pct: f64,
+        telemetry_available: bool,
+    ) -> ClaudeSession {
+        let raw = RawSession {
+            pid,
+            session_id: format!("session-{pid}"),
+            cwd: format!("/tmp/{project}"),
+            started_at: 0,
+        };
+        let mut session = ClaudeSession::from_raw(raw);
+        session.project_name = project.to_string();
+        session.model = model.to_string();
+        session.status = status;
+        session.cost_usd = cost_usd;
+        session.context_max = 100;
+        session.context_tokens = context_pct as u64;
+        session.telemetry_status = if telemetry_available {
+            TelemetryStatus::Available
+        } else {
+            TelemetryStatus::MissingTranscript
+        };
+        session.usage_metrics_available = telemetry_available;
+        session
+    }
+
+    fn make_test_app() -> App {
+        let mut app = App::new();
+        app.sessions = vec![
+            make_session(
+                11,
+                "blocked-api",
+                "sonnet-4.6",
+                SessionStatus::NeedsInput,
+                2.0,
+                40.0,
+                true,
+            ),
+            make_session(
+                12,
+                "hot-cost",
+                "opus-4.6",
+                SessionStatus::Processing,
+                7.5,
+                30.0,
+                true,
+            ),
+            make_session(
+                13,
+                "high-context",
+                "haiku",
+                SessionStatus::WaitingInput,
+                1.0,
+                90.0,
+                true,
+            ),
+            make_session(
+                14,
+                "unknown-metrics",
+                "",
+                SessionStatus::Unknown,
+                0.0,
+                0.0,
+                false,
+            ),
+        ];
+        app.budget_usd = Some(5.0);
+        app.context_warn_threshold = 75;
+        app.conflict_pids.insert(13);
+        app.normalize_selection();
+        app
+    }
+
+    #[test]
+    fn status_filter_returns_only_matching_sessions() {
+        let mut app = make_test_app();
+        app.status_filter = StatusFilter::NeedsInput;
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![11]);
+    }
+
+    #[test]
+    fn focus_filter_attention_matches_high_signal_sessions() {
+        let mut app = make_test_app();
+        app.focus_filter = FocusFilter::Attention;
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn search_query_matches_project_and_model() {
+        let mut app = make_test_app();
+        app.search_query = "sonnet".into();
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![11]);
+
+        app.search_query = "unknown-metrics".into();
+        let visible: Vec<u32> = app.visible_sessions().iter().map(|s| s.pid).collect();
+        assert_eq!(visible, vec![14]);
+    }
+
+    #[test]
+    fn normalize_selection_clamps_to_filtered_session_count() {
+        let mut app = make_test_app();
+        app.table_state.select(Some(3));
+        app.status_filter = StatusFilter::NeedsInput;
+        app.normalize_selection();
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.selected_session().map(|s| s.pid), Some(11));
+    }
 }

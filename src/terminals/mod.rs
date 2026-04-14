@@ -175,6 +175,28 @@ fn environment_notes(is_wsl: bool, has_wt_interop: bool) -> Vec<String> {
     notes
 }
 
+fn wsl_interop_check(is_wsl: bool) -> Option<DoctorCheck> {
+    if !is_wsl {
+        return None;
+    }
+
+    if command_ready("wt.exe") {
+        Some(DoctorCheck::ready(
+            "Windows Terminal interop",
+            "`wt.exe` is reachable from WSL.",
+        ))
+    } else {
+        Some(DoctorCheck::blocked(
+            "Windows Terminal interop",
+            "`wt.exe` is not on PATH from this WSL environment.",
+            Some(
+                "Install Windows Terminal or enable WSL interop, then reopen the shell."
+                    .to_string(),
+            ),
+        ))
+    }
+}
+
 fn is_wsl() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -436,14 +458,18 @@ pub fn doctor_report() -> DoctorReport {
 
 fn doctor_report_for(terminal: Terminal) -> DoctorReport {
     let terminal_label = terminal_name(&terminal).to_string();
+    let is_wsl = is_wsl();
     let mut prerequisites = vec![binary_check("claude")];
+    if let Some(wsl_check) = wsl_interop_check(is_wsl) {
+        prerequisites.push(wsl_check);
+    }
     let mut actions = Vec::new();
     let mut notes = vec![
         "Run `claudectl --doctor` inside the same terminal family that launches Claude."
             .to_string(),
         "`n` and `--new` use the same launch capability shown here.".to_string(),
     ];
-    notes.extend(environment_notes(is_wsl(), command_ready("wt.exe")));
+    notes.extend(environment_notes(is_wsl, command_ready("wt.exe")));
 
     match terminal {
         Terminal::Gnome => {
@@ -1005,5 +1031,11 @@ mod tests {
         let notes = environment_notes(true, true);
         assert!(notes.iter().any(|note| note.contains("WSL detected")));
         assert!(notes.iter().any(|note| note.contains("wt.exe")));
+    }
+
+    #[test]
+    fn wsl_interop_check_reports_when_available() {
+        let check = wsl_interop_check(true).unwrap();
+        assert_eq!(check.name, "Windows Terminal interop");
     }
 }

@@ -16,12 +16,27 @@ pub struct BrainSuggestion {
 
 /// Call the local LLM endpoint via curl and parse the response.
 pub fn infer(config: &BrainConfig, prompt: &str) -> Result<BrainSuggestion, String> {
-    let payload = serde_json::json!({
-        "model": config.model,
-        "prompt": prompt,
-        "stream": false,
-        "format": "json",
-    });
+    let is_openai = is_openai_compatible(&config.endpoint);
+
+    let payload = if is_openai {
+        // OpenAI-compatible format (llama.cpp, vLLM, LM Studio)
+        serde_json::json!({
+            "model": config.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "stream": false,
+        })
+    } else {
+        // Ollama /api/generate format (default)
+        serde_json::json!({
+            "model": config.model,
+            "prompt": prompt,
+            "stream": false,
+            "format": "json",
+        })
+    };
 
     let body = serde_json::to_string(&payload).map_err(|e| format!("json error: {e}"))?;
     let timeout_secs = (config.timeout_ms / 1000).max(1);
@@ -48,7 +63,16 @@ pub fn infer(config: &BrainConfig, prompt: &str) -> Result<BrainSuggestion, Stri
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_ollama_response(&stdout)
+    if is_openai {
+        parse_openai_response(&stdout)
+    } else {
+        parse_ollama_response(&stdout)
+    }
+}
+
+/// Detect if the endpoint is OpenAI-compatible based on URL path.
+fn is_openai_compatible(endpoint: &str) -> bool {
+    endpoint.contains("/v1/chat") || endpoint.contains("/v1/completions")
 }
 
 /// Summarize source session output for routing to a target session.
@@ -69,11 +93,27 @@ pub fn summarize_for_routing(
         ],
     );
 
-    let payload = serde_json::json!({
-        "model": config.model,
-        "prompt": prompt,
-        "stream": false,
-    });
+    let response = call_llm(config, &prompt)?;
+    Ok(response.trim().to_string())
+}
+
+/// Make an LLM API call, auto-detecting ollama vs OpenAI format from the endpoint URL.
+fn call_llm(config: &BrainConfig, prompt: &str) -> Result<String, String> {
+    let is_openai = is_openai_compatible(&config.endpoint);
+
+    let payload = if is_openai {
+        serde_json::json!({
+            "model": config.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": false,
+        })
+    } else {
+        serde_json::json!({
+            "model": config.model,
+            "prompt": prompt,
+            "stream": false,
+        })
+    };
 
     let body = serde_json::to_string(&payload).map_err(|e| format!("json error: {e}"))?;
     let timeout_secs = (config.timeout_ms / 1000).max(1);
@@ -105,12 +145,25 @@ pub fn summarize_for_routing(
     let json: serde_json::Value =
         serde_json::from_str(&stdout).map_err(|e| format!("invalid response: {e}"))?;
 
-    let text = json
-        .get("response")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&stdout);
-
-    Ok(text.trim().to_string())
+    if is_openai {
+        // OpenAI: choices[0].message.content
+        Ok(json
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|msg| msg.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&stdout)
+            .to_string())
+    } else {
+        // Ollama: response field
+        Ok(json
+            .get("response")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&stdout)
+            .to_string())
+    }
 }
 
 /// Parse the ollama `/api/generate` response format.
@@ -125,6 +178,24 @@ fn parse_ollama_response(response: &str) -> Result<BrainSuggestion, String> {
         .unwrap_or(response);
 
     parse_suggestion_json(generated)
+}
+
+/// Parse OpenAI-compatible /v1/chat/completions response.
+fn parse_openai_response(response: &str) -> Result<BrainSuggestion, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(response).map_err(|e| format!("invalid JSON response: {e}"))?;
+
+    // OpenAI format: choices[0].message.content
+    let content = json
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|msg| msg.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(response);
+
+    parse_suggestion_json(content)
 }
 
 /// Parse the structured JSON that the brain LLM is expected to produce.
@@ -266,5 +337,22 @@ mod tests {
         assert_eq!(s.reasoning, "");
         assert!((s.confidence - 0.5).abs() < f64::EPSILON);
         assert!(s.message.is_none());
+    }
+
+    #[test]
+    fn parse_openai_wrapped_response() {
+        let openai_response = r#"{"choices":[{"message":{"content":"{\"action\":\"deny\",\"reasoning\":\"dangerous\",\"confidence\":0.95}"}}]}"#;
+        let s = parse_openai_response(openai_response).unwrap();
+        assert_eq!(s.action, RuleAction::Deny);
+        assert!((s.confidence - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn detect_openai_endpoint() {
+        assert!(is_openai_compatible(
+            "http://localhost:8080/v1/chat/completions"
+        ));
+        assert!(is_openai_compatible("http://host/v1/completions"));
+        assert!(!is_openai_compatible("http://localhost:11434/api/generate"));
     }
 }

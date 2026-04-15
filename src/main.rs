@@ -10,6 +10,7 @@ mod brain;
 mod config;
 mod demo;
 mod discovery;
+mod health;
 mod history;
 mod hooks;
 mod launch;

@@ -79,6 +79,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history and [the landing page](http
 | Approve prompts without switching | No | **Press `y`** |
 | Get notified on stalls/blocks | No | **Desktop + webhook** |
 | Orchestrate multi-session workflows | No | **Dependency-ordered tasks** |
+| Local LLM auto-approve/deny | No | **Brain with ollama** |
 | Record session highlight reels | No | **Press `R`** |
 
 ## Core Workflows
@@ -229,6 +230,8 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `z` | Clear all active filters |
 | `c` | Send /compact to session (when idle) |
 | `R` | Record session highlight reel (toggle) |
+| `b` | Accept brain suggestion for selected session |
+| `B` | Reject brain suggestion |
 | `r` | Force refresh |
 | `?` | Toggle help overlay |
 | `q`/`Esc` | Quit |
@@ -300,6 +303,65 @@ Use `claudectl --hooks` to verify your configured hooks.
 We maintain a curated set of verified hooks at [mercurialsolo/claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks). Submitted hooks are reviewed for security, reliability, and usefulness before being added.
 
 To submit a hook, [open an issue](https://github.com/mercurialsolo/claudectl-hooks/issues) with the config snippet, what it solves, and any dependencies.
+
+## Local LLM Brain
+
+claudectl can use a local LLM to observe sessions and suggest actions -- approve, deny, send messages, or terminate. The brain connects to ollama or any OpenAI-compatible endpoint via curl subprocess (no new dependencies).
+
+### Setup
+
+1. Install ollama: `brew install ollama` or from [ollama.ai](https://ollama.ai)
+2. Pull a model: `ollama pull gemma3:12b` (or any model you prefer)
+3. Start ollama: `ollama serve` (runs on `localhost:11434` by default)
+
+### Activation
+
+```bash
+# Advisory mode — brain suggests, you confirm with b/B
+claudectl --brain
+
+# Auto mode — brain executes without confirmation
+claudectl --brain --brain-auto
+
+# Custom model/endpoint
+claudectl --brain --brain-model llama3:8b
+claudectl --brain --brain-endpoint http://localhost:8080/v1/chat
+```
+
+### How it works
+
+- Brain observes sessions in **NeedsInput** or **WaitingInput** status
+- Builds a compact prompt from session state + recent transcript
+- Sends to local LLM via curl (non-blocking, async thread)
+- **Advisory mode** (default): shows suggestion inline `[b:approve]`; press `b` to accept, `B` to reject
+- **Auto mode**: executes immediately (deny rules still override)
+- Every decision is logged to `~/.claudectl/brain/decisions.jsonl`
+- Past decisions are retrieved as few-shot examples so the brain learns from your corrections
+
+### Decision learning
+
+The brain retrieves relevant past decisions (same tool, same project) as few-shot examples. Configurable via `few_shot_count` (default 5, set to 0 to disable). All data stays local in `~/.claudectl/brain/`. To clear history, delete `decisions.jsonl`.
+
+### Precedence
+
+```
+Rule Deny > Rule Approve > Brain Suggestion > Legacy auto-approve (a key)
+```
+
+### Brain config
+
+Add to `.claudectl.toml` or `~/.config/claudectl/config.toml`:
+
+```toml
+[brain]
+enabled = true
+endpoint = "http://localhost:11434/api/generate"
+model = "gemma3:12b"
+auto = false
+timeout_ms = 5000
+max_context_tokens = 4000
+few_shot_count = 5
+```
 
 ## Configuration
 
@@ -398,12 +460,14 @@ Native Windows is not supported yet. WSL plus Windows Terminal can now launch ne
 ## Security
 
 claudectl runs entirely locally. It reads Claude Code's session files from disk and process data from `ps`. It does not:
-- Send data to any server (unless you configure webhooks)
+- Send data to any server (unless you configure webhooks or the brain feature)
 - Modify Claude Code's files or behavior
 - Require API keys or authentication
 - Run with elevated privileges
 
 Webhook payloads contain session metadata (project name, cost, status). Review your webhook URL and event filters before enabling.
+
+The brain feature sends session context to a **local** LLM endpoint (default `localhost:11434`). No data leaves your machine unless you point `--brain-endpoint` at a remote server. All decision logs stay in `~/.claudectl/brain/`.
 
 ## Contributing
 

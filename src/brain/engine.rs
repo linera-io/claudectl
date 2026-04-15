@@ -131,19 +131,20 @@ impl BrainEngine {
                 continue;
             }
 
-            self.spawn_inference(session);
+            self.spawn_inference(session, sessions);
         }
 
         actions
     }
 
-    fn spawn_inference(&mut self, session: &ClaudeSession) {
+    fn spawn_inference(&mut self, session: &ClaudeSession, all_sessions: &[ClaudeSession]) {
         let pid = session.pid;
         let config = self.config.clone();
         let tx = self.tx.clone();
 
         // Build context on the main thread (reads JSONL files)
-        let mut brain_ctx = context::build_context(session, config.max_context_tokens);
+        let mut brain_ctx =
+            context::build_context(session, all_sessions, config.max_context_tokens);
 
         // Inject few-shot examples from past decisions
         if config.few_shot_count > 0 {

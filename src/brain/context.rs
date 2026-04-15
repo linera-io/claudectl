@@ -18,19 +18,28 @@ pub struct BrainContext {
     pub decision_prompt: String,
     /// Few-shot examples from past decisions (empty if no history).
     pub few_shot_examples: String,
+    /// Global view of all active sessions (empty if only one session).
+    pub global_session_map: String,
 }
 
 /// Build a compact context for the brain from a session's state and JSONL transcript.
-pub fn build_context(session: &ClaudeSession, max_tokens: u32) -> BrainContext {
+/// Pass all sessions for cross-session awareness.
+pub fn build_context(
+    session: &ClaudeSession,
+    all_sessions: &[ClaudeSession],
+    max_tokens: u32,
+) -> BrainContext {
     let session_summary = format_session_summary(session);
     let recent_transcript = read_recent_transcript(session, max_tokens);
     let decision_prompt = format_decision_prompt(session);
+    let global_session_map = format_global_session_map(session.pid, all_sessions);
 
     BrainContext {
         session_summary,
         recent_transcript,
         decision_prompt,
         few_shot_examples: String::new(), // Set by engine after retrieval
+        global_session_map,
     }
 }
 
@@ -92,6 +101,57 @@ fn format_decision_prompt(session: &ClaudeSession) -> String {
              {\"action\": \"deny\", \"reasoning\": \"...\", \"confidence\": 0.0}"
             .to_string(),
     }
+}
+
+/// Format a compact map of all active sessions for cross-session awareness.
+fn format_global_session_map(current_pid: u32, sessions: &[ClaudeSession]) -> String {
+    if sessions.len() <= 1 {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    for s in sessions {
+        let marker = if s.pid == current_pid {
+            " ← evaluating"
+        } else {
+            ""
+        };
+        let ctx_pct = if s.context_max > 0 {
+            (s.context_tokens as f64 / s.context_max as f64 * 100.0) as u32
+        } else {
+            0
+        };
+
+        let tool_info = match &s.pending_tool_name {
+            Some(tool) => {
+                let cmd = s
+                    .pending_tool_input
+                    .as_deref()
+                    .map(|c| {
+                        if c.len() > 60 {
+                            format!(" \"{}...\"", &c[..60])
+                        } else {
+                            format!(" \"{c}\"")
+                        }
+                    })
+                    .unwrap_or_default();
+                format!(" [{}{}]", tool, cmd)
+            }
+            None => String::new(),
+        };
+
+        lines.push(format!(
+            "- {} [PID {}]: {}{} (${:.1}, {}% ctx){marker}",
+            s.display_name(),
+            s.pid,
+            s.status,
+            tool_info,
+            s.cost_usd,
+            ctx_pct,
+        ));
+    }
+
+    lines.join("\n")
 }
 
 /// Read recent transcript entries from the JSONL file, compacted to fit budget.
@@ -265,13 +325,20 @@ pub fn format_brain_prompt(ctx: &BrainContext) -> String {
         )
     };
 
+    let global_map = if ctx.global_session_map.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n## All Active Sessions\n{}", ctx.global_session_map)
+    };
+
     format!(
         "You are a session supervisor for Claude Code. Analyze the session state and recent \
-         conversation to decide what action to take.\n\n\
-         ## Session State\n{}\n\n\
+         conversation to decide what action to take. Consider the state of other active sessions \
+         when making decisions.\n\n\
+         ## Session State\n{}{}\n\n\
          ## Recent Conversation\n{}{}\n\n\
          ## Decision\n{}",
-        ctx.session_summary, ctx.recent_transcript, few_shot, ctx.decision_prompt
+        ctx.session_summary, global_map, ctx.recent_transcript, few_shot, ctx.decision_prompt
     )
 }
 
@@ -341,7 +408,7 @@ mod tests {
     #[test]
     fn context_with_no_jsonl_path() {
         let s = make_session();
-        let ctx = build_context(&s, 4000);
+        let ctx = build_context(&s, &[s.clone()], 4000);
         assert!(ctx.recent_transcript.contains("no transcript"));
     }
 
@@ -362,7 +429,7 @@ mod tests {
         let mut s = make_session();
         s.jsonl_path = Some(jsonl);
 
-        let ctx = build_context(&s, 4000);
+        let ctx = build_context(&s, &[s.clone()], 4000);
         assert!(ctx.recent_transcript.contains("Bash"));
         assert!(ctx.recent_transcript.contains("file1.rs"));
         assert!(!ctx.session_summary.is_empty());
@@ -376,10 +443,48 @@ mod tests {
             recent_transcript: "transcript".into(),
             decision_prompt: "decide".into(),
             few_shot_examples: String::new(),
+            global_session_map: String::new(),
         };
         let prompt = format_brain_prompt(&ctx);
         assert!(prompt.contains("summary"));
         assert!(prompt.contains("transcript"));
         assert!(prompt.contains("decide"));
+    }
+
+    #[test]
+    fn global_session_map_single_session_empty() {
+        let s = make_session();
+        let map = format_global_session_map(s.pid, &[s]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn global_session_map_multiple_sessions() {
+        let s1 = make_session();
+        let mut s2 = make_session();
+        s2.pid = 200;
+        s2.project_name = "other-project".into();
+        s2.status = SessionStatus::Processing;
+        s2.cost_usd = 3.0;
+
+        let map = format_global_session_map(s1.pid, &[s1, s2]);
+        assert!(map.contains("my-project"));
+        assert!(map.contains("other-project"));
+        assert!(map.contains("← evaluating"));
+        assert!(map.contains("Processing"));
+    }
+
+    #[test]
+    fn global_session_map_in_prompt() {
+        let ctx = BrainContext {
+            session_summary: "summary".into(),
+            recent_transcript: "transcript".into(),
+            decision_prompt: "decide".into(),
+            few_shot_examples: String::new(),
+            global_session_map: "- session1: Processing\n- session2: Idle".into(),
+        };
+        let prompt = format_brain_prompt(&ctx);
+        assert!(prompt.contains("All Active Sessions"));
+        assert!(prompt.contains("session1: Processing"));
     }
 }

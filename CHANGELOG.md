@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.18.2] - 2026-04-15
+
+### Added
+- Brain diagnostics in `--doctor`: checks curl, ollama binary, config status, and endpoint reachability
+- Startup connectivity check: when `--brain` is enabled, verifies the LLM endpoint is reachable before creating the engine; prints clear fix instructions if not
+- README documentation for the brain feature: setup, activation, config, keybindings, decision learning
+
 ## [0.18.1] - 2026-04-15
 
 ### Added

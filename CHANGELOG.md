@@ -2,6 +2,18 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.18.0] - 2026-04-15
+
+### Added
+- **Local LLM brain** (opt-in): connect to ollama or any OpenAI-compatible local LLM for session advisory. Enable with `--brain` or `[brain]` config section.
+- Brain context builder: compacts session transcripts into LLM prompts with configurable token budget
+- Brain LLM client: communicates via curl subprocess (no new dependencies, follows webhook pattern)
+- Brain inference loop: non-blocking async inference with 10-second per-PID cooldown
+- Advisory UI: pending brain suggestions shown inline (`[b:approve]`), accept with `b`, reject with `B`
+- Auto mode: `--brain-auto` executes suggestions without confirmation
+- Decision logging: every brain suggestion + user response logged to `~/.claudectl/brain/decisions.jsonl`
+- Deny rules always override brain suggestions regardless of confidence
+
 ## [0.17.1] - 2026-04-15
 
 ### Added

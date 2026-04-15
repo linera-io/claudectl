@@ -311,7 +311,7 @@ claudectl can use a local LLM to observe sessions and suggest actions -- approve
 ### Setup
 
 1. Install ollama: `brew install ollama` or from [ollama.ai](https://ollama.ai)
-2. Pull a model: `ollama pull gemma4:12b` (or any model you prefer)
+2. Pull a model: `ollama pull gemma4:e4b` (or any model you prefer)
 3. Start ollama: `ollama serve` (runs on `localhost:11434` by default)
 
 ### Activation
@@ -356,7 +356,7 @@ Add to `.claudectl.toml` or `~/.config/claudectl/config.toml`:
 [brain]
 enabled = true
 endpoint = "http://localhost:11434/api/generate"
-model = "gemma4:12b"
+model = "gemma4:e4b"
 auto = false
 timeout_ms = 5000
 max_context_tokens = 4000

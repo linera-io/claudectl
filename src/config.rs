@@ -43,7 +43,7 @@ impl Default for BrainConfig {
         Self {
             enabled: true,
             endpoint: "http://localhost:11434/api/generate".into(),
-            model: "gemma4:12b".into(),
+            model: "gemma4:e4b".into(),
             auto_mode: false,
             timeout_ms: 5000,
             max_context_tokens: 4000,

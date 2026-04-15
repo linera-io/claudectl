@@ -22,6 +22,32 @@ pub struct Config {
     pub context_warn_threshold: u8, // 0-100, fires on_context_high when context % crosses this
     pub model_overrides: Vec<ModelOverride>,
     pub rules: Vec<AutoRule>,
+    pub brain: Option<BrainConfig>,
+}
+
+/// Configuration for the optional local LLM brain.
+/// When `None`, brain is completely disabled with zero overhead.
+#[derive(Debug, Clone)]
+pub struct BrainConfig {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub model: String,
+    pub auto_mode: bool,
+    pub timeout_ms: u64,
+    pub max_context_tokens: u32,
+}
+
+impl Default for BrainConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            endpoint: "http://localhost:11434/api/generate".into(),
+            model: "gemma3:12b".into(),
+            auto_mode: false,
+            timeout_ms: 5000,
+            max_context_tokens: 4000,
+        }
+    }
 }
 
 impl Default for Config {
@@ -41,6 +67,7 @@ impl Default for Config {
             context_warn_threshold: 75,
             model_overrides: Vec::new(),
             rules: Vec::new(),
+            brain: None,
         }
     }
 }
@@ -62,6 +89,7 @@ struct RawConfig {
     context_warn_threshold: Option<u8>,
     model_overrides: Vec<ModelOverride>,
     rules: Vec<AutoRule>,
+    brain: Option<BrainConfig>,
 }
 
 impl Config {
@@ -132,6 +160,9 @@ impl Config {
             } else {
                 self.rules.push(rule);
             }
+        }
+        if let Some(brain) = raw.brain {
+            self.brain = Some(brain);
         }
     }
 
@@ -333,6 +364,34 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                         }
                     }
                     "message" => rule.message = Some(unquote(value)),
+                    _ => {}
+                }
+            }
+            ("brain", _) => {
+                let brain = raw.brain.get_or_insert_with(BrainConfig::default);
+                match key {
+                    "enabled" => {
+                        if let Some(v) = parse_bool(value) {
+                            brain.enabled = v;
+                        }
+                    }
+                    "endpoint" => brain.endpoint = unquote(value),
+                    "model" => brain.model = unquote(value),
+                    "auto" => {
+                        if let Some(v) = parse_bool(value) {
+                            brain.auto_mode = v;
+                        }
+                    }
+                    "timeout_ms" => {
+                        if let Ok(v) = value.parse() {
+                            brain.timeout_ms = v;
+                        }
+                    }
+                    "max_context_tokens" => {
+                        if let Ok(v) = value.parse() {
+                            brain.max_context_tokens = v;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -617,5 +676,45 @@ action = "terminate"
         assert_eq!(r3.name, "kill_expensive");
         assert_eq!(r3.match_cost_above, Some(10.0));
         assert_eq!(r3.action, RuleAction::Terminate);
+    }
+
+    #[test]
+    fn test_parse_brain_config() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[brain]
+enabled = true
+endpoint = "http://localhost:8080/v1/chat"
+model = "llama3:8b"
+auto = true
+timeout_ms = 3000
+max_context_tokens = 8000
+"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let raw = parse_config_file(&file.path().to_path_buf()).unwrap();
+        let brain = raw.brain.expect("brain config should be parsed");
+        assert!(brain.enabled);
+        assert_eq!(brain.endpoint, "http://localhost:8080/v1/chat");
+        assert_eq!(brain.model, "llama3:8b");
+        assert!(brain.auto_mode);
+        assert_eq!(brain.timeout_ms, 3000);
+        assert_eq!(brain.max_context_tokens, 8000);
+    }
+
+    #[test]
+    fn test_no_brain_config_returns_none() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "[defaults]\ninterval = 1000").unwrap();
+        file.flush().unwrap();
+
+        let raw = parse_config_file(&file.path().to_path_buf()).unwrap();
+        assert!(raw.brain.is_none());
     }
 }

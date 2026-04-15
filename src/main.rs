@@ -195,6 +195,22 @@ struct Cli {
     /// Record the TUI session as an asciicast v2 file (e.g., --record demo.cast)
     #[arg(long)]
     record: Option<String>,
+
+    /// Enable local LLM brain for session advisory (requires ollama or compatible endpoint)
+    #[arg(long)]
+    brain: bool,
+
+    /// Auto-execute brain suggestions without confirmation (requires --brain)
+    #[arg(long)]
+    brain_auto: bool,
+
+    /// Override brain LLM endpoint URL (requires --brain)
+    #[arg(long)]
+    brain_endpoint: Option<String>,
+
+    /// Override brain model name (requires --brain)
+    #[arg(long)]
+    brain_model: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -235,6 +251,21 @@ fn main() -> io::Result<()> {
                 .map(|t| t.trim().to_string())
                 .collect::<Vec<_>>()
         });
+    }
+
+    // Brain CLI overrides
+    if cli.brain {
+        let brain = cfg.brain.get_or_insert_with(config::BrainConfig::default);
+        brain.enabled = true;
+        if cli.brain_auto {
+            brain.auto_mode = true;
+        }
+        if let Some(ref endpoint) = cli.brain_endpoint {
+            brain.endpoint = endpoint.clone();
+        }
+        if let Some(ref model) = cli.brain_model {
+            brain.model = model.clone();
+        }
     }
 
     models::set_overrides(cfg.model_overrides.clone());
@@ -925,6 +956,7 @@ fn run_tui<W: io::Write>(
     app.weekly_limit = cfg.weekly_limit;
     app.context_warn_threshold = cfg.context_warn_threshold;
     app.rules = cfg.rules.clone();
+    app.brain_config = cfg.brain.clone();
     app.demo_mode = demo_mode;
     apply_filters(&mut app, filters);
 

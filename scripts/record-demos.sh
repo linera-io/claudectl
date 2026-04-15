@@ -64,12 +64,14 @@ record_gif() {
     echo "  Output: $output"
     echo ""
 
-    # Use timeout to auto-stop. The TUI handles SIGTERM gracefully.
-    timeout --signal=INT "${duration}" "$BINARY" --demo --record "$cast" 2>/dev/null || true
+    # Use --duration for graceful auto-quit (flushes recording properly)
+    "$BINARY" --demo --record "$cast" --duration "${duration}" 2>/dev/null || true
 
     if [ -f "$cast" ] && [ "$(wc -l < "$cast")" -gt 1 ]; then
         echo "  Converting to GIF..."
-        agg --cols 120 --rows 35 --speed 1.5 "$cast" "$output" 2>/dev/null
+        # Use resvg renderer for proper Unicode block character support.
+        # Don't override cols/rows — use the terminal dimensions from the cast file.
+        agg --font-size 14 --speed 1.5 --renderer resvg --theme dracula "$cast" "$output" 2>/dev/null
         rm -f "$cast"
         local size
         size=$(du -h "$output" | cut -f1)

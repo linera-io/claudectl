@@ -55,176 +55,191 @@ struct ViewFilters {
     about = "Monitor and manage Claude Code CLI agents"
 )]
 struct Cli {
+    // ── Dashboard ───────────────────────────────────────────────────────
     /// Refresh interval in milliseconds
-    #[arg(short, long, default_value_t = 2000)]
+    #[arg(short, long, default_value_t = 2000, help_heading = "Dashboard")]
     interval: u64,
 
+    /// Color theme: dark, light, or none (respects NO_COLOR env var)
+    #[arg(long, help_heading = "Dashboard")]
+    theme: Option<String>,
+
+    /// Enable debug mode: show timing metrics in the footer
+    #[arg(long, help_heading = "Dashboard")]
+    debug: bool,
+
+    /// Run with deterministic fake sessions for screenshots and recordings
+    #[arg(long, help_heading = "Dashboard")]
+    demo: bool,
+
+    // ── Output Modes ───────────────────────────────────────────────────
     /// Print session list to stdout and exit (no TUI)
-    #[arg(short, long)]
+    #[arg(short, long, help_heading = "Output Modes")]
     list: bool,
 
-    /// Enable desktop notifications on NeedsInput transitions
-    #[arg(long)]
-    notify: bool,
-
     /// Print JSON array of sessions and exit
-    #[arg(long)]
+    #[arg(long, help_heading = "Output Modes")]
     json: bool,
 
     /// Stream status changes to stdout (no TUI). Only prints when status changes.
-    #[arg(short, long)]
+    #[arg(short, long, help_heading = "Output Modes")]
     watch: bool,
 
     /// Output format for watch mode. Placeholders: {pid}, {project}, {status}, {cost}, {context}
     #[arg(
         long,
-        default_value = "{pid} {project}: {status} (${cost}, ctx {context}%)"
+        default_value = "{pid} {project}: {status} (${cost}, ctx {context}%)",
+        help_heading = "Output Modes"
     )]
     format: String,
 
-    /// Filter sessions by status for TUI and non-TUI views
-    #[arg(long)]
-    filter_status: Option<String>,
-
-    /// Focus on a high-signal subset (`attention`, `over-budget`, `high-context`, `unknown-telemetry`, `conflict`)
-    #[arg(long)]
-    focus: Option<String>,
-
-    /// Search project/model/session text for TUI and non-TUI views
-    #[arg(long)]
-    search: Option<String>,
-
-    /// Enable debug mode: show timing metrics in the footer
-    #[arg(long)]
-    debug: bool,
-
     /// Show summary of session activity and exit
-    #[arg(long)]
+    #[arg(long, help_heading = "Output Modes")]
     summary: bool,
 
-    /// Time window for summary (e.g., "8h", "24h", "30m"). Default: 24h.
-    #[arg(long, default_value = "24h")]
+    /// Time window for --summary, --history, --stats (e.g., "8h", "24h", "30m")
+    #[arg(long, default_value = "24h", help_heading = "Output Modes")]
     since: String,
 
-    /// Webhook URL to POST JSON on status changes
-    #[arg(long)]
-    webhook: Option<String>,
+    // ── Filtering ──────────────────────────────────────────────────────
+    /// Filter sessions by status (e.g., "NeedsInput", "Processing", "Finished")
+    #[arg(long, help_heading = "Filtering")]
+    filter_status: Option<String>,
 
-    /// Only fire webhook on these status transitions (comma-separated, e.g. "NeedsInput,Finished")
-    #[arg(long)]
-    webhook_on: Option<String>,
+    /// Focus on a high-signal subset: attention, over-budget, high-context, unknown-telemetry, conflict
+    #[arg(long, help_heading = "Filtering")]
+    focus: Option<String>,
 
+    /// Search project/model/session text
+    #[arg(long, help_heading = "Filtering")]
+    search: Option<String>,
+
+    // ── Session Management ─────────────────────────────────────────────
     /// Launch a new Claude Code session in the given directory
-    #[arg(long = "new")]
+    #[arg(long = "new", help_heading = "Session Management")]
     new_session: bool,
 
     /// Working directory for the new session (used with --new)
-    #[arg(long, default_value = ".")]
+    #[arg(long, default_value = ".", help_heading = "Session Management")]
     cwd: String,
 
     /// Prompt to send to the new session (used with --new)
-    #[arg(long)]
+    #[arg(long, help_heading = "Session Management")]
     prompt: Option<String>,
 
     /// Resume a session by ID (used with --new)
-    #[arg(long)]
+    #[arg(long, help_heading = "Session Management")]
     resume: Option<String>,
 
+    // ── Budget & Notifications ─────────────────────────────────────────
     /// Per-session budget in USD. Alert at 80%, optionally kill at 100%.
-    #[arg(long)]
+    #[arg(long, help_heading = "Budget & Notifications")]
     budget: Option<f64>,
 
     /// Auto-kill sessions that exceed the budget (requires --budget)
-    #[arg(long)]
+    #[arg(long, help_heading = "Budget & Notifications")]
     kill_on_budget: bool,
 
-    /// Show resolved configuration and exit
-    #[arg(long)]
-    config: bool,
+    /// Enable desktop notifications on NeedsInput transitions
+    #[arg(long, help_heading = "Budget & Notifications")]
+    notify: bool,
 
-    /// Print an annotated default config template to stdout and exit
-    #[arg(long)]
-    config_template: bool,
+    /// Webhook URL to POST JSON on status changes
+    #[arg(long, help_heading = "Budget & Notifications")]
+    webhook: Option<String>,
 
-    /// Color theme: dark, light, or none (respects NO_COLOR env var)
-    #[arg(long)]
-    theme: Option<String>,
+    /// Only fire webhook on these status transitions (comma-separated, e.g. "NeedsInput,Finished")
+    #[arg(long, help_heading = "Budget & Notifications")]
+    webhook_on: Option<String>,
 
-    /// Write diagnostic logs to a file (for debugging/bug reports)
-    #[arg(long)]
-    log: Option<String>,
-
-    /// List configured event hooks and exit
-    #[arg(long)]
-    hooks: bool,
-
-    /// Show history of completed sessions and exit
-    #[arg(long)]
-    history: bool,
-
-    /// Show aggregated session statistics and exit
-    #[arg(long)]
-    stats: bool,
-
-    /// Diagnose terminal integration and setup requirements
-    #[arg(long)]
-    doctor: bool,
-
-    /// Run tasks from a JSON file (e.g., claudectl --run tasks.json)
-    #[arg(long)]
-    run: Option<String>,
-
-    /// Run independent tasks in parallel (used with --run)
-    #[arg(long)]
-    parallel: bool,
-
-    /// Clean up old session data (JSONL transcripts, session JSON files)
-    #[arg(long)]
-    clean: bool,
-
-    /// Only clean sessions older than this duration (e.g., "7d", "24h"). Used with --clean.
-    #[arg(long)]
-    older_than: Option<String>,
-
-    /// Only clean sessions that have finished. Used with --clean.
-    #[arg(long)]
-    finished: bool,
-
-    /// Show what would be removed without deleting. Used with --clean.
-    #[arg(long)]
-    dry_run: bool,
-
-    /// Run with deterministic fake sessions for screenshots and recordings
-    #[arg(long)]
-    demo: bool,
-
-    /// Record the TUI session as an asciicast v2 file (e.g., --record demo.cast)
-    #[arg(long)]
-    record: Option<String>,
-
+    // ── Brain (Local LLM) ──────────────────────────────────────────────
     /// Enable local LLM brain for session advisory (requires ollama or compatible endpoint)
-    #[arg(long)]
+    #[arg(long, help_heading = "Brain (Local LLM)")]
     brain: bool,
 
     /// Auto-execute brain suggestions without confirmation (requires --brain)
-    #[arg(long)]
+    #[arg(long, help_heading = "Brain (Local LLM)")]
     auto_run: bool,
 
     /// LLM endpoint URL for brain (requires --brain)
-    #[arg(long)]
+    #[arg(long, help_heading = "Brain (Local LLM)")]
     url: Option<String>,
 
     /// Override brain model name (requires --brain)
-    #[arg(long)]
+    #[arg(long, help_heading = "Brain (Local LLM)")]
     brain_model: Option<String>,
 
     /// Run brain eval scenarios against the local LLM and report results
-    #[arg(long)]
+    #[arg(long, help_heading = "Brain (Local LLM)")]
     brain_eval: bool,
 
     /// List brain prompt templates and their source (built-in vs user override)
-    #[arg(long)]
+    #[arg(long, help_heading = "Brain (Local LLM)")]
     brain_prompts: bool,
+
+    // ── Orchestration ──────────────────────────────────────────────────
+    /// Run tasks from a JSON file (e.g., claudectl --run tasks.json)
+    #[arg(long, help_heading = "Orchestration")]
+    run: Option<String>,
+
+    /// Run independent tasks in parallel (used with --run)
+    #[arg(long, help_heading = "Orchestration")]
+    parallel: bool,
+
+    // ── Recording ──────────────────────────────────────────────────────
+    /// Record the TUI session as an asciicast v2 file (e.g., --record demo.cast)
+    #[arg(long, help_heading = "Recording")]
+    record: Option<String>,
+
+    /// Auto-quit the TUI after this many seconds (useful with --demo --record)
+    #[arg(long, help_heading = "Recording")]
+    duration: Option<u64>,
+
+    // ── Cleanup ────────────────────────────────────────────────────────
+    /// Clean up old session data (JSONL transcripts, session JSON files)
+    #[arg(long, help_heading = "Cleanup")]
+    clean: bool,
+
+    /// Only clean sessions older than this duration (e.g., "7d", "24h"). Used with --clean.
+    #[arg(long, help_heading = "Cleanup")]
+    older_than: Option<String>,
+
+    /// Only clean sessions that have finished. Used with --clean.
+    #[arg(long, help_heading = "Cleanup")]
+    finished: bool,
+
+    /// Show what would be removed without deleting. Used with --clean.
+    #[arg(long, help_heading = "Cleanup")]
+    dry_run: bool,
+
+    // ── History & Diagnostics ──────────────────────────────────────────
+    /// Show history of completed sessions and exit
+    #[arg(long, help_heading = "History & Diagnostics")]
+    history: bool,
+
+    /// Show aggregated session statistics and exit
+    #[arg(long, help_heading = "History & Diagnostics")]
+    stats: bool,
+
+    /// Show resolved configuration and exit
+    #[arg(long, help_heading = "History & Diagnostics")]
+    config: bool,
+
+    /// Print an annotated default config template to stdout and exit
+    #[arg(long, help_heading = "History & Diagnostics")]
+    config_template: bool,
+
+    /// List configured event hooks and exit
+    #[arg(long, help_heading = "History & Diagnostics")]
+    hooks: bool,
+
+    /// Diagnose terminal integration and setup requirements
+    #[arg(long, help_heading = "History & Diagnostics")]
+    doctor: bool,
+
+    /// Write diagnostic logs to a file (for debugging/bug reports)
+    #[arg(long, help_heading = "History & Diagnostics")]
+    log: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -398,6 +413,8 @@ fn main() -> io::Result<()> {
         let backend = CrosstermBackend::new(tee_writer);
         let mut terminal = Terminal::new(backend)?;
 
+        let max_dur = cli.duration.map(Duration::from_secs);
+
         let result = run_tui(
             &mut terminal,
             tick_rate,
@@ -406,6 +423,7 @@ fn main() -> io::Result<()> {
             hook_registry,
             cli.demo,
             &filters,
+            max_dur,
         );
 
         disable_raw_mode()?;
@@ -431,6 +449,8 @@ fn main() -> io::Result<()> {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
+        let max_dur = cli.duration.map(Duration::from_secs);
+
         let result = run_tui(
             &mut terminal,
             tick_rate,
@@ -439,6 +459,7 @@ fn main() -> io::Result<()> {
             hook_registry,
             cli.demo,
             &filters,
+            max_dur,
         );
 
         disable_raw_mode()?;
@@ -1060,6 +1081,7 @@ fn format_session(fmt: &str, s: &session::ClaudeSession) -> String {
         .replace("{context}", &context)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_tui<W: io::Write>(
     terminal: &mut Terminal<CrosstermBackend<W>>,
     tick_rate: Duration,
@@ -1068,6 +1090,7 @@ fn run_tui<W: io::Write>(
     hook_registry: hooks::HookRegistry,
     demo_mode: bool,
     filters: &ViewFilters,
+    max_duration: Option<Duration>,
 ) -> io::Result<()> {
     let mut app = App::new();
     app.notify = cfg.notify;
@@ -1094,13 +1117,10 @@ fn run_tui<W: io::Write>(
                     brain_cfg.endpoint, brain_cfg.model
                 );
             } else {
-                eprintln!(
-                    "Brain: endpoint {} is not reachable — continuing without brain.",
+                app.status_msg = format!(
+                    "Error: Brain endpoint {} not reachable — run `claudectl --doctor` or start ollama",
                     brain_cfg.endpoint
                 );
-                eprintln!("  Start ollama: ollama serve");
-                eprintln!("  Or check: --brain-endpoint URL");
-                eprintln!("  Run `claudectl --doctor` for full diagnostics.");
             }
         }
     }
@@ -1117,14 +1137,26 @@ fn run_tui<W: io::Write>(
                 config::BrainConfig::default(),
             ));
         }
+        // Re-refresh to replace real sessions discovered during App::new()
+        app.refresh();
     }
 
     let mut last_tick = Instant::now();
+    let tui_start = Instant::now();
     let mut sess_recs: std::collections::HashMap<u32, session_recorder::SessionRecorder> =
         std::collections::HashMap::new();
     let term_size = crossterm::terminal::size().unwrap_or((120, 40));
 
     loop {
+        // Auto-quit after --duration seconds (graceful exit, flushes recordings)
+        if let Some(max) = max_duration {
+            if tui_start.elapsed() >= max {
+                for (_, rec) in sess_recs.iter_mut() {
+                    let _ = rec.finish();
+                }
+                return Ok(());
+            }
+        }
         terminal.draw(|frame| {
             ui::table::render(frame, frame.area(), &app);
         })?;

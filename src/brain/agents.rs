@@ -45,6 +45,71 @@ pub fn format_agents_prompt(agents: &[AgentConfig]) -> String {
     lines.join("\n")
 }
 
+/// Result of running an external agent.
+#[derive(Debug, Clone)]
+pub struct AgentResult {
+    pub agent_name: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+}
+
+/// Spawn an agent process with a prompt, capture stdout/stderr, and return the result.
+/// This is blocking — call from a spawned thread.
+pub fn run_agent(agent: &AgentConfig, prompt: &str) -> Result<AgentResult, String> {
+    let full_command = format!("{} {}", agent.command, shell_escape(prompt));
+
+    let output = std::process::Command::new("sh")
+        .args(["-c", &full_command])
+        .current_dir(&agent.cwd)
+        .output()
+        .map_err(|e| format!("failed to spawn agent '{}': {e}", agent.name))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.status.code();
+
+    // Log output to .claudectl-runs/agents/
+    log_agent_output(&agent.name, &stdout, &stderr);
+
+    Ok(AgentResult {
+        agent_name: agent.name.clone(),
+        stdout,
+        stderr,
+        exit_code,
+        success: output.status.success(),
+    })
+}
+
+/// Find an agent by name in the registry.
+pub fn find_agent<'a>(agents: &'a [AgentConfig], name: &str) -> Option<&'a AgentConfig> {
+    agents.iter().find(|a| a.name == name)
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn log_agent_output(agent_name: &str, stdout: &str, stderr: &str) {
+    let dir = std::path::PathBuf::from(".claudectl-runs").join("agents");
+    let _ = std::fs::create_dir_all(&dir);
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if !stdout.is_empty() {
+        let path = dir.join(format!("{agent_name}.{ts}.stdout.log"));
+        let _ = std::fs::write(&path, stdout);
+    }
+    if !stderr.is_empty() {
+        let path = dir.join(format!("{agent_name}.{ts}.stderr.log"));
+        let _ = std::fs::write(&path, stderr);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

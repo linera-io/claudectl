@@ -16,6 +16,11 @@ pub enum RuleAction {
         prompt: String,
         cwd: String,
     },
+    /// Delegate work to an external agent by name.
+    Delegate {
+        agent: String,
+        prompt: String,
+    },
 }
 
 impl RuleAction {
@@ -38,6 +43,7 @@ impl RuleAction {
             Self::Terminate => "terminate",
             Self::Route { .. } => "route",
             Self::Spawn { .. } => "spawn",
+            Self::Delegate { .. } => "delegate",
         }
     }
 }
@@ -233,6 +239,14 @@ pub fn execute(result: &RuleMatch, session: &ClaudeSession) -> Result<String, St
                 result.rule_name, name
             )),
         },
+        RuleAction::Delegate { ref agent, .. } => {
+            // Delegate execution happens in the brain engine (needs agent registry
+            // + output capture). This arm logs the delegation.
+            Ok(format!(
+                "Rule '{}': delegated to agent '{}' for {}",
+                result.rule_name, agent, name
+            ))
+        }
     }
 }
 

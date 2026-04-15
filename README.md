@@ -77,10 +77,10 @@ Any endpoint that accepts a JSON POST and returns generated text will work.
 claudectl --brain
 
 # llama.cpp
-claudectl --brain --brain-endpoint http://localhost:8080/v1/chat/completions
+claudectl --brain --url http://localhost:8080/v1/chat/completions
 
 # vLLM
-claudectl --brain --brain-endpoint http://localhost:8000/v1/chat/completions --brain-model gemma4
+claudectl --brain --url http://localhost:8000/v1/chat/completions --brain-model gemma4
 
 # Advisory mode: brain suggests, you press b to accept or B to reject
 claudectl --brain

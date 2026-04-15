@@ -205,9 +205,9 @@ struct Cli {
     #[arg(long)]
     auto_run: bool,
 
-    /// Override brain LLM endpoint URL (requires --brain)
+    /// LLM endpoint URL for brain (requires --brain)
     #[arg(long)]
-    brain_endpoint: Option<String>,
+    url: Option<String>,
 
     /// Override brain model name (requires --brain)
     #[arg(long)]
@@ -269,7 +269,7 @@ fn main() -> io::Result<()> {
         if cli.auto_run {
             brain.auto_mode = true;
         }
-        if let Some(ref endpoint) = cli.brain_endpoint {
+        if let Some(ref endpoint) = cli.url {
             brain.endpoint = endpoint.clone();
         }
         if let Some(ref model) = cli.brain_model {

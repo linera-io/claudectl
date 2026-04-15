@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.19.0] - 2026-04-15
+
+### Added
+- Cross-session awareness: the brain now sees all active sessions (project, status, pending tool, cost, context%) when evaluating any single session, enabling cross-session reasoning
+- Inter-session routing: new `Route` action lets the brain send summarized output from one session to another via the local LLM, preventing context bloat in the target session
+- Auto-summarization: `summarize_for_routing()` asks the local LLM to compress source output for the target's specific task context before sending
+
 ## [0.18.2] - 2026-04-15
 
 ### Added

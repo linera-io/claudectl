@@ -48,6 +48,13 @@ pub fn fetch_and_enrich(sessions: &mut [ClaudeSession]) {
         let mem_mb = rss_kb / 1024.0;
         let command = fields[4..].join(" ");
 
+        // Only count this PID as alive if it's actually a claude process.
+        // PIDs get reused on macOS — a dead claude session's PID may belong
+        // to an unrelated process now.
+        if !command.contains("claude") {
+            continue;
+        }
+
         alive_pids.insert(pid);
 
         for session in sessions.iter_mut() {

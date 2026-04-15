@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn context_with_no_jsonl_path() {
         let s = make_session();
-        let ctx = build_context(&s, &[s.clone()], 4000);
+        let ctx = build_context(&s, std::slice::from_ref(&s), 4000);
         assert!(ctx.recent_transcript.contains("no transcript"));
     }
 
@@ -429,7 +429,7 @@ mod tests {
         let mut s = make_session();
         s.jsonl_path = Some(jsonl);
 
-        let ctx = build_context(&s, &[s.clone()], 4000);
+        let ctx = build_context(&s, std::slice::from_ref(&s), 4000);
         assert!(ctx.recent_transcript.contains("Bash"));
         assert!(ctx.recent_transcript.contains("file1.rs"));
         assert!(!ctx.session_summary.is_empty());

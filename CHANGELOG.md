@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.23.1] - 2026-04-15
+
+### Fixed
+- Brain client now auto-detects OpenAI-compatible endpoints (/v1/chat/completions) vs ollama (/api/generate) from the URL — llama.cpp, vLLM, and LM Studio now work correctly without extra config
+
 ## [0.23.0] - 2026-04-15
 
 ### Added

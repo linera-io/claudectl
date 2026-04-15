@@ -37,6 +37,8 @@ pub struct BrainConfig {
     pub max_context_tokens: u32,
     pub few_shot_count: usize,
     pub max_sessions: usize,
+    pub orchestrate: bool,
+    pub orchestrate_interval_secs: u64,
 }
 
 impl Default for BrainConfig {
@@ -50,6 +52,8 @@ impl Default for BrainConfig {
             max_context_tokens: 4000,
             few_shot_count: 5,
             max_sessions: 10,
+            orchestrate: false,
+            orchestrate_interval_secs: 30,
         }
     }
 }
@@ -404,6 +408,16 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     "max_sessions" => {
                         if let Ok(v) = value.parse() {
                             brain.max_sessions = v;
+                        }
+                    }
+                    "orchestrate" => {
+                        if let Some(v) = parse_bool(value) {
+                            brain.orchestrate = v;
+                        }
+                    }
+                    "orchestrate_interval" => {
+                        if let Ok(v) = value.parse() {
+                            brain.orchestrate_interval_secs = v;
                         }
                     }
                     _ => {}

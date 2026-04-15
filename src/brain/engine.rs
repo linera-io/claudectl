@@ -28,6 +28,10 @@ pub struct BrainEngine {
     cooldown: HashMap<u32, Instant>,
     /// Pending suggestions waiting for user confirmation (advisory mode).
     pub pending: HashMap<u32, BrainSuggestion>,
+    /// Last time orchestration evaluation ran.
+    last_orchestrate: Option<Instant>,
+    /// Whether an orchestration inference is in-flight.
+    orchestrate_inflight: bool,
 }
 
 const COOLDOWN_SECS: u64 = 10;
@@ -42,6 +46,8 @@ impl BrainEngine {
             inflight: HashSet::new(),
             cooldown: HashMap::new(),
             pending: HashMap::new(),
+            last_orchestrate: None,
+            orchestrate_inflight: false,
         }
     }
 
@@ -60,6 +66,15 @@ impl BrainEngine {
 
         // Phase 1: Collect results from completed inferences
         while let Ok(result) = self.rx.try_recv() {
+            // PID 0 = orchestration result
+            if result.pid == 0 {
+                if let Ok(suggestion) = result.suggestion {
+                    let orch_actions = self.handle_orchestration_result(&suggestion, sessions);
+                    actions.extend(orch_actions);
+                }
+                continue;
+            }
+
             self.inflight.remove(&result.pid);
             self.cooldown.insert(result.pid, Instant::now());
 
@@ -178,6 +193,10 @@ impl BrainEngine {
             self.spawn_inference(session, sessions);
         }
 
+        // Phase 3: Orchestration evaluation (less frequent)
+        let orch_actions = self.maybe_orchestrate(sessions);
+        actions.extend(orch_actions);
+
         actions
     }
 
@@ -276,6 +295,143 @@ impl BrainEngine {
         });
         self.inflight.retain(|pid| active_pids.contains(pid));
     }
+
+    /// Run orchestration evaluation: ask the brain if any cross-session actions
+    /// should be taken (spawn, route, terminate). Runs less frequently than
+    /// per-session advisory (every orchestrate_interval_secs).
+    pub fn maybe_orchestrate(&mut self, sessions: &[ClaudeSession]) -> Vec<(u32, String)> {
+        if !self.config.orchestrate || !self.config.auto_mode {
+            return Vec::new();
+        }
+
+        if sessions.len() < 2 {
+            return Vec::new();
+        }
+
+        // Check interval
+        let interval = std::time::Duration::from_secs(self.config.orchestrate_interval_secs);
+        if let Some(last) = self.last_orchestrate {
+            if last.elapsed() < interval {
+                return Vec::new();
+            }
+        }
+
+        if self.orchestrate_inflight {
+            return Vec::new();
+        }
+
+        self.last_orchestrate = Some(Instant::now());
+        self.orchestrate_inflight = true;
+
+        // Build orchestration prompt with all sessions
+        let prompt = build_orchestration_prompt(sessions, &self.config);
+        let config = self.config.clone();
+        let tx = self.tx.clone();
+
+        // Use PID 0 as sentinel for orchestration results
+        std::thread::spawn(move || {
+            let suggestion = super::client::infer(&config, &prompt);
+            let _ = tx.send(BrainResult { pid: 0, suggestion });
+        });
+
+        Vec::new()
+    }
+
+    /// Check if a result is an orchestration response (pid == 0).
+    pub fn handle_orchestration_result(
+        &mut self,
+        suggestion: &BrainSuggestion,
+        sessions: &[ClaudeSession],
+    ) -> Vec<(u32, String)> {
+        self.orchestrate_inflight = false;
+        let mut actions = Vec::new();
+
+        // The orchestration response may suggest multiple actions.
+        // For now, handle the primary action.
+        match &suggestion.action {
+            RuleAction::Spawn { .. } => {
+                if sessions.len() >= self.config.max_sessions {
+                    actions.push((
+                        0,
+                        format!(
+                            "Orchestrate: spawn blocked ({} sessions, max {})",
+                            sessions.len(),
+                            self.config.max_sessions
+                        ),
+                    ));
+                } else {
+                    let rule_match = suggestion_to_rule_match(suggestion);
+                    // Need a dummy session for execute — use first available
+                    if let Some(session) = sessions.first() {
+                        match rules::execute(&rule_match, session) {
+                            Ok(msg) => actions.push((0, format!("Orchestrate: {msg}"))),
+                            Err(e) => actions.push((0, format!("Orchestrate error: {e}"))),
+                        }
+                    }
+                }
+            }
+            RuleAction::Route { target_pid } => {
+                // Find source (most recently active) and target
+                if let Some(target) = sessions.iter().find(|s| s.pid == *target_pid) {
+                    if let Some(source) = sessions
+                        .iter()
+                        .find(|s| s.pid != *target_pid && s.status == SessionStatus::WaitingInput)
+                    {
+                        match self.execute_route(source, target) {
+                            Ok(msg) => actions.push((0, format!("Orchestrate: {msg}"))),
+                            Err(e) => actions.push((0, format!("Orchestrate error: {e}"))),
+                        }
+                    }
+                }
+            }
+            RuleAction::Terminate => {
+                // Orchestration terminate — brain should include which PID in reasoning
+                actions.push((
+                    0,
+                    format!(
+                        "Orchestrate: terminate suggested — {}",
+                        suggestion.reasoning
+                    ),
+                ));
+            }
+            _ => {
+                // approve/deny/send don't make sense at the orchestration level
+                actions.push((
+                    0,
+                    format!(
+                        "Orchestrate: {} — {}",
+                        suggestion.action.label(),
+                        suggestion.reasoning
+                    ),
+                ));
+            }
+        }
+
+        actions
+    }
+}
+
+/// Build the orchestration prompt — a global view asking about cross-session actions.
+fn build_orchestration_prompt(sessions: &[ClaudeSession], _config: &BrainConfig) -> String {
+    let session_map = context::format_global_session_map_public(sessions);
+
+    format!(
+        "You are a session orchestrator for Claude Code. You have {} active sessions.\n\n\
+         ## Active Sessions\n{}\n\n\
+         ## Orchestration Decision\n\
+         Analyze all sessions and decide if any cross-session action should be taken:\n\
+         - \"spawn\": launch a new session to handle decomposed work (provide spawn_prompt and spawn_cwd)\n\
+         - \"route\": send summarized output from one session to another (provide target_pid)\n\
+         - \"terminate\": kill a redundant or stuck session\n\
+         - \"deny\": no action needed right now\n\n\
+         Consider: Are sessions doing redundant work? Could work be parallelized? \
+         Is a session stuck? Has one session produced output another needs?\n\n\
+         Respond with JSON: {{\"action\": \"spawn\"|\"route\"|\"terminate\"|\"deny\", \
+         \"target_pid\": <pid if route>, \"spawn_prompt\": \"...\", \"spawn_cwd\": \".\", \
+         \"reasoning\": \"...\", \"confidence\": 0.0-1.0}}",
+        sessions.len(),
+        session_map,
+    )
 }
 
 fn suggestion_to_rule_match(suggestion: &BrainSuggestion) -> RuleMatch {
@@ -304,6 +460,8 @@ mod tests {
             max_context_tokens: 1000,
             few_shot_count: 5,
             max_sessions: 10,
+            orchestrate: false,
+            orchestrate_interval_secs: 30,
         }
     }
 

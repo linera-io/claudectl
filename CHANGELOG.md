@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.17.1] - 2026-04-15
+
+### Added
+- Cross-session data routing: task prompts can reference `{{name.stdout}}` to inject the stdout of a completed dependency, enabling data pipelines between orchestrated sessions
+- Template validation at load time catches missing tasks, missing dependencies, and unsupported fields before any task starts
+- Output truncation at 32KB with `... (truncated)` marker to prevent context overflow
+
 ## [0.17.0] - 2026-04-15
 
 ### Added

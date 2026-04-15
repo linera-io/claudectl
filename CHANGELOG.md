@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.20.0] - 2026-04-15
+
+### Added
+- Spawn action: the brain can launch new Claude Code sessions with derived prompts, with configurable `max_sessions` limit (default 10)
+- Persistent mailbox system: messages between sessions are queued in `~/.claudectl/brain/mailbox/` and delivered when the target session is ready (WaitingInput), preventing interruption during active work
+- Smart routing: Route action queues to mailbox when target is busy, delivers directly when target is waiting
+
 ## [0.19.0] - 2026-04-15
 
 ### Added

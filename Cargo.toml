@@ -1,12 +1,12 @@
 [package]
 name = "claudectl"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2024"
-description = "TUI for monitoring and managing Claude Code CLI agents"
+description = "Mission control for Claude Code — supervise, budget, orchestrate, and auto-pilot sessions with a local LLM brain"
 license = "MIT"
 repository = "https://github.com/mercurialsolo/claudectl"
-homepage = "https://github.com/mercurialsolo/claudectl"
-keywords = ["cli", "tui", "claude", "ai", "monitoring"]
+homepage = "https://mercurialsolo.github.io/claudectl/"
+keywords = ["claude-code", "claude", "tui", "dashboard", "agent"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["*.gif", "*.cast", "claude-demo.*", "CLAUDE.md", ".github/"]
 

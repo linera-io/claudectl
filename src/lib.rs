@@ -6,6 +6,7 @@
 )]
 
 pub mod app;
+pub mod brain;
 pub mod config;
 pub mod demo;
 pub mod discovery;

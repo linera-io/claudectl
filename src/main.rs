@@ -958,6 +958,11 @@ fn run_tui<W: io::Write>(
     app.context_warn_threshold = cfg.context_warn_threshold;
     app.rules = cfg.rules.clone();
     app.brain_config = cfg.brain.clone();
+    if let Some(ref brain_cfg) = cfg.brain {
+        if brain_cfg.enabled {
+            app.brain_engine = Some(brain::engine::BrainEngine::new(brain_cfg.clone()));
+        }
+    }
     app.demo_mode = demo_mode;
     apply_filters(&mut app, filters);
 

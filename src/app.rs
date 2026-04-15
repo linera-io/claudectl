@@ -298,6 +298,7 @@ pub struct App {
     pub auto_actions_fired: HashMap<u32, std::time::Instant>, // Debounce: pid -> last action time
     pub last_rule_action: Option<String>,                     // Last auto-action status for display
     pub brain_config: Option<crate::config::BrainConfig>,
+    pub brain_engine: Option<crate::brain::engine::BrainEngine>,
 }
 
 #[derive(Default, Clone)]
@@ -402,6 +403,7 @@ impl App {
             auto_actions_fired: HashMap::new(),
             last_rule_action: None,
             brain_config: None,
+            brain_engine: None,
         };
         app.refresh();
         if app.visible_session_count() > 0 {
@@ -1006,55 +1008,72 @@ impl App {
         }
 
         // Rule-based auto-actions
-        if self.rules.is_empty() {
-            return;
-        }
+        if !self.rules.is_empty() {
+            let candidates: Vec<u32> = self
+                .sessions
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.status,
+                        SessionStatus::NeedsInput | SessionStatus::WaitingInput
+                    )
+                })
+                .filter(|s| !self.auto_approve.contains(&s.pid)) // Legacy takes priority
+                .map(|s| s.pid)
+                .collect();
 
-        let candidates: Vec<u32> = self
-            .sessions
-            .iter()
-            .filter(|s| {
-                matches!(
-                    s.status,
-                    SessionStatus::NeedsInput | SessionStatus::WaitingInput
-                )
-            })
-            .filter(|s| !self.auto_approve.contains(&s.pid)) // Legacy takes priority
-            .map(|s| s.pid)
-            .collect();
+            for pid in candidates {
+                // Debounce: don't re-fire within 3 seconds for same PID
+                if let Some(last) = self.auto_actions_fired.get(&pid) {
+                    if last.elapsed().as_secs() < 3 {
+                        continue;
+                    }
+                }
 
-        for pid in candidates {
-            // Debounce: don't re-fire within 3 seconds for same PID
-            if let Some(last) = self.auto_actions_fired.get(&pid) {
-                if last.elapsed().as_secs() < 3 {
+                let session = match self.sessions.iter().find(|s| s.pid == pid) {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                let result = crate::rules::evaluate(&self.rules, session);
+                let Some(rule_match) = result else {
                     continue;
+                };
+
+                let msg = crate::rules::execute(&rule_match, session);
+                match msg {
+                    Ok(status) => {
+                        crate::logger::log("AUTO", &status);
+                        self.last_rule_action = Some(status.clone());
+                        self.status_msg = status;
+                    }
+                    Err(e) => {
+                        self.status_msg = format!("Rule error: {e}");
+                    }
                 }
+
+                self.auto_actions_fired
+                    .insert(pid, std::time::Instant::now());
+            }
+        } // end if !self.rules.is_empty()
+
+        // Brain inference (opt-in, runs after rules)
+        if let Some(ref mut engine) = self.brain_engine {
+            // Collect deny-only rules for override checking
+            let deny_rules: Vec<_> = self
+                .rules
+                .iter()
+                .filter(|r| r.action == crate::rules::RuleAction::Deny)
+                .cloned()
+                .collect();
+
+            let actions = engine.tick(&self.sessions, &deny_rules);
+            for (_pid, msg) in actions {
+                crate::logger::log("BRAIN", &msg);
+                self.status_msg = msg;
             }
 
-            let session = match self.sessions.iter().find(|s| s.pid == pid) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            let result = crate::rules::evaluate(&self.rules, session);
-            let Some(rule_match) = result else {
-                continue;
-            };
-
-            let msg = crate::rules::execute(&rule_match, session);
-            match msg {
-                Ok(status) => {
-                    crate::logger::log("AUTO", &status);
-                    self.last_rule_action = Some(status.clone());
-                    self.status_msg = status;
-                }
-                Err(e) => {
-                    self.status_msg = format!("Rule error: {e}");
-                }
-            }
-
-            self.auto_actions_fired
-                .insert(pid, std::time::Instant::now());
+            engine.cleanup(&self.sessions);
         }
     }
 

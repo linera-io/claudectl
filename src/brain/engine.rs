@@ -411,26 +411,16 @@ impl BrainEngine {
     }
 }
 
-/// Build the orchestration prompt — a global view asking about cross-session actions.
+/// Build the orchestration prompt from the prompt library.
 fn build_orchestration_prompt(sessions: &[ClaudeSession], _config: &BrainConfig) -> String {
     let session_map = context::format_global_session_map_public(sessions);
-
-    format!(
-        "You are a session orchestrator for Claude Code. You have {} active sessions.\n\n\
-         ## Active Sessions\n{}\n\n\
-         ## Orchestration Decision\n\
-         Analyze all sessions and decide if any cross-session action should be taken:\n\
-         - \"spawn\": launch a new session to handle decomposed work (provide spawn_prompt and spawn_cwd)\n\
-         - \"route\": send summarized output from one session to another (provide target_pid)\n\
-         - \"terminate\": kill a redundant or stuck session\n\
-         - \"deny\": no action needed right now\n\n\
-         Consider: Are sessions doing redundant work? Could work be parallelized? \
-         Is a session stuck? Has one session produced output another needs?\n\n\
-         Respond with JSON: {{\"action\": \"spawn\"|\"route\"|\"terminate\"|\"deny\", \
-         \"target_pid\": <pid if route>, \"spawn_prompt\": \"...\", \"spawn_cwd\": \".\", \
-         \"reasoning\": \"...\", \"confidence\": 0.0-1.0}}",
-        sessions.len(),
-        session_map,
+    let template = super::prompts::load(super::prompts::ORCHESTRATION);
+    super::prompts::expand(
+        &template,
+        &[
+            ("session_count", &sessions.len().to_string()),
+            ("session_map", &session_map),
+        ],
     )
 }
 

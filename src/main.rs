@@ -425,7 +425,89 @@ fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> io::
 fn print_doctor() -> io::Result<()> {
     let report = terminals::doctor_report();
     println!("{}", terminals::format_doctor_report(&report));
+
+    // Brain diagnostics
+    let cfg = config::Config::load();
+    println!();
+    println!("Brain (local LLM)");
+
+    // Check curl
+    let curl_ok = std::process::Command::new("curl")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    println!(
+        "  [{}] curl: {}",
+        if curl_ok { "ok" } else { "!!" },
+        if curl_ok {
+            "available (required for brain HTTP calls)"
+        } else {
+            "not found — brain requires curl on PATH"
+        }
+    );
+
+    // Check ollama binary
+    let ollama_ok = std::process::Command::new("ollama")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    println!(
+        "  [{}] ollama: {}",
+        if ollama_ok { "ok" } else { "--" },
+        if ollama_ok {
+            "installed"
+        } else {
+            "not found (install: brew install ollama)"
+        }
+    );
+
+    // Check endpoint reachability
+    if let Some(ref brain) = cfg.brain {
+        println!(
+            "  Config: enabled={}, model={}, auto={}, few_shot={}",
+            brain.enabled, brain.model, brain.auto_mode, brain.few_shot_count
+        );
+        let endpoint_ok = check_brain_endpoint(&brain.endpoint, brain.timeout_ms);
+        println!(
+            "  [{}] endpoint {}: {}",
+            if endpoint_ok { "ok" } else { "!!" },
+            brain.endpoint,
+            if endpoint_ok {
+                "reachable"
+            } else {
+                "not reachable"
+            }
+        );
+        if !endpoint_ok {
+            println!("      fix: start ollama with `ollama serve`, or check --brain-endpoint URL");
+        }
+    } else {
+        println!("  Config: not configured");
+        println!("  To enable: add [brain] section to .claudectl.toml or use --brain flag");
+    }
+
     Ok(())
+}
+
+fn check_brain_endpoint(endpoint: &str, timeout_ms: u64) -> bool {
+    let timeout_secs = (timeout_ms / 1000).max(1);
+    std::process::Command::new("curl")
+        .args([
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            &timeout_secs.to_string(),
+            endpoint,
+        ])
+        .output()
+        .is_ok_and(|o| {
+            let code = String::from_utf8_lossy(&o.stdout);
+            // Any HTTP response (even 404/405) means the server is up
+            code.trim() != "000"
+        })
 }
 
 fn parse_duration_str(s: &str) -> Duration {
@@ -960,7 +1042,21 @@ fn run_tui<W: io::Write>(
     app.brain_config = cfg.brain.clone();
     if let Some(ref brain_cfg) = cfg.brain {
         if brain_cfg.enabled {
-            app.brain_engine = Some(brain::engine::BrainEngine::new(brain_cfg.clone()));
+            if check_brain_endpoint(&brain_cfg.endpoint, brain_cfg.timeout_ms) {
+                app.brain_engine = Some(brain::engine::BrainEngine::new(brain_cfg.clone()));
+                app.status_msg = format!(
+                    "Brain: connected to {} ({})",
+                    brain_cfg.endpoint, brain_cfg.model
+                );
+            } else {
+                eprintln!(
+                    "Brain: endpoint {} is not reachable — continuing without brain.",
+                    brain_cfg.endpoint
+                );
+                eprintln!("  Start ollama: ollama serve");
+                eprintln!("  Or check: --brain-endpoint URL");
+                eprintln!("  Run `claudectl --doctor` for full diagnostics.");
+            }
         }
     }
     app.demo_mode = demo_mode;

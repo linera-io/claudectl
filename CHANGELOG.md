@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.25.1] - 2026-04-15
+
+### Fixed
+- UTF-8 panic when brain processes transcripts containing multi-byte characters (em dashes, unicode, etc.) — 10 unsafe byte-slice truncations replaced with char-boundary-safe helper across 4 files
+
 ## [0.25.0] - 2026-04-15
 
 ### Added

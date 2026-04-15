@@ -297,6 +297,7 @@ pub struct App {
     pub rules: Vec<crate::rules::AutoRule>,
     pub auto_actions_fired: HashMap<u32, std::time::Instant>, // Debounce: pid -> last action time
     pub last_rule_action: Option<String>,                     // Last auto-action status for display
+    pub health_thresholds: crate::config::HealthThresholds,
     pub brain_config: Option<crate::config::BrainConfig>,
     pub brain_engine: Option<crate::brain::engine::BrainEngine>,
 }
@@ -402,6 +403,7 @@ impl App {
             rules: Vec::new(),
             auto_actions_fired: HashMap::new(),
             last_rule_action: None,
+            health_thresholds: crate::config::HealthThresholds::default(),
             brain_config: None,
             brain_engine: None,
         };

@@ -142,6 +142,10 @@ struct Cli {
     #[arg(long)]
     config: bool,
 
+    /// Print an annotated default config template to stdout and exit
+    #[arg(long)]
+    config_template: bool,
+
     /// Color theme: dark, light, or none (respects NO_COLOR env var)
     #[arg(long)]
     theme: Option<String>,
@@ -290,6 +294,11 @@ fn main() -> io::Result<()> {
 
     if cli.config {
         cfg.print_resolved();
+        return Ok(());
+    }
+
+    if cli.config_template {
+        config::Config::print_template();
         return Ok(());
     }
 
@@ -1074,6 +1083,7 @@ fn run_tui<W: io::Write>(
     app.weekly_limit = cfg.weekly_limit;
     app.context_warn_threshold = cfg.context_warn_threshold;
     app.rules = cfg.rules.clone();
+    app.health_thresholds = cfg.health.clone();
     app.brain_config = cfg.brain.clone();
     if let Some(ref brain_cfg) = cfg.brain {
         if brain_cfg.enabled {

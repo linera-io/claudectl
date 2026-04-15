@@ -125,6 +125,22 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         }
     }
 
+    // Recent errors section
+    if !session.recent_errors.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" Recent Errors ({})", session.recent_errors.len()),
+            Style::default().fg(t.error).add_modifier(Modifier::BOLD),
+        )));
+        for err in session.recent_errors.iter().rev().take(5) {
+            lines.push(detail_line(
+                &format!("  {}", err.tool_name),
+                &err.message,
+                t,
+            ));
+        }
+    }
+
     // Tool usage section
     if !session.tool_usage.is_empty() {
         lines.push(Line::from(""));

@@ -485,7 +485,7 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
         (false, true) => "REC ",
         (false, false) => "",
     };
-    let health_icon = crate::health::status_icon(s);
+    let health_icon = crate::health::status_icon(s, &app.health_thresholds);
     let health_suffix = if health_icon.is_empty() {
         String::new()
     } else {

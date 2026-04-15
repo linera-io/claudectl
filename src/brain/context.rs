@@ -72,7 +72,12 @@ fn format_session_summary(session: &ClaudeSession) -> String {
     }
 
     if session.last_tool_error {
-        summary.push_str(" | Last tool ERRORED");
+        if let Some(ref msg) = session.last_error_message {
+            let truncated = if msg.len() > 100 { &msg[..100] } else { msg };
+            summary.push_str(&format!(" | Last tool ERRORED: {truncated}"));
+        } else {
+            summary.push_str(" | Last tool ERRORED");
+        }
     }
 
     summary

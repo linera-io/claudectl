@@ -23,8 +23,57 @@ pub struct Config {
     pub context_warn_threshold: u8, // 0-100, fires on_context_high when context % crosses this
     pub model_overrides: Vec<ModelOverride>,
     pub rules: Vec<AutoRule>,
+    pub health: HealthThresholds,
     pub brain: Option<BrainConfig>,
     pub agents: Vec<AgentConfig>,
+}
+
+/// Configurable thresholds for session health checks.
+/// All thresholds have sensible defaults; users only need to override what they want.
+#[derive(Debug, Clone)]
+pub struct HealthThresholds {
+    pub cache_critical_pct: f64, // Cache hit ratio below this = critical (default 10%)
+    pub cache_warning_pct: f64,  // Cache hit ratio below this = warning (default 30%)
+    pub cache_min_tokens: u64,   // Ignore cache check until this many input tokens (default 10k)
+    pub cost_spike_critical: f64, // Burn rate > Nx average = critical (default 5.0)
+    pub cost_spike_warning: f64, // Burn rate > Nx average = warning (default 2.5)
+    pub loop_max_calls: u32,     // Tool calls with errors to trigger loop warning (default 10)
+    pub stall_min_cost: f64,     // Min cost in USD to trigger stall check (default 5.0)
+    pub stall_min_minutes: u64,  // Min minutes with no edits to trigger stall (default 10)
+    pub context_critical_pct: f64, // Context usage above this = critical (default 90%)
+    pub context_warning_pct: f64, // Context usage above this = warning (default 80%)
+}
+
+impl Default for HealthThresholds {
+    fn default() -> Self {
+        Self {
+            cache_critical_pct: 10.0,
+            cache_warning_pct: 30.0,
+            cache_min_tokens: 10_000,
+            cost_spike_critical: 5.0,
+            cost_spike_warning: 2.5,
+            loop_max_calls: 10,
+            stall_min_cost: 5.0,
+            stall_min_minutes: 10,
+            context_critical_pct: 90.0,
+            context_warning_pct: 80.0,
+        }
+    }
+}
+
+/// Raw TOML representation for health thresholds — all fields optional.
+#[derive(Debug, Default)]
+struct RawHealthThresholds {
+    cache_critical_pct: Option<f64>,
+    cache_warning_pct: Option<f64>,
+    cache_min_tokens: Option<u64>,
+    cost_spike_critical: Option<f64>,
+    cost_spike_warning: Option<f64>,
+    loop_max_calls: Option<u32>,
+    stall_min_cost: Option<f64>,
+    stall_min_minutes: Option<u64>,
+    context_critical_pct: Option<f64>,
+    context_warning_pct: Option<f64>,
 }
 
 /// Configuration for the optional local LLM brain.
@@ -77,6 +126,7 @@ impl Default for Config {
             context_warn_threshold: 75,
             model_overrides: Vec::new(),
             rules: Vec::new(),
+            health: HealthThresholds::default(),
             brain: None,
             agents: Vec::new(),
         }
@@ -100,6 +150,7 @@ struct RawConfig {
     context_warn_threshold: Option<u8>,
     model_overrides: Vec<ModelOverride>,
     rules: Vec<AutoRule>,
+    health: Option<RawHealthThresholds>,
     brain: Option<BrainConfig>,
     agents: Vec<AgentConfig>,
 }
@@ -161,6 +212,38 @@ impl Config {
         }
         if let Some(v) = raw.context_warn_threshold {
             self.context_warn_threshold = v.min(100);
+        }
+        if let Some(h) = raw.health {
+            if let Some(v) = h.cache_critical_pct {
+                self.health.cache_critical_pct = v;
+            }
+            if let Some(v) = h.cache_warning_pct {
+                self.health.cache_warning_pct = v;
+            }
+            if let Some(v) = h.cache_min_tokens {
+                self.health.cache_min_tokens = v;
+            }
+            if let Some(v) = h.cost_spike_critical {
+                self.health.cost_spike_critical = v;
+            }
+            if let Some(v) = h.cost_spike_warning {
+                self.health.cost_spike_warning = v;
+            }
+            if let Some(v) = h.loop_max_calls {
+                self.health.loop_max_calls = v;
+            }
+            if let Some(v) = h.stall_min_cost {
+                self.health.stall_min_cost = v;
+            }
+            if let Some(v) = h.stall_min_minutes {
+                self.health.stall_min_minutes = v;
+            }
+            if let Some(v) = h.context_critical_pct {
+                self.health.context_critical_pct = v;
+            }
+            if let Some(v) = h.context_warning_pct {
+                self.health.context_warning_pct = v;
+            }
         }
         for override_ in raw.model_overrides {
             upsert_model_override(&mut self.model_overrides, override_);
@@ -245,6 +328,27 @@ impl Config {
                 .unwrap_or_else(|| "none".into())
         );
         println!("  context_warn: {}%", self.context_warn_threshold);
+        println!();
+        println!("  [health]");
+        println!(
+            "  cache:    critical <{:.0}%, warning <{:.0}%, min {}",
+            self.health.cache_critical_pct,
+            self.health.cache_warning_pct,
+            self.health.cache_min_tokens,
+        );
+        println!(
+            "  cost:     critical >{:.1}x, warning >{:.1}x",
+            self.health.cost_spike_critical, self.health.cost_spike_warning,
+        );
+        println!("  loop:     {} calls", self.health.loop_max_calls);
+        println!(
+            "  stall:    >${:.0} and >{}min",
+            self.health.stall_min_cost, self.health.stall_min_minutes,
+        );
+        println!(
+            "  context:  critical >{:.0}%, warning >{:.0}%",
+            self.health.context_critical_pct, self.health.context_warning_pct,
+        );
         if self.model_overrides.is_empty() {
             println!("  model_overrides: none");
         } else {
@@ -259,6 +363,158 @@ impl Config {
                 );
             }
         }
+    }
+
+    /// Print an annotated default config template to stdout.
+    pub fn print_template() {
+        print!(
+            r#"# claudectl configuration
+# Place this file at:
+#   Project: .claudectl.toml (in your project root)
+#   Global:  ~/.config/claudectl/config.toml
+#
+# Priority: CLI flags > project config > global config > defaults
+# Only set values you want to override — unset keys use defaults.
+
+# ── General ─────────────────────────────────────────────────────────
+
+[defaults]
+# Refresh interval in milliseconds
+# interval = 2000
+
+# Enable desktop notifications on NeedsInput transitions
+# notify = false
+
+# Show debug timing metrics in the footer
+# debug = false
+
+# Group sessions by project in the table view
+# grouped = false
+
+# Default sort column: "Status", "Context", "Cost", "$/hr", "Elapsed"
+# sort = "Status"
+
+# Per-session budget in USD (alert at 80%, optionally kill at 100%)
+# budget = 10.00
+
+# Auto-kill sessions that exceed the budget (requires budget)
+# kill_on_budget = false
+
+# ── Webhook ─────────────────────────────────────────────────────────
+
+[webhook]
+# POST JSON on status changes
+# url = "https://hooks.slack.com/services/..."
+
+# Only fire on these status transitions (omit for all)
+# events = ["NeedsInput", "Finished"]
+
+# ── Budget Limits ───────────────────────────────────────────────────
+
+[budget]
+# Daily spending limit in USD
+# daily_limit = 50.00
+
+# Weekly spending limit in USD
+# weekly_limit = 200.00
+
+# ── Context ─────────────────────────────────────────────────────────
+
+[context]
+# Fire on_context_high hook when context usage crosses this percentage
+# warn_threshold = 75
+
+# ── Health Check Thresholds ─────────────────────────────────────────
+
+[health]
+# Cache hit ratio thresholds (percentage, 0-100)
+# cache_critical_pct = 10.0
+# cache_warning_pct = 30.0
+# cache_min_tokens = 10000
+
+# Cost spike detection (multiplier of session average burn rate)
+# cost_spike_critical = 5.0
+# cost_spike_warning = 2.5
+
+# Loop detection (tool call count threshold when errors are present)
+# loop_max_calls = 10
+
+# Stall detection (minimum cost in USD and minutes with no file edits)
+# stall_min_cost = 5.0
+# stall_min_minutes = 10
+
+# Context saturation thresholds (percentage, 0-100)
+# context_critical_pct = 90.0
+# context_warning_pct = 80.0
+
+# ── Model Pricing Overrides ─────────────────────────────────────────
+# Override built-in pricing for specific models.
+#
+# [models."my-custom-model"]
+# input_per_m = 3.00
+# output_per_m = 15.00
+# cache_read_per_m = 0.30
+# cache_write_per_m = 3.75
+# context_max = 200000
+
+# ── Auto-Rules ──────────────────────────────────────────────────────
+# Match sessions by status/tool/command/project/cost, then take action.
+# Deny rules always take precedence regardless of order.
+#
+# [rules.approve_reads]
+# match_status = ["Needs Input"]
+# match_tool = ["Read", "Glob", "Grep"]
+# action = "approve"
+#
+# [rules.deny_destructive]
+# match_tool = ["Bash"]
+# match_command = ["rm -rf", "git push --force"]
+# action = "deny"
+#
+# [rules.kill_runaway]
+# match_cost_above = 20.0
+# action = "terminate"
+#
+# [rules.auto_continue]
+# match_status = ["Waiting"]
+# action = "send"
+# message = "continue"
+
+# ── Event Hooks ─────────────────────────────────────────────────────
+# Run shell commands on session events.
+#
+# [hooks.on_needs_input]
+# run = "notify-send 'Session needs input'"
+#
+# [hooks.on_finished]
+# run = "say 'Session finished'"
+#
+# Available events: on_needs_input, on_finished, on_budget_80,
+#   on_budget_exceeded, on_context_high, on_status_change
+
+# ── Brain (Local LLM) ──────────────────────────────────────────────
+
+# [brain]
+# enabled = true
+# endpoint = "http://localhost:11434/api/generate"
+# model = "gemma4:e4b"
+# auto = false
+# timeout_ms = 5000
+# max_context_tokens = 4000
+# few_shot_count = 5
+# max_sessions = 10
+# orchestrate = false
+# orchestrate_interval = 30
+
+# ── External Agents ─────────────────────────────────────────────────
+#
+# [agents.codex]
+# type = "codex"
+# command = "codex --quiet"
+# capabilities = ["code-review", "refactoring"]
+# cwd = "/path/to/project"
+"#
+        );
     }
 }
 
@@ -338,6 +594,22 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
             }
             ("context", "warn_threshold") => {
                 raw.context_warn_threshold = value.parse().ok();
+            }
+            ("health", key) => {
+                let h = raw.health.get_or_insert_with(RawHealthThresholds::default);
+                match key {
+                    "cache_critical_pct" => h.cache_critical_pct = value.parse().ok(),
+                    "cache_warning_pct" => h.cache_warning_pct = value.parse().ok(),
+                    "cache_min_tokens" => h.cache_min_tokens = value.parse().ok(),
+                    "cost_spike_critical" => h.cost_spike_critical = value.parse().ok(),
+                    "cost_spike_warning" => h.cost_spike_warning = value.parse().ok(),
+                    "loop_max_calls" => h.loop_max_calls = value.parse().ok(),
+                    "stall_min_cost" => h.stall_min_cost = value.parse().ok(),
+                    "stall_min_minutes" => h.stall_min_minutes = value.parse().ok(),
+                    "context_critical_pct" => h.context_critical_pct = value.parse().ok(),
+                    "context_warning_pct" => h.context_warning_pct = value.parse().ok(),
+                    _ => {}
+                }
             }
             _ if parse_model_section(&section).is_some() => {
                 let Some(model_name) = parse_model_section(&section) else {
@@ -817,5 +1089,58 @@ capabilities = ["implementation", "debugging"]
         let aider = &raw.agents[1];
         assert_eq!(aider.name, "aider");
         assert_eq!(aider.command, "aider --yes");
+    }
+
+    #[test]
+    fn test_parse_health_thresholds() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[health]
+cache_critical_pct = 5.0
+cache_warning_pct = 20.0
+cache_min_tokens = 50000
+cost_spike_critical = 8.0
+cost_spike_warning = 3.0
+loop_max_calls = 15
+stall_min_cost = 10.0
+stall_min_minutes = 20
+context_critical_pct = 95.0
+context_warning_pct = 85.0
+"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let raw = parse_config_file(&file.path().to_path_buf()).unwrap();
+        let h = raw.health.expect("health config should be parsed");
+        assert_eq!(h.cache_critical_pct, Some(5.0));
+        assert_eq!(h.cache_warning_pct, Some(20.0));
+        assert_eq!(h.cache_min_tokens, Some(50000));
+        assert_eq!(h.cost_spike_critical, Some(8.0));
+        assert_eq!(h.cost_spike_warning, Some(3.0));
+        assert_eq!(h.loop_max_calls, Some(15));
+        assert_eq!(h.stall_min_cost, Some(10.0));
+        assert_eq!(h.stall_min_minutes, Some(20));
+        assert_eq!(h.context_critical_pct, Some(95.0));
+        assert_eq!(h.context_warning_pct, Some(85.0));
+    }
+
+    #[test]
+    fn test_health_thresholds_layering() {
+        let mut config = Config::default();
+        assert_eq!(config.health.cache_critical_pct, 10.0); // default
+
+        config.apply(RawConfig {
+            health: Some(RawHealthThresholds {
+                cache_critical_pct: Some(5.0),
+                ..RawHealthThresholds::default()
+            }),
+            ..RawConfig::default()
+        });
+        assert_eq!(config.health.cache_critical_pct, 5.0); // overridden
+        assert_eq!(config.health.cache_warning_pct, 30.0); // unchanged default
     }
 }

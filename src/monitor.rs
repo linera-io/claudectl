@@ -164,8 +164,34 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                                 .and_then(|v| v.as_str())
                                                 .map(|s| s.to_string());
                                         }
-                                        TranscriptBlock::ToolResult { is_error, .. } => {
+                                        TranscriptBlock::ToolResult {
+                                            is_error, content, ..
+                                        } => {
                                             session.last_tool_error = *is_error;
+                                            if *is_error {
+                                                let truncated = if content.len() > 256 {
+                                                    format!("{}...", &content[..256])
+                                                } else {
+                                                    content.clone()
+                                                };
+                                                let tool_name = session
+                                                    .pending_tool_name
+                                                    .clone()
+                                                    .unwrap_or_else(|| "?".into());
+                                                session.last_error_message =
+                                                    Some(truncated.clone());
+                                                session.recent_errors.push(
+                                                    crate::session::ErrorEntry {
+                                                        tool_name,
+                                                        message: truncated,
+                                                    },
+                                                );
+                                                if session.recent_errors.len() > 5 {
+                                                    session.recent_errors.remove(0);
+                                                }
+                                            } else {
+                                                session.last_error_message = None;
+                                            }
                                             // Tool was executed — no longer pending
                                             session.pending_tool_name = None;
                                             session.pending_tool_input = None;

@@ -59,22 +59,45 @@ claudectl --run tasks.json --parallel     # Orchestrate multiple sessions
 
 ## Local LLM Brain
 
-A local LLM observes your sessions and suggests what to approve, deny, or terminate. It learns from your corrections.
+A local LLM observes your sessions and suggests what to approve, deny, or terminate. It learns from your corrections. Works with any local inference server — no cloud API needed.
+
+**Supported backends:**
+
+| Backend | Setup | Default endpoint |
+|---------|-------|-----------------|
+| [ollama](https://ollama.com) | `ollama pull gemma4:e4b && ollama serve` | `localhost:11434` |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp) | `llama-server -m model.gguf` | `localhost:8080` |
+| [vLLM](https://github.com/vllm-project/vllm) | `vllm serve gemma4` | `localhost:8000` |
+| [LM Studio](https://lmstudio.ai) | Start server in UI | `localhost:1234` |
+
+Any endpoint that accepts a JSON POST and returns generated text will work.
 
 ```bash
-ollama pull gemma4:e4b && ollama serve     # One-time setup
-claudectl --brain                          # Advisory mode: b to accept, B to reject
-claudectl --brain --brain-auto             # Auto mode: executes without asking
+# ollama (default — zero config)
+claudectl --brain
+
+# llama.cpp
+claudectl --brain --brain-endpoint http://localhost:8080/v1/chat/completions
+
+# vLLM
+claudectl --brain --brain-endpoint http://localhost:8000/v1/chat/completions --brain-model gemma4
+
+# Advisory mode: brain suggests, you press b to accept or B to reject
+claudectl --brain
+
+# Auto mode: brain executes without asking
+claudectl --brain --brain-auto
 ```
 
-The brain connects to ollama (or any OpenAI-compatible endpoint) via curl — no new dependencies. Every decision is logged locally. Past decisions are retrieved as few-shot examples so it adapts to your preferences.
+Every decision is logged locally. Past decisions are retrieved as few-shot examples so the brain adapts to your preferences over time. Deny rules always override brain suggestions. All data stays on your machine.
 
-Deny rules always override brain suggestions. All data stays on your machine.
+Run `claudectl --doctor` to check if your backend is reachable.
 
 ```toml
 # .claudectl.toml
 [brain]
 enabled = true
+endpoint = "http://localhost:11434/api/generate"  # change for other backends
 model = "gemma4:e4b"
 auto = false
 few_shot_count = 5

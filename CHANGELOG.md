@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.23.2] - 2026-04-15
+
+### Fixed
+- Ghost sessions from PID reuse: when a Claude Code process exits and macOS reassigns the PID to another process, claudectl now correctly detects the mismatch and marks the session as Finished instead of showing stale status
+
 ## [0.23.1] - 2026-04-15
 
 ### Fixed

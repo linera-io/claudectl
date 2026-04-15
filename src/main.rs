@@ -6,6 +6,7 @@
 )]
 
 mod app;
+mod brain;
 mod config;
 mod demo;
 mod discovery;

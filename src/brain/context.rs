@@ -1,0 +1,372 @@
+#![allow(dead_code)]
+
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+use crate::session::ClaudeSession;
+use crate::transcript::{self, TranscriptBlock, TranscriptEvent};
+
+/// Compact context for the brain LLM, built from session state + recent transcript.
+#[derive(Debug, Clone)]
+pub struct BrainContext {
+    /// One-line session summary (status, cost, context%, pending tool).
+    pub session_summary: String,
+    /// Recent conversation messages, compacted to fit within token budget.
+    pub recent_transcript: String,
+    /// The decision prompt asking the LLM what to do.
+    pub decision_prompt: String,
+}
+
+/// Build a compact context for the brain from a session's state and JSONL transcript.
+pub fn build_context(session: &ClaudeSession, max_tokens: u32) -> BrainContext {
+    let session_summary = format_session_summary(session);
+    let recent_transcript = read_recent_transcript(session, max_tokens);
+    let decision_prompt = format_decision_prompt(session);
+
+    BrainContext {
+        session_summary,
+        recent_transcript,
+        decision_prompt,
+    }
+}
+
+fn format_session_summary(session: &ClaudeSession) -> String {
+    let context_pct = if session.context_max > 0 {
+        (session.context_tokens as f64 / session.context_max as f64 * 100.0) as u32
+    } else {
+        0
+    };
+
+    let mut summary = format!(
+        "Project: {} | Status: {} | Model: {} | Cost: ${:.2} | Context: {}%",
+        session.display_name(),
+        session.status,
+        session.model,
+        session.cost_usd,
+        context_pct,
+    );
+
+    if let Some(ref tool) = session.pending_tool_name {
+        summary.push_str(&format!(" | Pending tool: {tool}"));
+        if let Some(ref input) = session.pending_tool_input {
+            let truncated = if input.len() > 200 {
+                format!("{}...", &input[..200])
+            } else {
+                input.clone()
+            };
+            summary.push_str(&format!(" | Command: {truncated}"));
+        }
+    }
+
+    if session.last_tool_error {
+        summary.push_str(" | Last tool ERRORED");
+    }
+
+    summary
+}
+
+fn format_decision_prompt(session: &ClaudeSession) -> String {
+    match session.status {
+        crate::session::SessionStatus::NeedsInput => {
+            let tool = session.pending_tool_name.as_deref().unwrap_or("unknown");
+            format!(
+                "The session is waiting for approval of a '{}' tool call. \
+                 Should this be approved, denied, or should a message be sent instead? \
+                 Respond with JSON: {{\"action\": \"approve\"|\"deny\"|\"send\"|\"terminate\", \
+                 \"message\": \"...\", \"reasoning\": \"...\", \"confidence\": 0.0-1.0}}",
+                tool
+            )
+        }
+        crate::session::SessionStatus::WaitingInput => {
+            "The session finished its response and is waiting for user input. \
+             Should a message be sent (e.g. 'continue'), or should the session be left alone? \
+             Respond with JSON: {\"action\": \"send\"|\"deny\", \
+             \"message\": \"...\", \"reasoning\": \"...\", \"confidence\": 0.0-1.0}"
+                .to_string()
+        }
+        _ => "The session is in an unexpected state. Respond with JSON: \
+             {\"action\": \"deny\", \"reasoning\": \"...\", \"confidence\": 0.0}"
+            .to_string(),
+    }
+}
+
+/// Read recent transcript entries from the JSONL file, compacted to fit budget.
+/// Keeps the last N full messages and summarizes older ones as one-liners.
+fn read_recent_transcript(session: &ClaudeSession, max_tokens: u32) -> String {
+    let Some(ref jsonl_path) = session.jsonl_path else {
+        return "(no transcript available)".into();
+    };
+
+    let entries = read_all_transcript_entries(jsonl_path);
+    if entries.is_empty() {
+        return "(empty transcript)".into();
+    }
+
+    // Rough token estimate: 1 token ≈ 4 chars
+    let max_chars = (max_tokens as usize) * 4;
+    let mut lines: Vec<String> = Vec::new();
+
+    // Process entries newest-first, keep full detail for recent ones
+    let total = entries.len();
+    for (i, entry) in entries.iter().enumerate().rev() {
+        let is_recent = total - i <= 8; // Last 8 messages get full detail
+        let line = if is_recent {
+            format_entry_full(entry)
+        } else {
+            format_entry_compact(entry)
+        };
+        lines.push(line);
+    }
+
+    lines.reverse();
+
+    // Truncate to fit budget
+    let mut result = String::new();
+    for line in &lines {
+        if result.len() + line.len() > max_chars {
+            result.push_str("\n... (earlier messages truncated)");
+            break;
+        }
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(line);
+    }
+
+    result
+}
+
+struct TranscriptEntry {
+    role: String,
+    blocks: Vec<TranscriptBlock>,
+}
+
+fn read_all_transcript_entries(path: &Path) -> Vec<TranscriptEntry> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Some(event) = transcript::parse_line(&line) {
+            match event {
+                TranscriptEvent::Message(msg) => {
+                    let role = match msg.role {
+                        transcript::TranscriptRole::Assistant => "assistant".into(),
+                        transcript::TranscriptRole::User => "user".into(),
+                    };
+                    entries.push(TranscriptEntry {
+                        role,
+                        blocks: msg.content,
+                    });
+                }
+                TranscriptEvent::WaitingForTask => {
+                    entries.push(TranscriptEntry {
+                        role: "system".into(),
+                        blocks: vec![TranscriptBlock::Text("[waiting for user input]".into())],
+                    });
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+fn format_entry_full(entry: &TranscriptEntry) -> String {
+    let mut parts = Vec::new();
+    for block in &entry.blocks {
+        match block {
+            TranscriptBlock::Text(text) => {
+                let truncated = if text.len() > 500 {
+                    format!("{}...", &text[..500])
+                } else {
+                    text.clone()
+                };
+                parts.push(truncated);
+            }
+            TranscriptBlock::ToolUse { name, input } => {
+                let input_str = if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                    let truncated = if cmd.len() > 200 {
+                        format!("{}...", &cmd[..200])
+                    } else {
+                        cmd.to_string()
+                    };
+                    format!("({})", truncated)
+                } else {
+                    String::new()
+                };
+                parts.push(format!("[tool_use: {name}{input_str}]"));
+            }
+            TranscriptBlock::ToolResult { content, is_error } => {
+                let prefix = if *is_error { "ERROR: " } else { "" };
+                let truncated = if content.len() > 300 {
+                    format!("{}...", &content[..300])
+                } else {
+                    content.clone()
+                };
+                parts.push(format!("[tool_result: {prefix}{truncated}]"));
+            }
+        }
+    }
+
+    format!("[{}] {}", entry.role, parts.join(" "))
+}
+
+fn format_entry_compact(entry: &TranscriptEntry) -> String {
+    let mut summary_parts = Vec::new();
+    for block in &entry.blocks {
+        match block {
+            TranscriptBlock::Text(t) => {
+                let preview = if t.len() > 60 {
+                    format!("{}...", &t[..60])
+                } else {
+                    t.clone()
+                };
+                summary_parts.push(format!("\"{}\"", preview));
+            }
+            TranscriptBlock::ToolUse { name, .. } => {
+                summary_parts.push(format!("called {name}"));
+            }
+            TranscriptBlock::ToolResult { is_error, .. } => {
+                if *is_error {
+                    summary_parts.push("(error)".into());
+                }
+            }
+        }
+    }
+
+    format!("[{}] {}", entry.role, summary_parts.join(", "))
+}
+
+/// Format the full brain prompt by combining summary, transcript, and decision prompt.
+pub fn format_brain_prompt(ctx: &BrainContext) -> String {
+    format!(
+        "You are a session supervisor for Claude Code. Analyze the session state and recent \
+         conversation to decide what action to take.\n\n\
+         ## Session State\n{}\n\n\
+         ## Recent Conversation\n{}\n\n\
+         ## Decision\n{}",
+        ctx.session_summary, ctx.recent_transcript, ctx.decision_prompt
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus};
+
+    fn make_session() -> ClaudeSession {
+        let raw = RawSession {
+            pid: 100,
+            session_id: "test".into(),
+            cwd: "/tmp/my-project".into(),
+            started_at: 0,
+        };
+        let mut s = ClaudeSession::from_raw(raw);
+        s.status = SessionStatus::NeedsInput;
+        s.telemetry_status = TelemetryStatus::Available;
+        s.model = "opus-4.6".into();
+        s.cost_usd = 12.50;
+        s.context_tokens = 50000;
+        s.context_max = 200000;
+        s.pending_tool_name = Some("Bash".into());
+        s.pending_tool_input = Some("cargo test --release".into());
+        s
+    }
+
+    #[test]
+    fn session_summary_includes_key_fields() {
+        let s = make_session();
+        let summary = format_session_summary(&s);
+        assert!(summary.contains("my-project"));
+        assert!(summary.contains("Needs Input"));
+        assert!(summary.contains("opus-4.6"));
+        assert!(summary.contains("$12.50"));
+        assert!(summary.contains("25%"));
+        assert!(summary.contains("Bash"));
+        assert!(summary.contains("cargo test --release"));
+    }
+
+    #[test]
+    fn session_summary_shows_error_flag() {
+        let mut s = make_session();
+        s.last_tool_error = true;
+        let summary = format_session_summary(&s);
+        assert!(summary.contains("ERRORED"));
+    }
+
+    #[test]
+    fn decision_prompt_for_needs_input() {
+        let s = make_session();
+        let prompt = format_decision_prompt(&s);
+        assert!(prompt.contains("approval"));
+        assert!(prompt.contains("Bash"));
+        assert!(prompt.contains("approve"));
+    }
+
+    #[test]
+    fn decision_prompt_for_waiting_input() {
+        let mut s = make_session();
+        s.status = SessionStatus::WaitingInput;
+        let prompt = format_decision_prompt(&s);
+        assert!(prompt.contains("waiting for user input"));
+        assert!(prompt.contains("continue"));
+    }
+
+    #[test]
+    fn context_with_no_jsonl_path() {
+        let s = make_session();
+        let ctx = build_context(&s, 4000);
+        assert!(ctx.recent_transcript.contains("no transcript"));
+    }
+
+    #[test]
+    fn context_with_jsonl_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let jsonl = dir.path().join("test.jsonl");
+        std::fs::write(
+            &jsonl,
+            concat!(
+                r#"{"type":"assistant","message":{"role":"assistant","model":"opus","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+                "\n",
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"file1.rs\nfile2.rs"}],"usage":{"input_tokens":50,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+            ),
+        )
+        .unwrap();
+
+        let mut s = make_session();
+        s.jsonl_path = Some(jsonl);
+
+        let ctx = build_context(&s, 4000);
+        assert!(ctx.recent_transcript.contains("Bash"));
+        assert!(ctx.recent_transcript.contains("file1.rs"));
+        assert!(!ctx.session_summary.is_empty());
+        assert!(!ctx.decision_prompt.is_empty());
+    }
+
+    #[test]
+    fn brain_prompt_combines_all_sections() {
+        let ctx = BrainContext {
+            session_summary: "summary".into(),
+            recent_transcript: "transcript".into(),
+            decision_prompt: "decide".into(),
+        };
+        let prompt = format_brain_prompt(&ctx);
+        assert!(prompt.contains("summary"));
+        assert!(prompt.contains("transcript"));
+        assert!(prompt.contains("decide"));
+    }
+}

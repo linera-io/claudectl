@@ -2,6 +2,12 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.24.0] - 2026-04-15
+
+### Added
+- Session health monitoring with visual icons: 🔥 low cache, 💸 cost spike, 🔄 looping, 🐌 stalled, 🧠 context full — proactively detects cache TTL bugs, cost anomalies, retry loops, and context saturation
+- Health icons appear next to project name in the dashboard table, sorted by severity
+
 ## [0.23.2] - 2026-04-15
 
 ### Fixed

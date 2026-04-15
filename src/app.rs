@@ -1613,18 +1613,30 @@ impl App {
             self.status_msg = "Brain is not enabled".into();
             return;
         };
-        if !engine.pending.contains_key(&pid) {
+        // Get suggestion before accept (for logging)
+        let suggestion = engine.pending.get(&pid).cloned();
+        if suggestion.is_none() {
             self.status_msg = "No brain suggestion pending for this session".into();
             return;
         }
         if let Some(msg) = engine.accept(pid, &session) {
+            if let Some(ref sg) = suggestion {
+                crate::brain::decisions::log_decision(
+                    pid,
+                    session.display_name(),
+                    session.pending_tool_name.as_deref(),
+                    session.pending_tool_input.as_deref(),
+                    sg,
+                    "accept",
+                );
+            }
             crate::logger::log("BRAIN", &format!("Accepted: {msg}"));
             self.status_msg = msg;
         }
     }
 
     fn handle_brain_reject(&mut self) {
-        let Some(session) = self.selected_session() else {
+        let Some(session) = self.selected_session().cloned() else {
             return;
         };
         let pid = session.pid;
@@ -1633,6 +1645,14 @@ impl App {
             return;
         };
         if let Some(suggestion) = engine.reject(pid) {
+            crate::brain::decisions::log_decision(
+                pid,
+                session.display_name(),
+                session.pending_tool_name.as_deref(),
+                session.pending_tool_input.as_deref(),
+                &suggestion,
+                "reject",
+            );
             let msg = format!(
                 "Rejected brain suggestion: {} ({})",
                 suggestion.action.label(),

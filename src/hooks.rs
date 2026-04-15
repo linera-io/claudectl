@@ -134,7 +134,7 @@ impl HookRegistry {
         for (event, commands) in &self.hooks {
             for cmd in commands {
                 let display = if cmd.len() > 60 {
-                    format!("{}...", &cmd[..57])
+                    format!("{}...", crate::session::truncate_str(cmd, 57))
                 } else {
                     cmd.clone()
                 };

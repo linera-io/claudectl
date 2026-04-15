@@ -182,7 +182,10 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                             session.last_tool_error = *is_error;
                                             if *is_error {
                                                 let truncated = if content.len() > 256 {
-                                                    format!("{}...", &content[..256])
+                                                    format!(
+                                                        "{}...",
+                                                        crate::session::truncate_str(content, 256)
+                                                    )
                                                 } else {
                                                     content.clone()
                                                 };

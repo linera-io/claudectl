@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::session::ClaudeSession;
+use crate::session::{self, ClaudeSession};
 use crate::transcript::{self, TranscriptBlock, TranscriptEvent};
 
 /// Compact context for the brain LLM, built from session state + recent transcript.
@@ -63,7 +63,7 @@ fn format_session_summary(session: &ClaudeSession) -> String {
         summary.push_str(&format!(" | Pending tool: {tool}"));
         if let Some(ref input) = session.pending_tool_input {
             let truncated = if input.len() > 200 {
-                format!("{}...", &input[..200])
+                format!("{}...", session::truncate_str(input, 200))
             } else {
                 input.clone()
             };
@@ -73,7 +73,7 @@ fn format_session_summary(session: &ClaudeSession) -> String {
 
     if session.last_tool_error {
         if let Some(ref msg) = session.last_error_message {
-            let truncated = if msg.len() > 100 { &msg[..100] } else { msg };
+            let truncated = session::truncate_str(msg, 100);
             summary.push_str(&format!(" | Last tool ERRORED: {truncated}"));
         } else {
             summary.push_str(" | Last tool ERRORED");
@@ -141,7 +141,7 @@ fn format_global_session_map(current_pid: u32, sessions: &[ClaudeSession]) -> St
                     .as_deref()
                     .map(|c| {
                         if c.len() > 60 {
-                            format!(" \"{}...\"", &c[..60])
+                            format!(" \"{}...\"", session::truncate_str(c, 60))
                         } else {
                             format!(" \"{c}\"")
                         }
@@ -266,7 +266,7 @@ fn format_entry_full(entry: &TranscriptEntry) -> String {
         match block {
             TranscriptBlock::Text(text) => {
                 let truncated = if text.len() > 500 {
-                    format!("{}...", &text[..500])
+                    format!("{}...", session::truncate_str(text, 500))
                 } else {
                     text.clone()
                 };
@@ -275,7 +275,7 @@ fn format_entry_full(entry: &TranscriptEntry) -> String {
             TranscriptBlock::ToolUse { name, input } => {
                 let input_str = if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
                     let truncated = if cmd.len() > 200 {
-                        format!("{}...", &cmd[..200])
+                        format!("{}...", session::truncate_str(cmd, 200))
                     } else {
                         cmd.to_string()
                     };
@@ -288,7 +288,7 @@ fn format_entry_full(entry: &TranscriptEntry) -> String {
             TranscriptBlock::ToolResult { content, is_error } => {
                 let prefix = if *is_error { "ERROR: " } else { "" };
                 let truncated = if content.len() > 300 {
-                    format!("{}...", &content[..300])
+                    format!("{}...", session::truncate_str(content, 300))
                 } else {
                     content.clone()
                 };
@@ -306,7 +306,7 @@ fn format_entry_compact(entry: &TranscriptEntry) -> String {
         match block {
             TranscriptBlock::Text(t) => {
                 let preview = if t.len() > 60 {
-                    format!("{}...", &t[..60])
+                    format!("{}...", session::truncate_str(t, 60))
                 } else {
                     t.clone()
                 };

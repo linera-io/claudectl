@@ -676,6 +676,19 @@ impl ClaudeSession {
     }
 }
 
+/// Truncate a string to at most `max_bytes` bytes, landing on a valid
+/// UTF-8 character boundary. Returns the original string if already short enough.
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn format_count(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)

@@ -157,7 +157,7 @@ pub fn format_few_shot_examples(decisions: &[DecisionRecord]) -> String {
             .as_deref()
             .map(|c| {
                 if c.len() > 80 {
-                    format!("{}...", &c[..80])
+                    format!("{}...", crate::session::truncate_str(c, 80))
                 } else {
                     c.to_string()
                 }

@@ -59,12 +59,14 @@ pub fn summarize_for_routing(
     source_project: &str,
     target_task: &str,
 ) -> Result<String, String> {
-    let prompt = format!(
-        "Summarize this output from session '{source_project}' for another Claude Code session \
-         working on: {target_task}\n\n\
-         Keep ONLY what's relevant to the target task. Be concise — this will be injected into \
-         another session's context. Max 500 words.\n\n\
-         Output to summarize:\n{source_output}"
+    let template = super::prompts::load(super::prompts::SUMMARIZE);
+    let prompt = super::prompts::expand(
+        &template,
+        &[
+            ("source_project", source_project),
+            ("target_task", target_task),
+            ("source_output", source_output),
+        ],
     );
 
     let payload = serde_json::json!({

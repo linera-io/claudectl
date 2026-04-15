@@ -212,6 +212,14 @@ struct Cli {
     /// Override brain model name (requires --brain)
     #[arg(long)]
     brain_model: Option<String>,
+
+    /// Run brain eval scenarios against the local LLM and report results
+    #[arg(long)]
+    brain_eval: bool,
+
+    /// List brain prompt templates and their source (built-in vs user override)
+    #[arg(long)]
+    brain_prompts: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -291,6 +299,32 @@ fn main() -> io::Result<()> {
 
     if cli.doctor {
         return print_doctor();
+    }
+
+    if cli.brain_prompts {
+        println!("Brain Prompt Templates");
+        println!("======================");
+        for (name, source) in brain::prompts::list_prompts() {
+            println!("  {name}: {source}");
+        }
+        println!();
+        println!("Override: create ~/.claudectl/brain/prompts/<name>.md");
+        return Ok(());
+    }
+
+    if cli.brain_eval {
+        let brain_cfg = cfg.brain.clone().unwrap_or_default();
+        println!("Loading eval scenarios...");
+        let scenarios = brain::evals::load_scenarios();
+        println!(
+            "Running {} scenarios against {}...",
+            scenarios.len(),
+            brain_cfg.endpoint
+        );
+        println!();
+        let results = brain::evals::run_evals(&brain_cfg, &scenarios);
+        brain::evals::print_results(&results);
+        return Ok(());
     }
 
     if let Some(ref run_file) = cli.run {

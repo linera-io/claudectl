@@ -322,6 +322,7 @@ fn format_entry_compact(entry: &TranscriptEntry) -> String {
 }
 
 /// Format the full brain prompt by combining summary, transcript, and decision prompt.
+/// Uses the prompt library (user override or built-in template).
 pub fn format_brain_prompt(ctx: &BrainContext) -> String {
     let few_shot = if ctx.few_shot_examples.is_empty() {
         String::new()
@@ -338,14 +339,16 @@ pub fn format_brain_prompt(ctx: &BrainContext) -> String {
         format!("\n\n## All Active Sessions\n{}", ctx.global_session_map)
     };
 
-    format!(
-        "You are a session supervisor for Claude Code. Analyze the session state and recent \
-         conversation to decide what action to take. Consider the state of other active sessions \
-         when making decisions.\n\n\
-         ## Session State\n{}{}\n\n\
-         ## Recent Conversation\n{}{}\n\n\
-         ## Decision\n{}",
-        ctx.session_summary, global_map, ctx.recent_transcript, few_shot, ctx.decision_prompt
+    let template = super::prompts::load(super::prompts::ADVISORY);
+    super::prompts::expand(
+        &template,
+        &[
+            ("session_summary", &ctx.session_summary),
+            ("global_session_map", &global_map),
+            ("recent_transcript", &ctx.recent_transcript),
+            ("few_shot_examples", &few_shot),
+            ("decision_prompt", &ctx.decision_prompt),
+        ],
     )
 }
 

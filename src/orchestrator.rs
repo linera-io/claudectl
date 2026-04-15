@@ -195,7 +195,10 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
         .collect();
 
     let total = tasks.len();
-    println!("Running {total} tasks...");
+    let mode = if parallel { "parallel" } else { "sequential" };
+    println!("Running {total} tasks ({mode}):");
+    println!();
+    print_task_plan(&tasks);
     println!();
 
     let run_dir = create_run_dir()?;
@@ -203,7 +206,6 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
     let summary_path = run_dir.join("summary.json");
     let print_lock = Arc::new(Mutex::new(()));
     println!("Logs: {}", run_dir.display());
-    println!("Status: {}", status_path.display());
     println!();
 
     let cancel_requested = Arc::new(AtomicBool::new(false));
@@ -221,6 +223,8 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
         }
 
         mark_dependency_failures(&mut tasks);
+
+        let done_count = tasks.iter().filter(|t| t.state.is_terminal()).count();
 
         let completed: HashSet<String> = tasks
             .iter()
@@ -315,13 +319,8 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
                     });
 
                     println!(
-                        "  Started: {} (attempt {}/{}, PID {})",
+                        "  [{done_count}/{total}] Started: {} (attempt {}/{}, PID {})",
                         task.def.name, attempt, task.max_attempts, pid
-                    );
-                    println!(
-                        "    logs: {}, {}",
-                        task.stdout_log.as_ref().unwrap().display(),
-                        task.stderr_log.as_ref().unwrap().display()
                     );
                     running_count += 1;
                 }
@@ -372,20 +371,18 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
                     task.start_time = None;
                     if status.success() {
                         set_latest_attempt_outcome(task, "completed".into(), elapsed);
+                        task.state = TaskState::Completed;
                         println!(
-                            "  Finished: {} (attempt {}/{}, {}s)",
+                            "  [+] Finished: {} ({}s)",
                             task.def.name,
-                            task.attempts_started,
-                            task.max_attempts,
                             elapsed.unwrap_or(0)
                         );
-                        task.state = TaskState::Completed;
                     } else {
                         let reason = format!("exit {}", format_exit_status(status));
                         set_latest_attempt_outcome(task, reason.clone(), elapsed);
                         if queue_retry(task, &reason) {
                             println!(
-                                "  Retry queued: {} (attempt {}/{}) — {}",
+                                "  [~] Retry queued: {} (attempt {}/{}) — {}",
                                 task.def.name,
                                 task.attempts_started + 1,
                                 task.max_attempts,
@@ -393,7 +390,7 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
                             );
                             print_task_tail(task);
                         } else {
-                            println!("  Failed: {} ({reason})", task.def.name);
+                            println!("  [!] Failed: {} ({reason})", task.def.name);
                             print_task_tail(task);
                             task.state = TaskState::Failed(reason);
                         }
@@ -409,7 +406,7 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
                     set_latest_attempt_outcome(task, reason.clone(), elapsed);
                     if queue_retry(task, &reason) {
                         println!(
-                            "  Retry queued: {} (attempt {}/{}) — {}",
+                            "  [~] Retry queued: {} (attempt {}/{}) — {}",
                             task.def.name,
                             task.attempts_started + 1,
                             task.max_attempts,
@@ -417,7 +414,7 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
                         );
                         print_task_tail(task);
                     } else {
-                        println!("  Failed: {} ({reason})", task.def.name);
+                        println!("  [!] Failed: {} ({reason})", task.def.name);
                         print_task_tail(task);
                         task.state = TaskState::Failed(reason);
                     }
@@ -475,6 +472,30 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
             "{} failed, {} skipped",
             counts.failed, counts.skipped
         )))
+    }
+}
+
+fn print_task_plan(tasks: &[TaskRun]) {
+    for (i, task) in tasks.iter().enumerate() {
+        let deps = if task.def.depends_on.is_empty() {
+            String::new()
+        } else {
+            format!(" (after {})", task.def.depends_on.join(", "))
+        };
+        let cwd = task.def.cwd.as_deref().unwrap_or(".");
+        let retries = if task.max_attempts > 1 {
+            format!(", {} retries", task.max_attempts - 1)
+        } else {
+            String::new()
+        };
+        println!(
+            "  {}. {}{} in {}{}",
+            i + 1,
+            task.def.name,
+            deps,
+            cwd,
+            retries
+        );
     }
 }
 
@@ -716,7 +737,7 @@ fn print_status(tasks: &[TaskRun]) {
     let done = counts.completed + counts.failed + counts.skipped + counts.aborted;
     let total = tasks.len();
 
-    let running = tasks
+    let running: Vec<_> = tasks
         .iter()
         .filter(|task| matches!(task.state, TaskState::Running))
         .take(3)
@@ -725,44 +746,40 @@ fn print_status(tasks: &[TaskRun]) {
                 .start_time
                 .map(|started| format!("{}s", started.elapsed().as_secs()))
                 .unwrap_or_else(|| "?s".to_string());
-            format!(
-                "{} {}/{} {elapsed}",
-                task.def.name, task.attempts_started, task.max_attempts
-            )
+            format!("{} {elapsed}", task.def.name)
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    let retrying = tasks
-        .iter()
-        .filter(|task| matches!(task.state, TaskState::RetryQueued(_)))
-        .take(2)
-        .map(|task| {
-            format!(
-                "{} {}/{}",
-                task.def.name,
-                task.attempts_started + 1,
-                task.max_attempts
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut line = format!("\r  [{done}/{total}]");
 
-    let mut line = format!(
-        "\r  [{done}/{total}] {} running, {} pending, {} retrying, {} failed, {} skipped, {} aborted",
-        counts.running,
-        counts.pending,
-        counts.retrying,
-        counts.failed,
-        counts.skipped,
-        counts.aborted
-    );
+    if counts.running > 0 {
+        line.push_str(&format!(" {} running", counts.running));
+    }
+    if counts.pending > 0 {
+        line.push_str(&format!(" {} pending", counts.pending));
+    }
+    if counts.retrying > 0 {
+        line.push_str(&format!(" {} retrying", counts.retrying));
+    }
+    if counts.failed > 0 {
+        line.push_str(&format!(" {} failed", counts.failed));
+    }
+    if counts.skipped > 0 {
+        line.push_str(&format!(" {} skipped", counts.skipped));
+    }
+    if counts.aborted > 0 {
+        line.push_str(&format!(" {} aborted", counts.aborted));
+    }
     if !running.is_empty() {
-        line.push_str(&format!(" | running: {}", running.join(", ")));
-    }
-    if !retrying.is_empty() {
-        line.push_str(&format!(" | retry: {}", retrying.join(", ")));
+        line.push_str(&format!(" | {}", running.join(", ")));
     }
 
-    eprint!("{line:<220}");
+    // Pad to terminal width to clear previous line, capped at 200
+    let width = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(120);
+    let pad = width.min(200);
+    eprint!("{line:<pad$}");
     let _ = io::stderr().flush();
 }
 

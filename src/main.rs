@@ -1110,6 +1110,13 @@ fn run_tui<W: io::Write>(
     if demo_mode {
         app.daily_limit = Some(50.0);
         app.budget_usd = Some(10.0);
+        app.rules = demo::demo_rules();
+        // Create a stub brain engine so the status bar can show brain suggestions
+        if app.brain_engine.is_none() {
+            app.brain_engine = Some(brain::engine::BrainEngine::new(
+                config::BrainConfig::default(),
+            ));
+        }
     }
 
     let mut last_tick = Instant::now();

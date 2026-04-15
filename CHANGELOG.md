@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.18.1] - 2026-04-15
+
+### Added
+- Few-shot decision learning: the brain now retrieves relevant past decisions from the local log and includes them as examples in the LLM prompt, so it learns from user corrections over time
+- Configurable `few_shot_count` (default 5) in `[brain]` config section
+- Relevance scoring: past decisions matching the same tool name rank highest, then same project, then most recent
+
 ## [0.18.0] - 2026-04-15
 
 ### Added

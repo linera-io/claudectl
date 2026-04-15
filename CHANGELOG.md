@@ -2,6 +2,14 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.22.0] - 2026-04-15
+
+### Added
+- Externalized prompt library: all brain prompts loaded from `~/.claudectl/brain/prompts/` with built-in fallbacks, users can override any prompt template
+- Local eval framework: `--brain-eval` runs 6 built-in scenarios (approve/deny/send) against the local LLM and reports accuracy
+- Custom eval scenarios via JSON files in `~/.claudectl/brain/evals/`
+- `--brain-prompts` CLI command lists all prompt templates and their source (built-in vs user override)
+
 ## [0.21.0] - 2026-04-15
 
 ### Added

@@ -64,7 +64,28 @@ claudectl --run tasks.json --parallel     # Orchestrate multiple sessions
 
 ## Local LLM Brain
 
-A local LLM observes your sessions and suggests what to approve, deny, or terminate. It learns from your corrections. Works with any local inference server — no cloud API needed.
+The brain is claudectl's core intelligence layer. A local LLM continuously observes all your sessions — what they're doing, what tools they're calling, how much they're spending — and makes real-time decisions:
+
+- **Approve** safe tool calls automatically (reads, greps, test runs)
+- **Deny** dangerous operations before they execute (force pushes, destructive commands)
+- **Terminate** sessions that are looping, stalled, or burning money
+- **Route** summarized output between sessions so they share context
+- **Spawn** new sessions when the brain detects parallelizable work
+- **Delegate** tasks to external agents (Codex, Aider, custom tools)
+
+The brain learns from your corrections. Every accept/reject is logged as a few-shot example, so its suggestions improve over time. All data stays on your machine — no cloud API, no telemetry.
+
+```bash
+# Start with one command (requires ollama)
+ollama pull gemma4:e4b && ollama serve
+claudectl --brain
+
+# Advisory mode (default): brain suggests, you press b/B to accept/reject
+claudectl --brain
+
+# Auto mode: brain executes decisions without asking
+claudectl --brain --auto-run
+```
 
 **Supported backends:**
 
@@ -77,38 +98,35 @@ A local LLM observes your sessions and suggests what to approve, deny, or termin
 
 Any endpoint that accepts a JSON POST and returns generated text will work.
 
+**What the brain sees per session:**
+- Project name, status, model, pending tool call + command
+- Cost, burn rate, context window utilization
+- Recent transcript (last 8 messages, earlier ones compacted)
+- All other active sessions (for cross-session reasoning)
+- Past decisions on similar tool calls (few-shot examples)
+
+**Diagnostics and customization:**
+
 ```bash
-# ollama (default — zero config)
-claudectl --brain
-
-# llama.cpp
-claudectl --brain --url http://localhost:8080/v1/chat/completions
-
-# vLLM
-claudectl --brain --url http://localhost:8000/v1/chat/completions --brain-model gemma4
-
-# Advisory mode: brain suggests, you press b to accept or B to reject
-claudectl --brain
-
-# Auto mode: brain executes without asking
-claudectl --brain --auto-run
+claudectl --doctor          # Check if backend is reachable
+claudectl --brain-eval      # Test decision quality against built-in scenarios
+claudectl --brain-prompts   # List prompt templates and their source
 ```
-
-Every decision is logged locally. Past decisions are retrieved as few-shot examples so the brain adapts to your preferences over time. Deny rules always override brain suggestions. All data stays on your machine.
-
-Run `claudectl --doctor` to check if your backend is reachable. Run `claudectl --brain-eval` to test decision quality against built-in scenarios. Run `claudectl --brain-prompts` to see which prompt templates are active and whether they're built-in or user overrides.
 
 ```toml
 # .claudectl.toml
 [brain]
 enabled = true
-endpoint = "http://localhost:11434/api/generate"  # change for other backends
+endpoint = "http://localhost:11434/api/generate"
 model = "gemma4:e4b"
-auto = false
-few_shot_count = 5
+auto = false                # true = auto-execute suggestions
+few_shot_count = 5          # Past decisions to include as examples
+max_sessions = 10           # Max sessions brain can spawn
+orchestrate = false         # Enable cross-session orchestration
+orchestrate_interval = 30   # Seconds between orchestration passes
 ```
 
-Override prompt templates by placing files in `~/.claudectl/brain/prompts/`.
+Override any prompt template by placing files in `~/.claudectl/brain/prompts/`.
 
 ## Record and Share
 

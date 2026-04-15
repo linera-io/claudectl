@@ -2,6 +2,13 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.23.0] - 2026-04-15
+
+### Added
+- External agent integration: register agents (Codex, Aider, custom) via `[agents.*]` config, brain can delegate work to them with output capture to `.claudectl-runs/agents/`
+- `RuleAction::Delegate` — brain can delegate work to named agents
+- Agent output logged to `.claudectl-runs/agents/{name}.{timestamp}.log`
+
 ## [0.22.0] - 2026-04-15
 
 ### Added

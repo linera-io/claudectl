@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus};
+use crate::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus, ToolStats};
 
 /// Fake project definitions for demo mode.
 const PROJECTS: &[(&str, &str, &str)] = &[
@@ -60,14 +60,14 @@ const STATUS_SEQUENCES: &[&[SessionStatus]] = &[
         SessionStatus::Processing,
     ],
     &[
-        SessionStatus::Idle,
-        SessionStatus::Idle,
+        SessionStatus::Processing,
+        SessionStatus::Processing,
         SessionStatus::Processing,
         SessionStatus::Processing,
         SessionStatus::Processing,
         SessionStatus::WaitingInput,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
+        SessionStatus::Processing,
+        SessionStatus::Processing,
     ],
     &[
         SessionStatus::Processing,
@@ -81,13 +81,13 @@ const STATUS_SEQUENCES: &[&[SessionStatus]] = &[
     ],
     &[
         SessionStatus::WaitingInput,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
-        SessionStatus::Idle,
+        SessionStatus::Processing,
+        SessionStatus::Processing,
+        SessionStatus::Processing,
+        SessionStatus::Processing,
+        SessionStatus::Processing,
+        SessionStatus::NeedsInput,
+        SessionStatus::Processing,
     ],
     &[
         SessionStatus::Processing,
@@ -109,6 +109,19 @@ const STATUS_SEQUENCES: &[&[SessionStatus]] = &[
         SessionStatus::WaitingInput,
         SessionStatus::Processing,
     ],
+];
+
+/// Pending tool calls assigned to NeedsInput sessions by index.
+/// (tool_name, command/input_summary)
+const PENDING_TOOLS: &[(&str, &str)] = &[
+    ("Bash", "cargo test --workspace"),
+    ("Bash", "cargo clippy -- -D warnings"),
+    ("Bash", "npm run build && npm test"),
+    ("Bash", "python train.py --epochs 50"),
+    ("Bash", "rm -rf /tmp/cache && rm -rf node_modules"),
+    ("Bash", "terraform apply -auto-approve"),
+    ("Bash", "npm run deploy -- --prod"),
+    ("Bash", "git push --force origin main"),
 ];
 
 /// Generate deterministic fake sessions for demo mode.
@@ -198,25 +211,25 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                 let mut tools = HashMap::new();
                 tools.insert(
                     "Bash".to_string(),
-                    crate::session::ToolStats {
+                    ToolStats {
                         calls: 12 + (i as u32 * 3),
                     },
                 );
                 tools.insert(
                     "Read".to_string(),
-                    crate::session::ToolStats {
+                    ToolStats {
                         calls: 25 + (i as u32 * 5),
                     },
                 );
                 tools.insert(
                     "Edit".to_string(),
-                    crate::session::ToolStats {
+                    ToolStats {
                         calls: 8 + (i as u32 * 2),
                     },
                 );
                 tools.insert(
                     "Grep".to_string(),
-                    crate::session::ToolStats {
+                    ToolStats {
                         calls: 6 + (i as u32),
                     },
                 );
@@ -234,7 +247,169 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                 s.files_modified = files;
             }
 
+            // ── Health-triggering overrides ──────────────────────────────
+
+            // Session 2 (web-frontend): Low cache hit ratio → 🔥 critical
+            if i == 2 {
+                s.total_input_tokens = 120_000 + (tick as u64 * 3_000);
+                s.cache_read_tokens = 5_000; // ~4% — well under 10% critical threshold
+                s.cache_write_tokens = 2_000;
+            }
+
+            // Session 3 (ml-pipeline): Context saturation → 🧠 critical
+            if i == 3 && tick > 6 {
+                let saturation = 0.91 + ((tick as f64 - 6.0) * 0.005).min(0.07);
+                s.context_tokens = (s.context_max as f64 * saturation) as u64;
+            }
+
+            // Session 5 (infra-terraform): Stalled → 🐌 warning
+            // High cost, long elapsed, but NO file edits
+            if i == 5 {
+                s.cost_usd = 7.50 + (tick as f64) * 0.12;
+                s.elapsed = Duration::from_secs(900 + tick as u64 * 5);
+                s.files_modified.clear(); // Zero file edits despite spending
+            }
+
+            // Session 7 (mobile-app): Cost spike → 💸
+            if i == 7 && tick > 4 {
+                // Base cost accumulates slowly, then burn rate spikes
+                s.cost_usd = 3.0 + (tick as f64) * 0.05;
+                let elapsed_hrs = s.elapsed.as_secs_f64() / 3600.0;
+                let avg_rate = if elapsed_hrs > 0.01 {
+                    s.cost_usd / elapsed_hrs
+                } else {
+                    1.0
+                };
+                // Spike burn rate to 6x average
+                s.burn_rate_per_hr = avg_rate * 6.0;
+            }
+
+            // Session 4 (ml-pipeline worktree): Loop detection → 🔄
+            if i == 4 && tick > 5 {
+                s.last_tool_error = true;
+                s.tool_usage
+                    .entry("Bash".to_string())
+                    .and_modify(|t| t.calls = 15 + (tick % 5))
+                    .or_insert(ToolStats {
+                        calls: 15 + (tick % 5),
+                    });
+            }
+
+            // ── Pending tool info for rules/brain ────────────────────────
+
+            if s.status == SessionStatus::NeedsInput {
+                let (tool, cmd) = PENDING_TOOLS[i % PENDING_TOOLS.len()];
+                s.pending_tool_name = Some(tool.to_string());
+                s.pending_tool_input = Some(cmd.to_string());
+            }
+
             s
         })
         .collect()
+}
+
+/// Scripted demo events that simulate rules, brain, and routing actions.
+/// Returns a status message for specific ticks, cycling every CYCLE_LEN ticks.
+pub fn demo_event(tick: u32) -> Option<DemoEvent> {
+    const CYCLE_LEN: u32 = 24;
+    let phase = tick % CYCLE_LEN;
+
+    match phase {
+        // Rules firing
+        3 => Some(DemoEvent {
+            message: "Rule 'approve-cargo': approved acme-api (Bash: cargo test --workspace)"
+                .into(),
+            kind: EventKind::RuleAction,
+        }),
+        5 => Some(DemoEvent {
+            message:
+                "Rule 'deny-rm-rf': denied ml-pipeline (Bash: rm -rf /tmp/cache && rm -rf node_modules)"
+                    .into(),
+            kind: EventKind::RuleAction,
+        }),
+        8 => Some(DemoEvent {
+            message: "Rule 'approve-cargo': approved acme-api (Bash: cargo clippy -- -D warnings)"
+                .into(),
+            kind: EventKind::RuleAction,
+        }),
+
+        // Brain suggestions (advisory mode)
+        10 => Some(DemoEvent {
+            message: "Brain: approve Bash(npm run build) for web-frontend — safe build command"
+                .into(),
+            kind: EventKind::BrainSuggestion,
+        }),
+        13 => Some(DemoEvent {
+            message: "Brain: deny Bash(terraform apply -auto-approve) — destructive without plan review".into(),
+            kind: EventKind::BrainSuggestion,
+        }),
+        15 => Some(DemoEvent {
+            message:
+                "Brain suggested approve, but deny rule 'deny-force-push' overrides (git push --force)"
+                    .into(),
+            kind: EventKind::BrainOverride,
+        }),
+
+        // Inter-session routing
+        18 => Some(DemoEvent {
+            message: "Routed summary from ml-pipeline → docs-site: \"Added training pipeline with checkpoint support\"".into(),
+            kind: EventKind::Route,
+        }),
+
+        // Health alerts surfaced as events
+        20 => Some(DemoEvent {
+            message: "Health: infra-terraform stalled — $8.40 spent, 16 min, no file edits".into(),
+            kind: EventKind::HealthAlert,
+        }),
+        22 => Some(DemoEvent {
+            message: "Health: ml-pipeline context at 94% — consider spawning fresh session".into(),
+            kind: EventKind::HealthAlert,
+        }),
+
+        _ => None,
+    }
+}
+
+/// A scripted event in the demo timeline.
+pub struct DemoEvent {
+    pub message: String,
+    pub kind: EventKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    RuleAction,
+    BrainSuggestion,
+    BrainOverride,
+    Route,
+    HealthAlert,
+}
+
+/// Generate demo rules for display.
+pub fn demo_rules() -> Vec<crate::rules::AutoRule> {
+    use crate::rules::{AutoRule, RuleAction};
+
+    vec![
+        {
+            let mut r = AutoRule::new("approve-cargo".into(), RuleAction::Approve);
+            r.match_tool = vec!["Bash".into()];
+            r.match_command = vec!["cargo".into()];
+            r
+        },
+        {
+            let mut r = AutoRule::new("deny-rm-rf".into(), RuleAction::Deny);
+            r.match_command = vec!["rm -rf".into()];
+            r
+        },
+        {
+            let mut r = AutoRule::new("deny-force-push".into(), RuleAction::Deny);
+            r.match_command = vec!["--force".into()];
+            r
+        },
+        {
+            let mut r = AutoRule::new("kill-runaway".into(), RuleAction::Terminate);
+            r.match_cost_above = Some(20.0);
+            r
+        },
+    ]
 }

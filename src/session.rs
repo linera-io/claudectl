@@ -143,6 +143,15 @@ pub struct ClaudeSession {
     pub pending_tool_name: Option<String>,
     pub pending_tool_input: Option<String>, // Extracted command string (for Bash)
     pub last_tool_error: bool,
+    pub last_error_message: Option<String>,
+    pub recent_errors: Vec<ErrorEntry>, // Last 5 errors (ring buffer)
+}
+
+/// A captured tool error with context.
+#[derive(Debug, Clone)]
+pub struct ErrorEntry {
+    pub tool_name: String,
+    pub message: String,
 }
 
 /// Per-tool usage statistics.
@@ -311,6 +320,8 @@ impl ClaudeSession {
             pending_tool_name: None,
             pending_tool_input: None,
             last_tool_error: false,
+            last_error_message: None,
+            recent_errors: Vec::new(),
         }
     }
 
@@ -606,6 +617,13 @@ impl ClaudeSession {
                     } else {
                         serde_json::Value::Null
                     },
+                })
+            }).collect::<Vec<_>>(),
+            "last_error": self.last_error_message,
+            "recent_errors": self.recent_errors.iter().map(|e| {
+                serde_json::json!({
+                    "tool": e.tool_name,
+                    "message": e.message,
                 })
             }).collect::<Vec<_>>(),
             "files_modified": self.files_modified,

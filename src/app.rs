@@ -297,6 +297,7 @@ pub struct App {
     pub rules: Vec<crate::rules::AutoRule>,
     pub auto_actions_fired: HashMap<u32, std::time::Instant>, // Debounce: pid -> last action time
     pub last_rule_action: Option<String>,                     // Last auto-action status for display
+    pub health_thresholds: crate::config::HealthThresholds,
     pub brain_config: Option<crate::config::BrainConfig>,
     pub brain_engine: Option<crate::brain::engine::BrainEngine>,
 }
@@ -402,6 +403,7 @@ impl App {
             rules: Vec::new(),
             auto_actions_fired: HashMap::new(),
             last_rule_action: None,
+            health_thresholds: crate::config::HealthThresholds::default(),
             brain_config: None,
             brain_engine: None,
         };
@@ -838,6 +840,60 @@ impl App {
             }
         }
 
+        // Scripted demo events: rules, brain, routing, health alerts
+        if let Some(event) = crate::demo::demo_event(self.demo_tick) {
+            self.status_msg = event.message.clone();
+            match event.kind {
+                crate::demo::EventKind::RuleAction => {
+                    self.last_rule_action = Some(event.message);
+                }
+                crate::demo::EventKind::BrainSuggestion | crate::demo::EventKind::BrainOverride => {
+                    // Show brain activity via status message
+                }
+                crate::demo::EventKind::Route | crate::demo::EventKind::HealthAlert => {}
+            }
+        }
+
+        // Inject fake brain pending suggestions so the status bar shows brain activity
+        if let Some(ref mut engine) = self.brain_engine {
+            engine.pending.clear();
+            // At certain phases, show a pending suggestion for a NeedsInput session
+            let phase = self.demo_tick % 24;
+            if (9..=12).contains(&phase) {
+                // Find a NeedsInput session to attach the suggestion to
+                if let Some(s) = sessions
+                    .iter()
+                    .find(|s| s.status == SessionStatus::NeedsInput)
+                {
+                    engine.pending.insert(
+                        s.pid,
+                        crate::brain::client::BrainSuggestion {
+                            action: crate::rules::RuleAction::Approve,
+                            message: s.pending_tool_input.clone(),
+                            reasoning: "Safe build command, no side effects".into(),
+                            confidence: 0.92,
+                        },
+                    );
+                }
+            }
+            if (14..=16).contains(&phase) {
+                if let Some(s) = sessions
+                    .iter()
+                    .find(|s| s.status == SessionStatus::NeedsInput)
+                {
+                    engine.pending.insert(
+                        s.pid,
+                        crate::brain::client::BrainSuggestion {
+                            action: crate::rules::RuleAction::Deny,
+                            message: s.pending_tool_input.clone(),
+                            reasoning: "Destructive operation, needs manual review".into(),
+                            confidence: 0.87,
+                        },
+                    );
+                }
+            }
+        }
+
         self.sessions = sessions;
         self.normalize_selection();
     }
@@ -990,6 +1046,11 @@ impl App {
     }
 
     fn run_auto_actions(&mut self) {
+        // In demo mode, events are scripted in refresh_demo() — skip real execution
+        if self.demo_mode {
+            return;
+        }
+
         // Legacy per-PID auto-approve (toggled with 'a' key)
         let legacy_pids: Vec<u32> = self
             .sessions

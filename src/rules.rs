@@ -11,6 +11,11 @@ pub enum RuleAction {
     Route {
         target_pid: u32,
     },
+    /// Spawn a new Claude Code session with a derived prompt.
+    Spawn {
+        prompt: String,
+        cwd: String,
+    },
 }
 
 impl RuleAction {
@@ -32,6 +37,7 @@ impl RuleAction {
             Self::Send => "send",
             Self::Terminate => "terminate",
             Self::Route { .. } => "route",
+            Self::Spawn { .. } => "spawn",
         }
     }
 }
@@ -208,14 +214,25 @@ pub fn execute(result: &RuleMatch, session: &ClaudeSession) -> Result<String, St
             }
         }
         RuleAction::Route { .. } => {
-            // Route execution happens in the brain engine (needs access to
-            // target session + LLM for summarization). This arm should not
-            // be reached via rules::execute() directly.
+            // Route execution happens in the brain engine.
             Ok(format!(
                 "Rule '{}': route queued for {}",
                 result.rule_name, name
             ))
         }
+        RuleAction::Spawn {
+            ref prompt,
+            ref cwd,
+        } => match terminals::launch_session(cwd, Some(prompt), None) {
+            Ok(msg) => Ok(format!(
+                "Rule '{}': spawned new session for {} — {msg}",
+                result.rule_name, name
+            )),
+            Err(e) => Err(format!(
+                "Rule '{}': spawn failed for {}: {e}",
+                result.rule_name, name
+            )),
+        },
     }
 }
 

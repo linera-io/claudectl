@@ -87,28 +87,52 @@ impl BrainEngine {
                     if self.config.auto_mode {
                         // Auto mode: execute immediately
                         if let Some(session) = session {
-                            // Route action needs special handling (summarize + send to target)
-                            if let RuleAction::Route { target_pid } = &suggestion.action {
-                                let target = sessions.iter().find(|s| s.pid == *target_pid);
-                                if let Some(target) = target {
-                                    match self.execute_route(session, target) {
-                                        Ok(msg) => actions.push((result.pid, msg)),
-                                        Err(e) => {
-                                            actions.push((result.pid, format!("Route error: {e}")))
+                            match &suggestion.action {
+                                RuleAction::Route { target_pid } => {
+                                    let target = sessions.iter().find(|s| s.pid == *target_pid);
+                                    if let Some(target) = target {
+                                        match self.execute_route(session, target) {
+                                            Ok(msg) => actions.push((result.pid, msg)),
+                                            Err(e) => actions
+                                                .push((result.pid, format!("Route error: {e}"))),
+                                        }
+                                    } else {
+                                        actions.push((
+                                            result.pid,
+                                            format!(
+                                                "Route error: target PID {} not found",
+                                                target_pid
+                                            ),
+                                        ));
+                                    }
+                                }
+                                RuleAction::Spawn { .. } => {
+                                    // Enforce max_sessions limit
+                                    if sessions.len() >= self.config.max_sessions {
+                                        actions.push((
+                                            result.pid,
+                                            format!(
+                                                "Spawn blocked: {} sessions active (max {})",
+                                                sessions.len(),
+                                                self.config.max_sessions
+                                            ),
+                                        ));
+                                    } else {
+                                        let rule_match = suggestion_to_rule_match(&suggestion);
+                                        match rules::execute(&rule_match, session) {
+                                            Ok(msg) => actions.push((result.pid, msg)),
+                                            Err(e) => actions
+                                                .push((result.pid, format!("Spawn error: {e}"))),
                                         }
                                     }
-                                } else {
-                                    actions.push((
-                                        result.pid,
-                                        format!("Route error: target PID {} not found", target_pid),
-                                    ));
                                 }
-                            } else {
-                                let rule_match = suggestion_to_rule_match(&suggestion);
-                                match rules::execute(&rule_match, session) {
-                                    Ok(msg) => actions.push((result.pid, msg)),
-                                    Err(e) => {
-                                        actions.push((result.pid, format!("Brain error: {e}")))
+                                _ => {
+                                    let rule_match = suggestion_to_rule_match(&suggestion);
+                                    match rules::execute(&rule_match, session) {
+                                        Ok(msg) => actions.push((result.pid, msg)),
+                                        Err(e) => {
+                                            actions.push((result.pid, format!("Brain error: {e}")))
+                                        }
                                     }
                                 }
                             }
@@ -267,6 +291,7 @@ mod tests {
             timeout_ms: 1000,
             max_context_tokens: 1000,
             few_shot_count: 5,
+            max_sessions: 10,
         }
     }
 

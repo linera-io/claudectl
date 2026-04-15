@@ -36,6 +36,7 @@ pub struct BrainConfig {
     pub timeout_ms: u64,
     pub max_context_tokens: u32,
     pub few_shot_count: usize,
+    pub max_sessions: usize,
 }
 
 impl Default for BrainConfig {
@@ -48,6 +49,7 @@ impl Default for BrainConfig {
             timeout_ms: 5000,
             max_context_tokens: 4000,
             few_shot_count: 5,
+            max_sessions: 10,
         }
     }
 }
@@ -397,6 +399,11 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     "few_shot_count" => {
                         if let Ok(v) = value.parse() {
                             brain.few_shot_count = v;
+                        }
+                    }
+                    "max_sessions" => {
+                        if let Ok(v) = value.parse() {
+                            brain.max_sessions = v;
                         }
                     }
                     _ => {}

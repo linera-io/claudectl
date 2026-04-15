@@ -228,6 +228,17 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
             .map(|task| task.def.name.clone())
             .collect();
 
+        // Build output map for template expansion (immutable snapshot)
+        let completed_outputs: HashMap<String, PathBuf> = tasks
+            .iter()
+            .filter(|t| matches!(t.state, TaskState::Completed))
+            .filter_map(|t| {
+                t.stdout_log
+                    .as_ref()
+                    .map(|p| (t.def.name.clone(), p.clone()))
+            })
+            .collect();
+
         let mut running_count = tasks
             .iter()
             .filter(|task| matches!(task.state, TaskState::Running))
@@ -263,7 +274,26 @@ pub fn run_tasks(task_file: TaskFile, parallel: bool) -> io::Result<()> {
             }
 
             let attempt = task.attempts_started + 1;
-            match launch_claude_session(&task.def, &run_dir, Arc::clone(&print_lock), attempt) {
+
+            // Expand {{name.stdout}} templates in the prompt
+            let launch_def = if task.def.prompt.contains("{{") {
+                match expand_prompt_templates(&task.def.prompt, &completed_outputs) {
+                    Ok(expanded) => {
+                        let mut def = task.def.clone();
+                        def.prompt = expanded;
+                        def
+                    }
+                    Err(e) => {
+                        task.state = TaskState::Failed(format!("template expansion error: {e}"));
+                        println!("  {} — template error: {e}", task.def.name);
+                        continue;
+                    }
+                }
+            } else {
+                task.def.clone()
+            };
+
+            match launch_claude_session(&launch_def, &run_dir, Arc::clone(&print_lock), attempt) {
                 Ok(launched) => {
                     let pid = launched.child.id();
                     task.attempts_started = attempt;
@@ -477,6 +507,7 @@ fn validate_task_file(task_file: &TaskFile) -> io::Result<()> {
         }
     }
 
+    validate_template_references(&task_file.tasks)?;
     validate_acyclic_graph(&task_file.tasks)
 }
 
@@ -985,6 +1016,135 @@ fn print_task_logs(task: &TaskRun) {
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Template substitution for cross-session data routing
+// ────────────────────────────────────────────────────────────────────────────
+
+const MAX_CAPTURED_OUTPUT: usize = 32 * 1024;
+
+/// Extract `{{name.field}}` references from a prompt string.
+fn extract_template_refs(prompt: &str) -> Vec<(String, String)> {
+    let mut refs = Vec::new();
+    let mut remaining = prompt;
+    while let Some(start) = remaining.find("{{") {
+        let after = &remaining[start + 2..];
+        if let Some(end) = after.find("}}") {
+            let placeholder = after[..end].trim();
+            if let Some((name, field)) = placeholder.split_once('.') {
+                refs.push((name.trim().to_string(), field.trim().to_string()));
+            }
+            remaining = &after[end + 2..];
+        } else {
+            break;
+        }
+    }
+    refs
+}
+
+/// Validate that all template references in task prompts point to existing
+/// direct dependencies and use a supported field.
+fn validate_template_references(tasks: &[TaskDef]) -> io::Result<()> {
+    let names: HashSet<String> = tasks.iter().map(|t| t.name.clone()).collect();
+
+    for task in tasks {
+        for (ref_name, ref_field) in extract_template_refs(&task.prompt) {
+            if ref_field != "stdout" {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Task '{}': unsupported template field '{{{{{}.{}}}}}', only 'stdout' is supported",
+                        task.name, ref_name, ref_field
+                    ),
+                ));
+            }
+            if !names.contains(&ref_name) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Task '{}': template '{{{{{}.stdout}}}}' references task '{}' which doesn't exist",
+                        task.name, ref_name, ref_name
+                    ),
+                ));
+            }
+            if !task.depends_on.contains(&ref_name) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Task '{}': template '{{{{{}.stdout}}}}' references task '{}' which is not in depends_on",
+                        task.name, ref_name, ref_name
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Expand `{{name.stdout}}` placeholders in a prompt string by reading
+/// the completed task's stdout log file. Truncates to 32KB.
+fn expand_prompt_templates(
+    prompt: &str,
+    completed_outputs: &HashMap<String, PathBuf>,
+) -> io::Result<String> {
+    let mut result = String::with_capacity(prompt.len());
+    let mut remaining = prompt;
+
+    while let Some(start) = remaining.find("{{") {
+        result.push_str(&remaining[..start]);
+        let after = &remaining[start + 2..];
+
+        let Some(end) = after.find("}}") else {
+            // No closing }} — treat literally
+            result.push_str("{{");
+            remaining = after;
+            continue;
+        };
+
+        let placeholder = after[..end].trim();
+        remaining = &after[end + 2..];
+
+        let Some((task_name, field)) = placeholder.split_once('.') else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid template '{{{{{placeholder}}}}}': expected '{{{{name.stdout}}}}'"),
+            ));
+        };
+        let task_name = task_name.trim();
+        let field = field.trim();
+
+        if field != "stdout" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported field '{field}' in '{{{{{placeholder}}}}}'"),
+            ));
+        }
+
+        let log_path = completed_outputs.get(task_name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no stdout available for task '{task_name}'"),
+            )
+        })?;
+
+        let mut content = fs::read_to_string(log_path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("failed to read stdout for task '{task_name}': {e}"),
+            )
+        })?;
+
+        if content.len() > MAX_CAPTURED_OUTPUT {
+            content.truncate(MAX_CAPTURED_OUTPUT);
+            content.push_str("\n... (truncated, output exceeded 32KB)");
+        }
+
+        result.push_str(content.trim());
+    }
+
+    result.push_str(remaining);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1094,5 +1254,177 @@ mod tests {
     fn test_sanitize_task_name() {
         assert_eq!(sanitize_task_name("Update docs"), "update-docs");
         assert_eq!(sanitize_task_name("API/Test #1"), "apitest-1");
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Template extraction tests
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_refs_empty() {
+        assert!(extract_template_refs("").is_empty());
+        assert!(extract_template_refs("no templates here").is_empty());
+    }
+
+    #[test]
+    fn test_extract_refs_single() {
+        let refs = extract_template_refs("Fix these: {{analyze.stdout}}");
+        assert_eq!(refs, vec![("analyze".into(), "stdout".into())]);
+    }
+
+    #[test]
+    fn test_extract_refs_multiple() {
+        let refs = extract_template_refs("{{a.stdout}} and {{b.stdout}}");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].0, "a");
+        assert_eq!(refs[1].0, "b");
+    }
+
+    #[test]
+    fn test_extract_refs_unclosed() {
+        let refs = extract_template_refs("{{foo.stdout");
+        assert!(refs.is_empty());
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Template validation tests
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_refs_valid() {
+        let tasks = vec![
+            TaskDef {
+                name: "analyze".into(),
+                prompt: "do analysis".into(),
+                cwd: None,
+                depends_on: vec![],
+                resume: None,
+                retries: None,
+            },
+            TaskDef {
+                name: "fix".into(),
+                prompt: "fix: {{analyze.stdout}}".into(),
+                cwd: None,
+                depends_on: vec!["analyze".into()],
+                resume: None,
+                retries: None,
+            },
+        ];
+        assert!(validate_template_references(&tasks).is_ok());
+    }
+
+    #[test]
+    fn test_validate_refs_missing_task() {
+        let tasks = vec![TaskDef {
+            name: "fix".into(),
+            prompt: "fix: {{ghost.stdout}}".into(),
+            cwd: None,
+            depends_on: vec![],
+            resume: None,
+            retries: None,
+        }];
+        let err = validate_template_references(&tasks).unwrap_err();
+        assert!(err.to_string().contains("doesn't exist"));
+    }
+
+    #[test]
+    fn test_validate_refs_not_in_depends_on() {
+        let tasks = vec![
+            TaskDef {
+                name: "analyze".into(),
+                prompt: "do analysis".into(),
+                cwd: None,
+                depends_on: vec![],
+                resume: None,
+                retries: None,
+            },
+            TaskDef {
+                name: "fix".into(),
+                prompt: "fix: {{analyze.stdout}}".into(),
+                cwd: None,
+                depends_on: vec![], // Missing dependency
+                resume: None,
+                retries: None,
+            },
+        ];
+        let err = validate_template_references(&tasks).unwrap_err();
+        assert!(err.to_string().contains("not in depends_on"));
+    }
+
+    #[test]
+    fn test_validate_refs_unsupported_field() {
+        let tasks = vec![
+            TaskDef {
+                name: "a".into(),
+                prompt: "x".into(),
+                cwd: None,
+                depends_on: vec![],
+                resume: None,
+                retries: None,
+            },
+            TaskDef {
+                name: "b".into(),
+                prompt: "{{a.stderr}}".into(),
+                cwd: None,
+                depends_on: vec!["a".into()],
+                resume: None,
+                retries: None,
+            },
+        ];
+        let err = validate_template_references(&tasks).unwrap_err();
+        assert!(err.to_string().contains("only 'stdout' is supported"));
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Template expansion tests
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_expand_no_templates() {
+        let outputs = HashMap::new();
+        let result = expand_prompt_templates("plain prompt", &outputs).unwrap();
+        assert_eq!(result, "plain prompt");
+    }
+
+    #[test]
+    fn test_expand_single_substitution() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("analyze.stdout.log");
+        fs::write(&log, "issue 1\nissue 2\n").unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("analyze".into(), log);
+
+        let result = expand_prompt_templates("Fix these:\n{{analyze.stdout}}", &outputs).unwrap();
+        assert_eq!(result, "Fix these:\nissue 1\nissue 2");
+    }
+
+    #[test]
+    fn test_expand_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("big.stdout.log");
+        let big = "x".repeat(MAX_CAPTURED_OUTPUT + 1000);
+        fs::write(&log, &big).unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("big".into(), log);
+
+        let result = expand_prompt_templates("{{big.stdout}}", &outputs).unwrap();
+        assert!(result.contains("truncated"));
+        assert!(result.len() < big.len());
+    }
+
+    #[test]
+    fn test_expand_missing_task() {
+        let outputs = HashMap::new();
+        let err = expand_prompt_templates("{{ghost.stdout}}", &outputs).unwrap_err();
+        assert!(err.to_string().contains("ghost"));
+    }
+
+    #[test]
+    fn test_expand_unsupported_field() {
+        let outputs = HashMap::new();
+        let err = expand_prompt_templates("{{a.stderr}}", &outputs).unwrap_err();
+        assert!(err.to_string().contains("unsupported"));
     }
 }

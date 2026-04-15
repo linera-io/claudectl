@@ -7,6 +7,10 @@ pub enum RuleAction {
     Deny,
     Send,
     Terminate,
+    /// Route summarized output from the current session to another session.
+    Route {
+        target_pid: u32,
+    },
 }
 
 impl RuleAction {
@@ -27,6 +31,7 @@ impl RuleAction {
             Self::Deny => "deny",
             Self::Send => "send",
             Self::Terminate => "terminate",
+            Self::Route { .. } => "route",
         }
     }
 }
@@ -202,7 +207,33 @@ pub fn execute(result: &RuleMatch, session: &ClaudeSession) -> Result<String, St
                 Err(format!("Rule '{}': kill {} failed", result.rule_name, pid))
             }
         }
+        RuleAction::Route { .. } => {
+            // Route execution happens in the brain engine (needs access to
+            // target session + LLM for summarization). This arm should not
+            // be reached via rules::execute() directly.
+            Ok(format!(
+                "Rule '{}': route queued for {}",
+                result.rule_name, name
+            ))
+        }
     }
+}
+
+/// Execute a Route action: summarize source output and send to target session.
+pub fn execute_route(
+    source: &ClaudeSession,
+    target: &ClaudeSession,
+    summary: &str,
+    rule_name: &str,
+) -> Result<String, String> {
+    let msg = format!("[From {}] {}", source.display_name(), summary);
+    terminals::send_input(target, &msg)?;
+    Ok(format!(
+        "Rule '{}': routed summary from {} → {}",
+        rule_name,
+        source.display_name(),
+        target.display_name(),
+    ))
 }
 
 #[cfg(test)]

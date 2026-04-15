@@ -51,6 +51,66 @@ pub fn infer(config: &BrainConfig, prompt: &str) -> Result<BrainSuggestion, Stri
     parse_ollama_response(&stdout)
 }
 
+/// Summarize source session output for routing to a target session.
+/// Returns a compact summary that won't bloat the target's context.
+pub fn summarize_for_routing(
+    config: &BrainConfig,
+    source_output: &str,
+    source_project: &str,
+    target_task: &str,
+) -> Result<String, String> {
+    let prompt = format!(
+        "Summarize this output from session '{source_project}' for another Claude Code session \
+         working on: {target_task}\n\n\
+         Keep ONLY what's relevant to the target task. Be concise — this will be injected into \
+         another session's context. Max 500 words.\n\n\
+         Output to summarize:\n{source_output}"
+    );
+
+    let payload = serde_json::json!({
+        "model": config.model,
+        "prompt": prompt,
+        "stream": false,
+    });
+
+    let body = serde_json::to_string(&payload).map_err(|e| format!("json error: {e}"))?;
+    let timeout_secs = (config.timeout_ms / 1000).max(1);
+
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            &body,
+            "--max-time",
+            &timeout_secs.to_string(),
+            &config.endpoint,
+        ])
+        .output()
+        .map_err(|e| format!("curl failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "curl error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|e| format!("invalid response: {e}"))?;
+
+    let text = json
+        .get("response")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&stdout);
+
+    Ok(text.trim().to_string())
+}
+
 /// Parse the ollama `/api/generate` response format.
 fn parse_ollama_response(response: &str) -> Result<BrainSuggestion, String> {
     let json: serde_json::Value =
@@ -77,8 +137,15 @@ pub fn parse_suggestion_json(text: &str) -> Result<BrainSuggestion, String> {
         .and_then(|v| v.as_str())
         .ok_or("missing 'action' field")?;
 
-    let action =
-        RuleAction::parse(action_str).ok_or_else(|| format!("unknown action '{action_str}'"))?;
+    let action = if action_str == "route" {
+        let target_pid = json
+            .get("target_pid")
+            .and_then(|v| v.as_u64())
+            .ok_or("route action requires 'target_pid' field")? as u32;
+        RuleAction::Route { target_pid }
+    } else {
+        RuleAction::parse(action_str).ok_or_else(|| format!("unknown action '{action_str}'"))?
+    };
 
     let message = json
         .get("message")

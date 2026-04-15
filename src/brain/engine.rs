@@ -87,10 +87,30 @@ impl BrainEngine {
                     if self.config.auto_mode {
                         // Auto mode: execute immediately
                         if let Some(session) = session {
-                            let rule_match = suggestion_to_rule_match(&suggestion);
-                            match rules::execute(&rule_match, session) {
-                                Ok(msg) => actions.push((result.pid, msg)),
-                                Err(e) => actions.push((result.pid, format!("Brain error: {e}"))),
+                            // Route action needs special handling (summarize + send to target)
+                            if let RuleAction::Route { target_pid } = &suggestion.action {
+                                let target = sessions.iter().find(|s| s.pid == *target_pid);
+                                if let Some(target) = target {
+                                    match self.execute_route(session, target) {
+                                        Ok(msg) => actions.push((result.pid, msg)),
+                                        Err(e) => {
+                                            actions.push((result.pid, format!("Route error: {e}")))
+                                        }
+                                    }
+                                } else {
+                                    actions.push((
+                                        result.pid,
+                                        format!("Route error: target PID {} not found", target_pid),
+                                    ));
+                                }
+                            } else {
+                                let rule_match = suggestion_to_rule_match(&suggestion);
+                                match rules::execute(&rule_match, session) {
+                                    Ok(msg) => actions.push((result.pid, msg)),
+                                    Err(e) => {
+                                        actions.push((result.pid, format!("Brain error: {e}")))
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -164,6 +184,30 @@ impl BrainEngine {
             let suggestion = super::client::infer(&config, &prompt);
             let _ = tx.send(BrainResult { pid, suggestion });
         });
+    }
+
+    /// Execute a route: read source's recent transcript, summarize via LLM, send to target.
+    fn execute_route(
+        &self,
+        source: &ClaudeSession,
+        target: &ClaudeSession,
+    ) -> Result<String, String> {
+        // Build source context to get recent transcript
+        let source_ctx = context::build_context(
+            source,
+            std::slice::from_ref(source),
+            self.config.max_context_tokens,
+        );
+
+        // Summarize for target's task
+        let summary = super::client::summarize_for_routing(
+            &self.config,
+            &source_ctx.recent_transcript,
+            source.display_name(),
+            target.display_name(),
+        )?;
+
+        rules::execute_route(source, target, &summary, "brain")
     }
 
     /// Accept a pending brain suggestion (user pressed 'b').

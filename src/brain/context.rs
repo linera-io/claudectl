@@ -85,8 +85,10 @@ fn format_decision_prompt(session: &ClaudeSession) -> String {
             format!(
                 "The session is waiting for approval of a '{}' tool call. \
                  Should this be approved, denied, or should a message be sent instead? \
-                 Respond with JSON: {{\"action\": \"approve\"|\"deny\"|\"send\"|\"terminate\", \
-                 \"message\": \"...\", \"reasoning\": \"...\", \"confidence\": 0.0-1.0}}",
+                 Respond with JSON: {{\"action\": \"approve\"|\"deny\"|\"send\"|\"terminate\"|\"route\", \
+                 \"message\": \"...\", \"reasoning\": \"...\", \"confidence\": 0.0-1.0, \
+                 \"target_pid\": <pid if action is route>}}. \
+                 Use 'route' to send summarized output from this session to another session.",
                 tool
             )
         }

@@ -210,7 +210,8 @@ impl BrainEngine {
         });
     }
 
-    /// Execute a route: read source's recent transcript, summarize via LLM, send to target.
+    /// Execute a route: read source's recent transcript, summarize via LLM,
+    /// and either send directly (if target is waiting) or queue in mailbox.
     fn execute_route(
         &self,
         source: &ClaudeSession,
@@ -231,7 +232,18 @@ impl BrainEngine {
             target.display_name(),
         )?;
 
-        rules::execute_route(source, target, &summary, "brain")
+        // If target is waiting for input, deliver directly; otherwise queue in mailbox
+        if target.status == SessionStatus::WaitingInput {
+            rules::execute_route(source, target, &summary, "brain")
+        } else {
+            super::mailbox::enqueue(source.pid, source.display_name(), target.pid, &summary);
+            Ok(format!(
+                "Brain: queued message from {} → {} (mailbox, target is {})",
+                source.display_name(),
+                target.display_name(),
+                target.status,
+            ))
+        }
     }
 
     /// Accept a pending brain suggestion (user pressed 'b').

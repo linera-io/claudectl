@@ -1074,6 +1074,13 @@ impl App {
             }
 
             engine.cleanup(&self.sessions);
+
+            // Deliver pending mailbox messages to sessions waiting for input
+            let deliveries = crate::brain::mailbox::deliver_pending(&self.sessions);
+            for (_pid, msg) in deliveries {
+                crate::logger::log("MAILBOX", &msg);
+                self.status_msg = msg;
+            }
         }
     }
 

@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn parse_ollama_wrapped_response() {
-        let ollama_response = r#"{"model":"gemma3","response":"{\"action\":\"approve\",\"reasoning\":\"safe\",\"confidence\":0.9}","done":true}"#;
+        let ollama_response = r#"{"model":"gemma4","response":"{\"action\":\"approve\",\"reasoning\":\"safe\",\"confidence\":0.9}","done":true}"#;
         let s = parse_ollama_response(ollama_response).unwrap();
         assert_eq!(s.action, RuleAction::Approve);
     }

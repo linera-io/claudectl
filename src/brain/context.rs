@@ -16,6 +16,8 @@ pub struct BrainContext {
     pub recent_transcript: String,
     /// The decision prompt asking the LLM what to do.
     pub decision_prompt: String,
+    /// Few-shot examples from past decisions (empty if no history).
+    pub few_shot_examples: String,
 }
 
 /// Build a compact context for the brain from a session's state and JSONL transcript.
@@ -28,6 +30,7 @@ pub fn build_context(session: &ClaudeSession, max_tokens: u32) -> BrainContext {
         session_summary,
         recent_transcript,
         decision_prompt,
+        few_shot_examples: String::new(), // Set by engine after retrieval
     }
 }
 
@@ -253,13 +256,22 @@ fn format_entry_compact(entry: &TranscriptEntry) -> String {
 
 /// Format the full brain prompt by combining summary, transcript, and decision prompt.
 pub fn format_brain_prompt(ctx: &BrainContext) -> String {
+    let few_shot = if ctx.few_shot_examples.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n## Past Decisions (learn from these)\n{}",
+            ctx.few_shot_examples
+        )
+    };
+
     format!(
         "You are a session supervisor for Claude Code. Analyze the session state and recent \
          conversation to decide what action to take.\n\n\
          ## Session State\n{}\n\n\
-         ## Recent Conversation\n{}\n\n\
+         ## Recent Conversation\n{}{}\n\n\
          ## Decision\n{}",
-        ctx.session_summary, ctx.recent_transcript, ctx.decision_prompt
+        ctx.session_summary, ctx.recent_transcript, few_shot, ctx.decision_prompt
     )
 }
 
@@ -363,6 +375,7 @@ mod tests {
             session_summary: "summary".into(),
             recent_transcript: "transcript".into(),
             decision_prompt: "decide".into(),
+            few_shot_examples: String::new(),
         };
         let prompt = format_brain_prompt(&ctx);
         assert!(prompt.contains("summary"));

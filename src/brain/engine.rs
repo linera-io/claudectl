@@ -143,7 +143,18 @@ impl BrainEngine {
         let tx = self.tx.clone();
 
         // Build context on the main thread (reads JSONL files)
-        let brain_ctx = context::build_context(session, config.max_context_tokens);
+        let mut brain_ctx = context::build_context(session, config.max_context_tokens);
+
+        // Inject few-shot examples from past decisions
+        if config.few_shot_count > 0 {
+            let similar = super::decisions::retrieve_similar(
+                session.pending_tool_name.as_deref(),
+                session.display_name(),
+                config.few_shot_count,
+            );
+            brain_ctx.few_shot_examples = super::decisions::format_few_shot_examples(&similar);
+        }
+
         let prompt = context::format_brain_prompt(&brain_ctx);
 
         self.inflight.insert(pid);
@@ -210,6 +221,7 @@ mod tests {
             auto_mode: false,
             timeout_ms: 1000,
             max_context_tokens: 1000,
+            few_shot_count: 5,
         }
     }
 

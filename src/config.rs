@@ -35,6 +35,7 @@ pub struct BrainConfig {
     pub auto_mode: bool,
     pub timeout_ms: u64,
     pub max_context_tokens: u32,
+    pub few_shot_count: usize,
 }
 
 impl Default for BrainConfig {
@@ -46,6 +47,7 @@ impl Default for BrainConfig {
             auto_mode: false,
             timeout_ms: 5000,
             max_context_tokens: 4000,
+            few_shot_count: 5,
         }
     }
 }
@@ -390,6 +392,11 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     "max_context_tokens" => {
                         if let Ok(v) = value.parse() {
                             brain.max_context_tokens = v;
+                        }
+                    }
+                    "few_shot_count" => {
+                        if let Ok(v) = value.parse() {
+                            brain.few_shot_count = v;
                         }
                     }
                     _ => {}

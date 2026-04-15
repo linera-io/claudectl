@@ -3,7 +3,9 @@ Cargo.lock
 *.swp
 *.swo
 .DS_Store
-
+*.cast
+*.gif
+GROWTH.md
 
 # Added by cargo
 #

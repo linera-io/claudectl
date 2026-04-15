@@ -6,6 +6,7 @@ Cargo.lock
 *.cast
 *.gif
 GROWTH.md
+.claudectl-runs/
 
 # Added by cargo
 #

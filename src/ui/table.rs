@@ -485,10 +485,20 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
         (false, true) => "REC ",
         (false, false) => "",
     };
-    let project_text = if s.subagent_count > 0 {
-        format!("{prefix}{} +{}", s.display_name(), s.subagent_count)
+    let health_icon = crate::health::status_icon(s);
+    let health_suffix = if health_icon.is_empty() {
+        String::new()
     } else {
-        format!("{prefix}{}", s.display_name())
+        format!(" {health_icon}")
+    };
+    let project_text = if s.subagent_count > 0 {
+        format!(
+            "{prefix}{} +{}{health_suffix}",
+            s.display_name(),
+            s.subagent_count
+        )
+    } else {
+        format!("{prefix}{}{health_suffix}", s.display_name())
     };
 
     let ctx_pct = s.context_percent();

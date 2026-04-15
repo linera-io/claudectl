@@ -141,6 +141,20 @@ impl BrainEngine {
                                         }
                                     }
                                 }
+                                RuleAction::Delegate { agent, prompt } => {
+                                    actions.push((
+                                        result.pid,
+                                        format!(
+                                            "Brain: delegated to agent '{}' — {}",
+                                            agent,
+                                            if prompt.is_empty() {
+                                                &suggestion.reasoning
+                                            } else {
+                                                prompt
+                                            }
+                                        ),
+                                    ));
+                                }
                                 _ => {
                                     let rule_match = suggestion_to_rule_match(&suggestion);
                                     match rules::execute(&rule_match, session) {

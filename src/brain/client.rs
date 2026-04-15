@@ -157,6 +157,18 @@ pub fn parse_suggestion_json(text: &str) -> Result<BrainSuggestion, String> {
             .unwrap_or(".")
             .to_string();
         RuleAction::Spawn { prompt, cwd }
+    } else if action_str == "delegate" {
+        let agent = json
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .ok_or("delegate action requires 'agent' field")?
+            .to_string();
+        let prompt = json
+            .get("delegate_prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        RuleAction::Delegate { agent, prompt }
     } else {
         RuleAction::parse(action_str).ok_or_else(|| format!("unknown action '{action_str}'"))?
     };

@@ -143,6 +143,18 @@ pub fn parse_suggestion_json(text: &str) -> Result<BrainSuggestion, String> {
             .and_then(|v| v.as_u64())
             .ok_or("route action requires 'target_pid' field")? as u32;
         RuleAction::Route { target_pid }
+    } else if action_str == "spawn" {
+        let prompt = json
+            .get("spawn_prompt")
+            .and_then(|v| v.as_str())
+            .ok_or("spawn action requires 'spawn_prompt' field")?
+            .to_string();
+        let cwd = json
+            .get("spawn_cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".")
+            .to_string();
+        RuleAction::Spawn { prompt, cwd }
     } else {
         RuleAction::parse(action_str).ok_or_else(|| format!("unknown action '{action_str}'"))?
     };

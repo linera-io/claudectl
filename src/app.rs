@@ -1301,6 +1301,16 @@ impl App {
                 self.cancel_pending_auto_approve();
                 self.handle_approve();
             }
+            (KeyCode::Char('b'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.handle_brain_accept();
+            }
+            (KeyCode::Char('B'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.handle_brain_reject();
+            }
             (KeyCode::Char('i'), _) => {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
@@ -1590,6 +1600,48 @@ impl App {
             } else {
                 self.status_msg = "Session is not waiting for input".into();
             }
+        }
+    }
+
+    fn handle_brain_accept(&mut self) {
+        // Clone session data first to avoid borrow conflict with brain_engine
+        let Some(session) = self.selected_session().cloned() else {
+            return;
+        };
+        let pid = session.pid;
+        let Some(ref mut engine) = self.brain_engine else {
+            self.status_msg = "Brain is not enabled".into();
+            return;
+        };
+        if !engine.pending.contains_key(&pid) {
+            self.status_msg = "No brain suggestion pending for this session".into();
+            return;
+        }
+        if let Some(msg) = engine.accept(pid, &session) {
+            crate::logger::log("BRAIN", &format!("Accepted: {msg}"));
+            self.status_msg = msg;
+        }
+    }
+
+    fn handle_brain_reject(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+        let pid = session.pid;
+        let Some(ref mut engine) = self.brain_engine else {
+            self.status_msg = "Brain is not enabled".into();
+            return;
+        };
+        if let Some(suggestion) = engine.reject(pid) {
+            let msg = format!(
+                "Rejected brain suggestion: {} ({})",
+                suggestion.action.label(),
+                suggestion.reasoning,
+            );
+            crate::logger::log("BRAIN", &msg);
+            self.status_msg = msg;
+        } else {
+            self.status_msg = "No brain suggestion pending for this session".into();
         }
     }
 

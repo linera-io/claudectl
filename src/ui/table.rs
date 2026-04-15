@@ -451,8 +451,21 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
         Style::default().fg(t.status_color(&s.status))
     };
 
+    let has_brain_suggestion = app
+        .brain_engine
+        .as_ref()
+        .is_some_and(|e| e.pending.contains_key(&s.pid));
+
     let status_text = if app.auto_approve.contains(&s.pid) {
         format!("{}*", s.status)
+    } else if has_brain_suggestion {
+        let action = app
+            .brain_engine
+            .as_ref()
+            .and_then(|e| e.pending.get(&s.pid))
+            .map(|sg| sg.action.label())
+            .unwrap_or("?");
+        format!("{} [b:{}]", s.status, action)
     } else if s.status == SessionStatus::Unknown {
         s.telemetry_status.short_label().to_string()
     } else if s.status == SessionStatus::NeedsInput {

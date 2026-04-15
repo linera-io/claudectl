@@ -95,5 +95,20 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(t.error).add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(msg, area);
+    } else if let Some(ref engine) = app.brain_engine {
+        if !engine.pending.is_empty() {
+            let count = engine.pending.len();
+            let label = if count == 1 {
+                "1 suggestion".into()
+            } else {
+                format!("{count} suggestions")
+            };
+            let text = format!(" Brain: {label} pending  (b accept / B reject)");
+            let msg = Paragraph::new(Span::styled(
+                text,
+                Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+            ));
+            frame.render_widget(msg, area);
+        }
     }
 }

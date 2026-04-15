@@ -203,7 +203,7 @@ struct Cli {
 
     /// Auto-execute brain suggestions without confirmation (requires --brain)
     #[arg(long)]
-    brain_auto: bool,
+    auto_run: bool,
 
     /// Override brain LLM endpoint URL (requires --brain)
     #[arg(long)]
@@ -258,7 +258,7 @@ fn main() -> io::Result<()> {
     if cli.brain {
         let brain = cfg.brain.get_or_insert_with(config::BrainConfig::default);
         brain.enabled = true;
-        if cli.brain_auto {
+        if cli.auto_run {
             brain.auto_mode = true;
         }
         if let Some(ref endpoint) = cli.brain_endpoint {

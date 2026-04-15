@@ -86,7 +86,7 @@ claudectl --brain --brain-endpoint http://localhost:8000/v1/chat/completions --b
 claudectl --brain
 
 # Auto mode: brain executes without asking
-claudectl --brain --brain-auto
+claudectl --brain --auto-run
 ```
 
 Every decision is logged locally. Past decisions are retrieved as few-shot examples so the brain adapts to your preferences over time. Deny rules always override brain suggestions. All data stays on your machine.

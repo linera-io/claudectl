@@ -347,18 +347,29 @@ pub fn infer_status(
     }
 
     if last_msg_type == "assistant" && last_stop_reason == "tool_use" {
-        // Claude called a tool. If CPU is low and some time has passed,
-        // it's likely waiting for user to approve/deny the tool (permission prompt).
-        // The permission prompt doesn't emit waiting_for_task — detect via CPU + age.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let age_secs = (now_ms.saturating_sub(session.last_message_ts)) / 1000;
+        // Claude called a tool. If CPU is low, it's likely waiting for user to
+        // approve/deny the tool (permission prompt). The permission prompt doesn't
+        // emit waiting_for_task — detect via CPU + pending tool state or age.
+        //
+        // Primary signal: if pending_tool_name is set (ToolUse parsed but no ToolResult
+        // yet), the session is blocked on a permission prompt regardless of timing.
+        // Fallback: low CPU + age > 5s for cases where the tool was auto-approved
+        // but JSONL hasn't caught up yet.
+        let has_pending_tool = session.pending_tool_name.is_some();
 
-        if session.cpu_percent < 2.0 && age_secs > 5 {
-            // Low CPU + tool_use was >5s ago = stuck on permission prompt
+        if session.cpu_percent < 2.0 && has_pending_tool {
             session.status = SessionStatus::NeedsInput;
+        } else if session.cpu_percent < 2.0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let age_secs = (now_ms.saturating_sub(session.last_message_ts)) / 1000;
+            if age_secs > 5 {
+                session.status = SessionStatus::NeedsInput;
+            } else {
+                session.status = SessionStatus::Processing;
+            }
         } else {
             session.status = SessionStatus::Processing;
         }

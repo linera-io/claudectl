@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.25.2] - 2026-04-15
+
+### Fixed
+- Permission prompt detection: sessions waiting for tool approval (e.g., Web Search "Do you want to proceed?") now immediately show "Needs Input" instead of incorrectly showing "Processing" — uses pending_tool_name as primary signal instead of relying on 5-second age threshold
+
 ## [0.25.1] - 2026-04-15
 
 ### Fixed

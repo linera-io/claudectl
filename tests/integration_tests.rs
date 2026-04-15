@@ -202,20 +202,9 @@ fn status_null_stop_reason_with_tool_use_infers_needs_input() {
 
     // stop_reason was null in JSONL but must be inferred from tool_use content
     assert_eq!(s.last_stop_reason, "tool_use");
-    // File was just created (age < 5s) → Processing. Once file ages past 5s
-    // with low CPU, infer_status will flip to NeedsInput.
-    assert_eq!(s.status, SessionStatus::Processing);
-
-    // Simulate the passage of time (>5s) by backdating last_message_ts
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    s.last_message_ts = now_ms.saturating_sub(30_000); // 30s ago
-    let msg_type = s.last_msg_type.clone();
-    let stop_reason = s.last_stop_reason.clone();
-    let waiting = s.is_waiting_for_task;
-    monitor::infer_status(&mut s, &msg_type, &stop_reason, waiting);
+    // pending_tool_name is set (ToolUse parsed, no ToolResult yet) so low CPU
+    // immediately infers NeedsInput — no need to wait for the 5s age threshold.
+    assert_eq!(s.pending_tool_name, Some("Bash".into()));
     assert_eq!(s.status, SessionStatus::NeedsInput);
 }
 

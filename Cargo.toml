@@ -1,6 +1,6 @@
 [package]
 name = "claudectl"
-version = "0.25.1"
+version = "0.25.2"
 edition = "2024"
 description = "Mission control for Claude Code — supervise, budget, orchestrate, and auto-pilot sessions with a local LLM brain"
 license = "MIT"

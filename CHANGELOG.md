@@ -2,6 +2,14 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.21.0] - 2026-04-15
+
+### Added
+- Dynamic auto-orchestration: the brain periodically evaluates all sessions and decides cross-session actions (spawn, route, terminate) without a pre-written tasks.json
+- Configurable orchestration interval (default 30s) and max_sessions limit
+- `--auto-run` flag (renamed from `--brain-auto`) for cleaner CLI
+- Documentation for all supported LLM backends (ollama, llama.cpp, vLLM, LM Studio)
+
 ## [0.20.0] - 2026-04-15
 
 ### Added

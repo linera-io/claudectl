@@ -40,6 +40,7 @@ git clone https://github.com/mercurialsolo/claudectl.git && cd claudectl && carg
 claudectl --demo                          # Fake sessions, no Claude needed
 claudectl                                 # Live dashboard
 claudectl --brain                         # Local LLM auto-pilot
+claudectl --new --cwd ./myproject         # Launch a new session
 claudectl --run tasks.json --parallel     # Orchestrate multiple sessions
 ```
 
@@ -48,12 +49,15 @@ claudectl --run tasks.json --parallel     # Orchestrate multiple sessions
 | Capability | Claude Code alone | With claudectl |
 |-----------|:-:|:-:|
 | Local LLM auto-approve/deny | No | **Brain with ollama** |
+| Session health monitoring | No | **Cache, cost spikes, loops, stalls, context** |
 | Record session highlight reels | No | **Press `R`** |
 | Orchestrate multi-session workflows | No | **Dependency-ordered tasks** |
+| Launch/resume sessions | Separate terminal | **Press `n` or `--new`** |
 | See status of all sessions at once | No | **Yes** |
 | Know which session is blocked | Tab-hunt | **At a glance** |
 | Track cost per session | Manually | **Live $/hr burn rate** |
 | Enforce spend budgets | No | **Auto-kill at limit** |
+| Auto-rule engine | No | **Match by tool/command/project/cost** |
 | Approve prompts without switching | No | **Press `y`** |
 | Get notified on stalls/blocks | No | **Desktop + webhook** |
 
@@ -91,7 +95,7 @@ claudectl --brain --auto-run
 
 Every decision is logged locally. Past decisions are retrieved as few-shot examples so the brain adapts to your preferences over time. Deny rules always override brain suggestions. All data stays on your machine.
 
-Run `claudectl --doctor` to check if your backend is reachable.
+Run `claudectl --doctor` to check if your backend is reachable. Run `claudectl --brain-eval` to test decision quality against built-in scenarios. Run `claudectl --brain-prompts` to see which prompt templates are active and whether they're built-in or user overrides.
 
 ```toml
 # .claudectl.toml
@@ -102,6 +106,8 @@ model = "gemma4:e4b"
 auto = false
 few_shot_count = 5
 ```
+
+Override prompt templates by placing files in `~/.claudectl/brain/prompts/`.
 
 ## Record and Share
 
@@ -132,6 +138,54 @@ Run coordinated tasks with dependency ordering, retries, cross-session data rout
 claudectl --run tasks.json --parallel
 ```
 
+## Session Health Monitoring
+
+claudectl continuously checks each session for problems and surfaces them with severity-ranked icons in the dashboard:
+
+- **Cache health** — detects low cache hit ratios that can silently multiply costs
+- **Cost spikes** — flags when burn rate exceeds the session average
+- **Loop detection** — catches tools failing repeatedly in retry loops
+- **Stall detection** — sessions spending money but producing no file edits
+- **Context saturation** — warns when a session approaches its context window limit
+
+Health issues appear as icons in the session table and as a summary in the status bar. No configuration needed.
+
+## Launch and Resume Sessions
+
+Start new Claude Code sessions without leaving the dashboard:
+
+```bash
+claudectl --new --cwd ./backend                       # Launch in a directory
+claudectl --new --cwd ./api --prompt "Add rate limiting"  # Launch with a prompt
+claudectl --new --resume abc123                       # Resume a previous session
+```
+
+From the dashboard, press `n` to open the launch wizard (directory, prompt, resume fields).
+
+## Auto-Rules
+
+Define rules in `.claudectl.toml` to automatically approve, deny, terminate, or route sessions based on conditions:
+
+```toml
+[[rules]]
+name = "approve-cargo"
+match_tool = ["Bash"]
+match_command = ["cargo"]
+action = "approve"
+
+[[rules]]
+name = "deny-rm-rf"
+match_command = ["rm -rf"]
+action = "deny"
+
+[[rules]]
+name = "kill-runaway"
+match_cost_above = 20.0
+action = "terminate"
+```
+
+Rules support matching by status, tool name, command substring, project name, cost threshold, and error state. Deny rules always take precedence. Rules can also route output between sessions, spawn new sessions, or delegate to agents.
+
 ## Supervise and Control Spend
 
 ```bash
@@ -139,9 +193,32 @@ claudectl --budget 5 --kill-on-budget      # Auto-kill at $5
 claudectl --notify                         # Desktop notifications on blocks/stalls
 claudectl --webhook https://hooks.slack.com/... --webhook-on NeedsInput,Finished
 claudectl --history --since 24h            # Review past session costs
+claudectl --stats --since 24h             # Aggregated session statistics
+claudectl --summary --since 8h            # Activity summary
 ```
 
-From the dashboard: `y` approve, `i` input, `Tab` switch terminal, `d` kill, `?` all keys.
+From the dashboard: `y` approve, `i` input, `Tab` switch terminal, `d` kill, `n` new session, `R` record, `?` all keys.
+
+## Filter and Search
+
+```bash
+claudectl --filter-status NeedsInput       # Only show sessions needing input
+claudectl --focus attention                # High-signal triage view
+claudectl --focus over-budget              # Sessions exceeding budget
+claudectl --search "my-project"            # Filter by project name
+claudectl --watch                          # Stream status changes (no TUI)
+claudectl --watch --json                   # Stream as JSON
+```
+
+In the dashboard: `f` cycle status filters, `v` cycle focus filters, `/` search, `z` clear all filters, `g` group by project, `s` cycle sort order.
+
+## Clean Up
+
+```bash
+claudectl --clean                          # Remove old session data
+claudectl --clean --older-than 7d          # Only sessions older than 7 days
+claudectl --clean --finished --dry-run     # Preview what would be removed
+```
 
 ## Docs
 

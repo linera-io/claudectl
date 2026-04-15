@@ -105,6 +105,11 @@ fn format_decision_prompt(session: &ClaudeSession) -> String {
     }
 }
 
+/// Format a compact map of all sessions (public, for orchestration prompts).
+pub fn format_global_session_map_public(sessions: &[ClaudeSession]) -> String {
+    format_global_session_map(0, sessions)
+}
+
 /// Format a compact map of all active sessions for cross-session awareness.
 fn format_global_session_map(current_pid: u32, sessions: &[ClaudeSession]) -> String {
     if sessions.len() <= 1 {

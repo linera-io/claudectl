@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::brain::agents::AgentConfig;
 use crate::models::{ModelOverride, ModelProfile};
 use crate::rules::{AutoRule, RuleAction};
 
@@ -23,6 +24,7 @@ pub struct Config {
     pub model_overrides: Vec<ModelOverride>,
     pub rules: Vec<AutoRule>,
     pub brain: Option<BrainConfig>,
+    pub agents: Vec<AgentConfig>,
 }
 
 /// Configuration for the optional local LLM brain.
@@ -76,6 +78,7 @@ impl Default for Config {
             model_overrides: Vec::new(),
             rules: Vec::new(),
             brain: None,
+            agents: Vec::new(),
         }
     }
 }
@@ -98,6 +101,7 @@ struct RawConfig {
     model_overrides: Vec<ModelOverride>,
     rules: Vec<AutoRule>,
     brain: Option<BrainConfig>,
+    agents: Vec<AgentConfig>,
 }
 
 impl Config {
@@ -171,6 +175,13 @@ impl Config {
         }
         if let Some(brain) = raw.brain {
             self.brain = Some(brain);
+        }
+        for agent in raw.agents {
+            if let Some(pos) = self.agents.iter().position(|a| a.name == agent.name) {
+                self.agents[pos] = agent;
+            } else {
+                self.agents.push(agent);
+            }
         }
     }
 
@@ -423,6 +434,19 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     _ => {}
                 }
             }
+            _ if parse_agent_section(&section).is_some() => {
+                let Some(agent_name) = parse_agent_section(&section) else {
+                    continue;
+                };
+                let agent = ensure_agent(&mut raw.agents, &agent_name);
+                match key {
+                    "type" => agent.agent_type = unquote(value),
+                    "command" => agent.command = unquote(value),
+                    "capabilities" => agent.capabilities = parse_string_array(value),
+                    "cwd" => agent.cwd = unquote(value),
+                    _ => {}
+                }
+            }
             _ => {} // Ignore unknown keys
         }
     }
@@ -548,6 +572,18 @@ fn ensure_rule<'a>(rules: &'a mut Vec<AutoRule>, name: &str) -> &'a mut AutoRule
     }
     rules.push(AutoRule::new(name.to_string(), RuleAction::Approve));
     rules.last_mut().expect("rule was just pushed")
+}
+
+fn parse_agent_section(section: &str) -> Option<String> {
+    section.strip_prefix("agents.").map(unquote)
+}
+
+fn ensure_agent<'a>(agents: &'a mut Vec<AgentConfig>, name: &str) -> &'a mut AgentConfig {
+    if let Some(index) = agents.iter().position(|a| a.name == name) {
+        return &mut agents[index];
+    }
+    agents.push(AgentConfig::new(name.to_string()));
+    agents.last_mut().expect("agent was just pushed")
 }
 
 #[cfg(test)]
@@ -744,5 +780,42 @@ max_context_tokens = 8000
 
         let raw = parse_config_file(&file.path().to_path_buf()).unwrap();
         assert!(raw.brain.is_none());
+    }
+
+    #[test]
+    fn test_parse_agents_from_config() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[agents.codex]
+type = "codex"
+command = "codex --quiet"
+capabilities = ["code-review", "refactoring"]
+cwd = "/tmp/project"
+
+[agents.aider]
+type = "aider"
+command = "aider --yes"
+capabilities = ["implementation", "debugging"]
+"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let raw = parse_config_file(&file.path().to_path_buf()).unwrap();
+        assert_eq!(raw.agents.len(), 2);
+
+        let codex = &raw.agents[0];
+        assert_eq!(codex.name, "codex");
+        assert_eq!(codex.agent_type, "codex");
+        assert_eq!(codex.command, "codex --quiet");
+        assert_eq!(codex.capabilities, vec!["code-review", "refactoring"]);
+        assert_eq!(codex.cwd, "/tmp/project");
+
+        let aider = &raw.agents[1];
+        assert_eq!(aider.name, "aider");
+        assert_eq!(aider.command, "aider --yes");
     }
 }

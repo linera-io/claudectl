@@ -73,7 +73,7 @@ The brain is claudectl's core intelligence layer. A local LLM continuously obser
 - **Spawn** new sessions when the brain detects parallelizable work
 - **Delegate** tasks to external agents (Codex, Aider, custom tools)
 
-The brain **continuously learns** from your corrections. Every accept/reject is logged, distilled into compact preference patterns, and used to adapt future decisions. Accuracy is tracked per tool — if the brain keeps getting Bash wrong, it raises the confidence bar before auto-executing. All data stays on your machine — no cloud API, no telemetry.
+The brain **continuously learns** from everything you do — not just brain-involved decisions, but every manual approve, reject, input, rule execution, and conflict resolution. These signals are distilled into compact conditional preferences and injected into the LLM prompt, so the brain's judgment compounds over time. All data stays on your machine — no cloud API, no telemetry.
 
 ```bash
 # Start with one command (requires ollama)
@@ -98,14 +98,46 @@ claudectl --brain --auto-run
 
 Any endpoint that accepts a JSON POST and returns generated text will work.
 
+**How the brain learns:**
+
+The brain captures rich context at every decision point and distills it into compact rules that fit Gemma4's context window (~250 tokens). Four levels of learning work together:
+
+| Level | What it does | Example |
+|-------|-------------|---------|
+| **Context capture** | Records 13 session state fields (cost, context%, errors, burn rate, files, conflicts) with every decision | `cost_usd: 14.50, context_pct: 82, recent_error_count: 3` |
+| **Conditional preferences** | Learns context-dependent rules via decision tree splits | `approve [Bash] "git push" when cost<$5 (n=8)` |
+| **Outcome tracking** | Correlates consecutive decisions to detect "approved but broke" | Downweights false-positive approvals, reinforces correct rejections |
+| **Temporal patterns** | Detects behavioral sequences across decisions | `After 3+ errors: user usually denies (n=12)` |
+
+The brain learns passively from all user actions, not just brain-involved decisions:
+
+| Your action | What the brain learns |
+|---|---|
+| Press `y` (approve) | "This tool+command at this cost/context level is safe" |
+| Press `B` (reject brain) | "Brain was wrong here — correction signal" (weighted 8x) |
+| Press `i` (send input) | "Session needed human guidance at this point" |
+| Static rule fires | "This pattern should be internalized" |
+| File conflict deny | "Concurrent edits to this file = deny" |
+
+Adaptive confidence thresholds track accuracy per tool — if the brain is 90%+ accurate on Read, it auto-executes with low confidence (0.5). If it's <50% accurate on Bash, it requires 0.95 confidence or defers to you.
+
 **What the brain sees per session:**
 - Project name, status, model, pending tool call + command
 - Cost, burn rate, context window utilization
 - Recent transcript (last 8 messages, earlier ones compacted)
 - All other active sessions (for cross-session reasoning)
-- Distilled preference patterns (compact rules learned from your history)
+- Distilled conditional preferences (compact rules with context conditions)
+- Situational rules (error streaks, cost pressure, context pressure)
 - Outcome-weighted few-shot examples (corrections weighted highest)
-- Per-tool adaptive confidence thresholds
+
+**Measure brain effectiveness:**
+
+```bash
+claudectl --brain-stats learning-curve   # Is correction rate declining? (= learning)
+claudectl --brain-stats accuracy         # Per-tool, per-risk, per-project breakdown
+claudectl --brain-stats baseline         # Brain vs. dumb rules classifier
+claudectl --brain-stats false-approve    # Safety: how often does brain approve risky actions?
+```
 
 **Diagnostics and customization:**
 

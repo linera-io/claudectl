@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::decisions::{DecisionRecord, read_all_decisions};
+use super::decisions::{DecisionRecord, DecisionType, read_all_decisions};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Risk tier classification
@@ -1122,6 +1122,7 @@ mod tests {
             user_action: user_action.into(),
             context: None,
             outcome: None,
+            decision_type: DecisionType::Session,
         }
     }
 

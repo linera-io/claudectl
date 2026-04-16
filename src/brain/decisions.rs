@@ -13,6 +13,31 @@ static DECISION_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Guard to prevent concurrent distillation threads.
 static DISTILLING: AtomicBool = AtomicBool::new(false);
 
+/// Whether a decision was made for a single session or for orchestration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionType {
+    /// Normal per-session decision (approve, deny, send).
+    Session,
+    /// Cross-session orchestration decision (spawn, route, terminate).
+    Orchestration,
+}
+
+impl DecisionType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            DecisionType::Session => "session",
+            DecisionType::Orchestration => "orchestration",
+        }
+    }
+
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "orchestration" => DecisionType::Orchestration,
+            _ => DecisionType::Session,
+        }
+    }
+}
+
 /// A single decision record: what the brain suggested and what the user did.
 #[derive(Debug, Clone)]
 pub struct DecisionRecord {
@@ -27,6 +52,9 @@ pub struct DecisionRecord {
     pub user_action: String, // "accept", "reject", "auto", "deny_rule_override"
     pub context: Option<DecisionContext>,
     pub outcome: Option<DecisionOutcome>,
+    /// Whether this was a session or orchestration decision.
+    /// Defaults to Session for backwards compatibility with old records.
+    pub decision_type: DecisionType,
 }
 
 /// Outcome of a decision, backfilled during distillation by looking at
@@ -54,6 +82,9 @@ pub struct DecisionContext {
     pub burn_rate_per_hr: f64,
     pub recent_error_count: u8,
     pub subagent_count: u8,
+    /// Hour of day (0-23) when this decision was made. Used for time-of-day
+    /// preference distillation. None for records from before this field existed.
+    pub hour: Option<u8>,
 }
 
 impl DecisionRecord {
@@ -100,6 +131,39 @@ fn preferences_path() -> PathBuf {
     decisions_dir().join("preferences.json")
 }
 
+/// Path for per-project preference files.
+fn project_preferences_path(project: &str) -> PathBuf {
+    let slug = project_slug(project);
+    decisions_dir()
+        .join("preferences")
+        .join(format!("{slug}.json"))
+}
+
+/// Convert a project name to a filesystem-safe slug.
+fn project_slug(project: &str) -> String {
+    project
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// Compute the current hour (0-23) from SystemTime without chrono.
+fn current_hour() -> u8 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // UTC-based hour; good enough for pattern detection (consistent baseline).
+    ((secs % 86400) / 3600) as u8
+}
+
 /// Build a JSON snapshot of session state for embedding in a JSONL record.
 fn snapshot_context(session: &crate::session::ClaudeSession) -> serde_json::Value {
     let context_pct = if session.context_max > 0 {
@@ -121,10 +185,12 @@ fn snapshot_context(session: &crate::session::ClaudeSession) -> serde_json::Valu
         "burn_rate_per_hr": session.burn_rate_per_hr,
         "recent_error_count": session.recent_errors.len() as u8,
         "subagent_count": session.subagent_count as u8,
+        "hour": current_hour(),
     })
 }
 
 /// Log a brain decision (suggestion + user response) to the local JSONL file.
+/// `decision_type` distinguishes session-level vs orchestration-level decisions.
 pub fn log_decision(
     pid: u32,
     project: &str,
@@ -133,6 +199,7 @@ pub fn log_decision(
     suggestion: &BrainSuggestion,
     user_action: &str,
     session: Option<&crate::session::ClaudeSession>,
+    decision_type: DecisionType,
 ) {
     let mut record = serde_json::json!({
         "ts": timestamp_now(),
@@ -144,6 +211,7 @@ pub fn log_decision(
         "brain_confidence": suggestion.confidence,
         "brain_reasoning": suggestion.reasoning,
         "user_action": user_action,
+        "decision_type": decision_type.label(),
     });
     if let Some(s) = session {
         record["context"] = snapshot_context(s);
@@ -289,6 +357,11 @@ pub fn forget() -> Result<(), String> {
     if pref_path.exists() {
         let _ = fs::remove_file(&pref_path);
     }
+    // Also clean per-project preference files
+    let proj_dir = decisions_dir().join("preferences");
+    if proj_dir.is_dir() {
+        let _ = fs::remove_dir_all(&proj_dir);
+    }
     Ok(())
 }
 
@@ -298,7 +371,13 @@ pub fn forget() -> Result<(), String> {
 
 /// Retrieve past decisions most relevant to the current context.
 /// Weights: same tool, same project, user-confirmed outcomes rank higher.
-pub fn retrieve_similar(tool: Option<&str>, project: &str, limit: usize) -> Vec<DecisionRecord> {
+/// When `decision_type` is specified, only decisions of that type are returned.
+pub fn retrieve_similar(
+    tool: Option<&str>,
+    project: &str,
+    limit: usize,
+    decision_type: Option<DecisionType>,
+) -> Vec<DecisionRecord> {
     if limit == 0 {
         return Vec::new();
     }
@@ -308,8 +387,19 @@ pub fn retrieve_similar(tool: Option<&str>, project: &str, limit: usize) -> Vec<
         return Vec::new();
     }
 
+    // Filter by decision type when specified
+    let filtered: Vec<&DecisionRecord> = if let Some(dt) = decision_type {
+        all.iter().filter(|d| d.decision_type == dt).collect()
+    } else {
+        all.iter().collect()
+    };
+
+    if filtered.is_empty() {
+        return Vec::new();
+    }
+
     // Score each decision by relevance + outcome signal
-    let mut scored: Vec<(i32, usize, &DecisionRecord)> = all
+    let mut scored: Vec<(i32, usize, &DecisionRecord)> = filtered
         .iter()
         .enumerate()
         .map(|(idx, d)| {
@@ -335,15 +425,15 @@ pub fn retrieve_similar(tool: Option<&str>, project: &str, limit: usize) -> Vec<
             }
 
             // Recency bonus: newer decisions reflect current preferences
-            // idx is position in file (0=oldest), scale to 0-2 bonus
-            let recency = if all.len() > 1 {
-                (idx as i32 * 2) / (all.len() as i32 - 1)
+            // idx is position in filtered list (0=oldest), scale to 0-2 bonus
+            let recency = if filtered.len() > 1 {
+                (idx as i32 * 2) / (filtered.len() as i32 - 1)
             } else {
                 2
             };
             score += recency;
 
-            (score, idx, d)
+            (score, idx, *d)
         })
         .collect();
 
@@ -413,6 +503,9 @@ pub enum PreferenceCondition {
     HasErrors,
     NoFileConflict,
     HasFileConflict,
+    /// Time-of-day range: start_hour..end_hour (inclusive of start, exclusive of end).
+    /// E.g., HourRange(8, 18) means 8:00-17:59 UTC.
+    HourRange(u8, u8),
 }
 
 impl PreferenceCondition {
@@ -427,6 +520,7 @@ impl PreferenceCondition {
             PreferenceCondition::HasErrors => "errors".to_string(),
             PreferenceCondition::NoFileConflict => "no conflict".to_string(),
             PreferenceCondition::HasFileConflict => "conflict".to_string(),
+            PreferenceCondition::HourRange(start, end) => format!("{start}:00-{end}:00"),
         }
     }
 
@@ -451,6 +545,9 @@ impl PreferenceCondition {
             PreferenceCondition::HasFileConflict => {
                 serde_json::json!({"type": "has_file_conflict"})
             }
+            PreferenceCondition::HourRange(start, end) => {
+                serde_json::json!({"type": "hour_range", "start": start, "end": end})
+            }
         }
     }
 
@@ -470,6 +567,11 @@ impl PreferenceCondition {
             "has_errors" => Some(PreferenceCondition::HasErrors),
             "no_file_conflict" => Some(PreferenceCondition::NoFileConflict),
             "has_file_conflict" => Some(PreferenceCondition::HasFileConflict),
+            "hour_range" => {
+                let start = v.get("start")?.as_u64()? as u8;
+                let end = v.get("end")?.as_u64()? as u8;
+                Some(PreferenceCondition::HourRange(start, end))
+            }
             _ => None,
         }
     }
@@ -663,6 +765,27 @@ fn best_split(decisions: &[&DecisionRecord]) -> Option<(PreferenceCondition, Pre
         }
     }
 
+    // Split on time-of-day: work hours (8-18) vs off hours
+    {
+        let hour_enriched: Vec<bool> = enriched.iter().map(|(_, ctx)| ctx.hour.is_some()).collect();
+        let has_hours = hour_enriched.iter().filter(|&&h| h).count();
+        // Only attempt hour split if enough records have hour data
+        if has_hours >= 5 {
+            let left_mask: Vec<bool> = enriched
+                .iter()
+                .map(|(_, ctx)| ctx.hour.map(|h| h >= 8 && h < 18).unwrap_or(false))
+                .collect();
+            let gain = try_split(&left_mask, &enriched);
+            if gain > best_gain {
+                best_gain = gain;
+                best_result = Some((
+                    PreferenceCondition::HourRange(8, 18),
+                    PreferenceCondition::HourRange(18, 8),
+                ));
+            }
+        }
+    }
+
     if best_gain > 0.15 { best_result } else { None }
 }
 
@@ -832,6 +955,53 @@ fn detect_temporal_patterns(decisions: &[DecisionRecord]) -> Vec<TemporalPattern
         }
     }
 
+    // --- Time-of-day pattern: different behavior during work vs off hours ---
+    {
+        let with_hour: Vec<(&DecisionRecord, u8)> = decisions
+            .iter()
+            .filter_map(|d| d.context.as_ref().and_then(|ctx| ctx.hour).map(|h| (d, h)))
+            .filter(|(d, _)| d.is_positive() || d.is_negative())
+            .collect();
+
+        if with_hour.len() >= 8 {
+            let work_hours: Vec<&(&DecisionRecord, u8)> = with_hour
+                .iter()
+                .filter(|(_, h)| *h >= 8 && *h < 18)
+                .collect();
+            let off_hours: Vec<&(&DecisionRecord, u8)> = with_hour
+                .iter()
+                .filter(|(_, h)| *h < 8 || *h >= 18)
+                .collect();
+
+            if work_hours.len() >= 3 && off_hours.len() >= 3 {
+                let work_accept = work_hours.iter().filter(|(d, _)| d.is_positive()).count() as f64
+                    / work_hours.len() as f64;
+                let off_accept = off_hours.iter().filter(|(d, _)| d.is_positive()).count() as f64
+                    / off_hours.len() as f64;
+                let diff = (work_accept - off_accept).abs();
+                if diff > 0.2 {
+                    let (higher, lower, higher_rate) = if work_accept > off_accept {
+                        ("work hours", "off hours", work_accept)
+                    } else {
+                        ("off hours", "work hours", off_accept)
+                    };
+                    patterns.push(TemporalPattern {
+                        description: format!(
+                            "More permissive during {} than {} (accept {:.0}% vs {:.0}%, n={})",
+                            higher,
+                            lower,
+                            higher_rate * 100.0,
+                            (higher_rate - diff) * 100.0,
+                            with_hour.len()
+                        ),
+                        sample_count: with_hour.len() as u32,
+                        strength: diff,
+                    });
+                }
+            }
+        }
+    }
+
     patterns
 }
 
@@ -943,6 +1113,18 @@ pub fn distill_preferences(decisions: &[DecisionRecord]) -> DistilledPreferences
                                 PreferenceCondition::HasErrors => ctx.last_tool_error,
                                 PreferenceCondition::NoFileConflict => !ctx.has_file_conflict,
                                 PreferenceCondition::HasFileConflict => ctx.has_file_conflict,
+                                PreferenceCondition::HourRange(start, end) => {
+                                    if let Some(h) = ctx.hour {
+                                        if start <= end {
+                                            h >= *start && h < *end
+                                        } else {
+                                            // Wraps midnight: e.g., 18..8 means 18-23 or 0-7
+                                            h >= *start || h < *end
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
                             })
                         })
                         .copied()
@@ -1171,7 +1353,34 @@ fn save_preferences(prefs: &DistilledPreferences) -> Result<(), String> {
         let _ = fs::create_dir_all(parent);
     }
 
-    let json = serde_json::json!({
+    let json = preferences_to_json(prefs);
+
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| format!("json error: {e}"))?,
+    )
+    .map_err(|e| format!("write error: {e}"))
+}
+
+/// Save per-project distilled preferences to disk.
+fn save_project_preferences(project: &str, prefs: &DistilledPreferences) -> Result<(), String> {
+    let path = project_preferences_path(project);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let json = preferences_to_json(prefs);
+
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&json).map_err(|e| format!("json error: {e}"))?,
+    )
+    .map_err(|e| format!("write error: {e}"))
+}
+
+/// Convert DistilledPreferences to serde_json::Value for saving.
+fn preferences_to_json(prefs: &DistilledPreferences) -> serde_json::Value {
+    serde_json::json!({
         "patterns": prefs.patterns.iter().map(|p| {
             serde_json::json!({
                 "tool": p.tool,
@@ -1200,21 +1409,11 @@ fn save_preferences(prefs: &DistilledPreferences) -> Result<(), String> {
                 "strength": tp.strength,
             })
         }).collect::<Vec<_>>(),
-    });
-
-    fs::write(
-        &path,
-        serde_json::to_string_pretty(&json).map_err(|e| format!("json error: {e}"))?,
-    )
-    .map_err(|e| format!("write error: {e}"))
+    })
 }
 
-/// Load distilled preferences from disk.
-pub fn load_preferences() -> Option<DistilledPreferences> {
-    let path = preferences_path();
-    let content = fs::read_to_string(&path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-
+/// Parse a DistilledPreferences from JSON.
+fn parse_preferences_json(json: &serde_json::Value) -> Option<DistilledPreferences> {
     let patterns = json
         .get("patterns")?
         .as_array()?
@@ -1284,6 +1483,51 @@ pub fn load_preferences() -> Option<DistilledPreferences> {
     })
 }
 
+/// Load distilled preferences from disk.
+pub fn load_preferences() -> Option<DistilledPreferences> {
+    let path = preferences_path();
+    let content = fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parse_preferences_json(&json)
+}
+
+/// Minimum number of per-project decisions before using project-specific preferences.
+const MIN_PROJECT_DECISIONS: usize = 10;
+
+/// Load distilled preferences for a specific project.
+/// Falls back to global preferences when the project has fewer than
+/// `MIN_PROJECT_DECISIONS` decisions.
+pub fn load_preferences_for_project(project: &str) -> Option<DistilledPreferences> {
+    // Try loading persisted per-project preferences first
+    let proj_path = project_preferences_path(project);
+    if let Ok(content) = fs::read_to_string(&proj_path) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(prefs) = parse_preferences_json(&json) {
+                if prefs.total_decisions >= MIN_PROJECT_DECISIONS as u32 {
+                    return Some(prefs);
+                }
+            }
+        }
+    }
+
+    // Try distilling on-the-fly from project-specific decisions
+    let all = read_all_decisions();
+    let project_decisions: Vec<DecisionRecord> = all
+        .into_iter()
+        .filter(|d| d.project.to_lowercase() == project.to_lowercase())
+        .collect();
+
+    if project_decisions.len() >= MIN_PROJECT_DECISIONS {
+        let prefs = distill_preferences(&project_decisions);
+        // Save for future use
+        let _ = save_project_preferences(project, &prefs);
+        return Some(prefs);
+    }
+
+    // Not enough project data — fall back to global
+    load_preferences()
+}
+
 /// Get the adaptive confidence threshold for a specific tool.
 /// Returns None if no preference data exists (use default threshold).
 pub fn adaptive_threshold(tool: Option<&str>) -> Option<f64> {
@@ -1325,8 +1569,16 @@ pub fn read_all_decisions() -> Vec<DecisionRecord> {
                     burn_rate_per_hr: ctx.get("burn_rate_per_hr")?.as_f64()?,
                     recent_error_count: ctx.get("recent_error_count")?.as_u64()? as u8,
                     subagent_count: ctx.get("subagent_count")?.as_u64()? as u8,
+                    // Backwards-compatible: old records won't have "hour" field
+                    hour: ctx.get("hour").and_then(|v| v.as_u64()).map(|v| v as u8),
                 })
             });
+            // Backwards-compatible: old records won't have "decision_type" field
+            let decision_type = json
+                .get("decision_type")
+                .and_then(|v| v.as_str())
+                .map(DecisionType::from_label)
+                .unwrap_or(DecisionType::Session);
             Some(DecisionRecord {
                 timestamp: json.get("ts")?.to_string(),
                 pid: json.get("pid")?.as_u64()? as u32,
@@ -1357,6 +1609,7 @@ pub fn read_all_decisions() -> Vec<DecisionRecord> {
                 user_action: json.get("user_action")?.as_str()?.to_string(),
                 context,
                 outcome: None, // Backfilled during distillation
+                decision_type,
             })
         })
         .collect()
@@ -1481,6 +1734,7 @@ mod tests {
             user_action: user_action.into(),
             context: None,
             outcome: None,
+            decision_type: DecisionType::Session,
         }
     }
 
@@ -1502,6 +1756,7 @@ mod tests {
             user_action: user_action.into(),
             context: None,
             outcome: None,
+            decision_type: DecisionType::Session,
         }
     }
 
@@ -1524,6 +1779,19 @@ mod tests {
             burn_rate_per_hr: 1.0,
             recent_error_count: if last_tool_error { 1 } else { 0 },
             subagent_count: 0,
+            hour: None,
+        }
+    }
+
+    fn make_context_with_hour(
+        cost_usd: f64,
+        context_pct: u8,
+        last_tool_error: bool,
+        hour: u8,
+    ) -> DecisionContext {
+        DecisionContext {
+            hour: Some(hour),
+            ..make_context(cost_usd, context_pct, last_tool_error)
         }
     }
 
@@ -1545,6 +1813,24 @@ mod tests {
             user_action: user_action.into(),
             context: Some(ctx),
             outcome: None,
+            decision_type: DecisionType::Session,
+        }
+    }
+
+    fn make_orchestration_decision(tool: &str, project: &str, user_action: &str) -> DecisionRecord {
+        DecisionRecord {
+            timestamp: "0".into(),
+            pid: 0,
+            project: project.into(),
+            tool: Some(tool.into()),
+            command: Some("test cmd".into()),
+            brain_action: "spawn".into(),
+            brain_confidence: 0.85,
+            brain_reasoning: "orchestration test".into(),
+            user_action: user_action.into(),
+            context: None,
+            outcome: None,
+            decision_type: DecisionType::Orchestration,
         }
     }
 
@@ -1577,7 +1863,7 @@ mod tests {
 
     #[test]
     fn retrieve_empty_returns_empty() {
-        let result = retrieve_similar(Some("Bash"), "test", 5);
+        let result = retrieve_similar(Some("Bash"), "test", 5, None);
         // Will be empty because decisions_path() points to nonexistent file
         assert!(result.is_empty() || !result.is_empty()); // No panic
     }
@@ -1928,7 +2214,7 @@ mod tests {
 
         let ctx = snapshot_context(&session);
 
-        // Verify all 13 fields
+        // Verify all 13 original fields + hour
         assert_eq!(ctx["cost_usd"].as_f64().unwrap(), 3.5);
         assert_eq!(ctx["context_pct"].as_u64().unwrap(), 80);
         assert!(ctx["last_tool_error"].as_bool().unwrap());
@@ -1942,6 +2228,9 @@ mod tests {
         assert_eq!(ctx["burn_rate_per_hr"].as_f64().unwrap(), 2.5);
         assert_eq!(ctx["recent_error_count"].as_u64().unwrap(), 1);
         assert_eq!(ctx["subagent_count"].as_u64().unwrap(), 1);
+        // Hour should be present (0-23)
+        let hour = ctx["hour"].as_u64().unwrap();
+        assert!(hour < 24, "hour should be 0-23, got {hour}");
     }
 
     #[test]
@@ -1966,6 +2255,7 @@ mod tests {
                 burn_rate_per_hr: ctx.get("burn_rate_per_hr")?.as_f64()?,
                 recent_error_count: ctx.get("recent_error_count")?.as_u64()? as u8,
                 subagent_count: ctx.get("subagent_count")?.as_u64()? as u8,
+                hour: ctx.get("hour").and_then(|v| v.as_u64()).map(|v| v as u8),
             })
         });
         assert!(context.is_none());
@@ -1979,6 +2269,14 @@ mod tests {
             .unwrap_or("")
             .to_string();
         assert_eq!(brain_action, "");
+
+        // Verify decision_type defaults to Session for old records
+        let decision_type = json
+            .get("decision_type")
+            .and_then(|v| v.as_str())
+            .map(DecisionType::from_label)
+            .unwrap_or(DecisionType::Session);
+        assert_eq!(decision_type, DecisionType::Session);
     }
 
     #[test]
@@ -2083,6 +2381,7 @@ mod tests {
                 user_action: "accept".into(),
                 context: Some(make_context(1.0, 50, false)),
                 outcome: None,
+                decision_type: DecisionType::Session,
             },
             DecisionRecord {
                 timestamp: "2".into(),
@@ -2096,6 +2395,7 @@ mod tests {
                 user_action: "accept".into(),
                 context: Some(make_context(1.5, 55, true)),
                 outcome: None,
+                decision_type: DecisionType::Session,
             },
         ];
 
@@ -2128,6 +2428,7 @@ mod tests {
                 user_action: "accept".into(),
                 context: Some(make_context(1.0, 50, true)),
                 outcome: None,
+                decision_type: DecisionType::Session,
             });
         }
         // Then user denies
@@ -2143,6 +2444,7 @@ mod tests {
             user_action: "reject".into(),
             context: Some(make_context(1.0, 50, false)),
             outcome: None,
+            decision_type: DecisionType::Session,
         });
         // Repeat the streak pattern to reach threshold of 2
         for _ in 0..4 {
@@ -2158,6 +2460,7 @@ mod tests {
                 user_action: "accept".into(),
                 context: Some(make_context(1.0, 50, true)),
                 outcome: None,
+                decision_type: DecisionType::Session,
             });
         }
         decisions.push(DecisionRecord {
@@ -2172,6 +2475,7 @@ mod tests {
             user_action: "reject".into(),
             context: Some(make_context(1.0, 50, false)),
             outcome: None,
+            decision_type: DecisionType::Session,
         });
 
         let patterns = detect_temporal_patterns(&decisions);
@@ -2247,6 +2551,8 @@ mod tests {
         assert_eq!(PreferenceCondition::HasErrors.label(), "errors");
         assert_eq!(PreferenceCondition::NoFileConflict.label(), "no conflict");
         assert_eq!(PreferenceCondition::HasFileConflict.label(), "conflict");
+        assert_eq!(PreferenceCondition::HourRange(8, 18).label(), "8:00-18:00");
+        assert_eq!(PreferenceCondition::HourRange(18, 8).label(), "18:00-8:00");
     }
 
     #[test]
@@ -2260,6 +2566,8 @@ mod tests {
             PreferenceCondition::HasErrors,
             PreferenceCondition::NoFileConflict,
             PreferenceCondition::HasFileConflict,
+            PreferenceCondition::HourRange(8, 18),
+            PreferenceCondition::HourRange(18, 8),
         ];
         for cond in &conditions {
             let json = cond.to_json();
@@ -2312,5 +2620,288 @@ mod tests {
         let summary = format_preference_summary(&prefs);
         assert!(summary.contains("Situational rules:"));
         assert!(summary.contains("3+ errors"));
+    }
+
+    // ── New tests for issue #150 features ─────────────────────────────
+
+    #[test]
+    fn test_current_hour_is_valid() {
+        let hour = current_hour();
+        assert!(hour < 24, "current_hour() returned {hour}, expected 0-23");
+    }
+
+    #[test]
+    fn test_hour_captured_in_context() {
+        // The make_context_with_hour helper sets the hour field
+        let ctx = make_context_with_hour(1.0, 50, false, 14);
+        assert_eq!(ctx.hour, Some(14));
+    }
+
+    #[test]
+    fn test_hour_range_condition_label() {
+        assert_eq!(PreferenceCondition::HourRange(8, 18).label(), "8:00-18:00");
+        assert_eq!(PreferenceCondition::HourRange(0, 8).label(), "0:00-8:00");
+        assert_eq!(PreferenceCondition::HourRange(22, 6).label(), "22:00-6:00");
+    }
+
+    #[test]
+    fn test_hour_range_condition_roundtrip() {
+        let cond = PreferenceCondition::HourRange(8, 18);
+        let json = cond.to_json();
+        let parsed = PreferenceCondition::from_json(&json);
+        assert!(parsed.is_some());
+        match parsed.unwrap() {
+            PreferenceCondition::HourRange(s, e) => {
+                assert_eq!(s, 8);
+                assert_eq!(e, 18);
+            }
+            other => panic!("Expected HourRange, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_format_summary_with_hour_condition() {
+        let prefs = DistilledPreferences {
+            patterns: vec![PreferencePattern {
+                tool: "Bash".into(),
+                command_pattern: None,
+                preferred_action: "approve".into(),
+                sample_count: 10,
+                accept_rate: 0.9,
+                conditions: vec![PreferenceCondition::HourRange(8, 18)],
+                confidence: 0.8,
+            }],
+            tool_accuracy: Vec::new(),
+            total_decisions: 15,
+            overall_accuracy: 0.8,
+            temporal: Vec::new(),
+        };
+        let summary = format_preference_summary(&prefs);
+        assert!(
+            summary.contains("8:00-18:00"),
+            "Expected hour range in summary, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn test_conditional_split_on_hour() {
+        // Work hours: all accepted. Off hours: all rejected.
+        let mut decisions = Vec::new();
+        for _ in 0..5 {
+            decisions.push(make_decision_with_context(
+                "Bash",
+                "proj",
+                "accept",
+                make_context_with_hour(5.0, 50, false, 10), // 10:00 = work hours
+            ));
+        }
+        for _ in 0..5 {
+            decisions.push(make_decision_with_context(
+                "Bash",
+                "proj",
+                "reject",
+                make_context_with_hour(5.0, 50, false, 22), // 22:00 = off hours
+            ));
+        }
+
+        let prefs = distill_preferences(&decisions);
+        let has_hour_cond = prefs.patterns.iter().any(|p| {
+            p.conditions
+                .iter()
+                .any(|c| matches!(c, PreferenceCondition::HourRange(_, _)))
+        });
+        assert!(
+            has_hour_cond,
+            "Expected HourRange condition in patterns, got: {:?}",
+            prefs.patterns
+        );
+    }
+
+    #[test]
+    fn test_temporal_time_of_day_pattern() {
+        // Work hours: mostly accepted. Off hours: mostly rejected.
+        let mut decisions = Vec::new();
+        for _ in 0..5 {
+            decisions.push(make_decision_with_context(
+                "Bash",
+                "proj",
+                "accept",
+                make_context_with_hour(1.0, 50, false, 10),
+            ));
+        }
+        for _ in 0..5 {
+            decisions.push(make_decision_with_context(
+                "Bash",
+                "proj",
+                "reject",
+                make_context_with_hour(1.0, 50, false, 22),
+            ));
+        }
+
+        let patterns = detect_temporal_patterns(&decisions);
+        let time_pattern = patterns
+            .iter()
+            .any(|p| p.description.contains("permissive during"));
+        assert!(
+            time_pattern,
+            "Expected time-of-day temporal pattern, got: {:?}",
+            patterns
+        );
+    }
+
+    #[test]
+    fn test_project_slug() {
+        assert_eq!(project_slug("my-project"), "my-project");
+        assert_eq!(project_slug("My Project"), "my_project");
+        assert_eq!(project_slug("/tmp/foo/bar"), "_tmp_foo_bar");
+        assert_eq!(project_slug("proj_123"), "proj_123");
+    }
+
+    #[test]
+    fn test_project_filtered_decisions() {
+        let decisions = vec![
+            make_decision("Bash", "alpha", "accept"),
+            make_decision("Bash", "beta", "reject"),
+            make_decision("Read", "alpha", "accept"),
+            make_decision("Read", "beta", "accept"),
+        ];
+
+        let alpha: Vec<&DecisionRecord> = decisions
+            .iter()
+            .filter(|d| d.project.to_lowercase() == "alpha")
+            .collect();
+        assert_eq!(alpha.len(), 2);
+        assert!(alpha.iter().all(|d| d.project == "alpha"));
+
+        let beta: Vec<&DecisionRecord> = decisions
+            .iter()
+            .filter(|d| d.project.to_lowercase() == "beta")
+            .collect();
+        assert_eq!(beta.len(), 2);
+    }
+
+    #[test]
+    fn test_project_distillation_with_enough_data() {
+        // 12 decisions for "alpha" — above MIN_PROJECT_DECISIONS threshold
+        let decisions: Vec<DecisionRecord> = (0..12)
+            .map(|_| make_decision("Read", "alpha", "accept"))
+            .collect();
+
+        let project_decisions: Vec<DecisionRecord> = decisions
+            .iter()
+            .filter(|d| d.project == "alpha")
+            .cloned()
+            .collect();
+
+        assert!(project_decisions.len() >= MIN_PROJECT_DECISIONS);
+        let prefs = distill_preferences(&project_decisions);
+        assert!(!prefs.patterns.is_empty());
+    }
+
+    #[test]
+    fn test_project_fallback_with_insufficient_data() {
+        // Only 5 decisions for "tiny-proj" — below threshold, should need fallback
+        let decisions: Vec<DecisionRecord> = (0..5)
+            .map(|_| make_decision("Read", "tiny-proj", "accept"))
+            .collect();
+
+        let project_decisions: Vec<DecisionRecord> = decisions
+            .iter()
+            .filter(|d| d.project == "tiny-proj")
+            .cloned()
+            .collect();
+
+        assert!(project_decisions.len() < MIN_PROJECT_DECISIONS);
+    }
+
+    #[test]
+    fn test_decision_type_labels() {
+        assert_eq!(DecisionType::Session.label(), "session");
+        assert_eq!(DecisionType::Orchestration.label(), "orchestration");
+    }
+
+    #[test]
+    fn test_decision_type_from_label() {
+        assert_eq!(DecisionType::from_label("session"), DecisionType::Session);
+        assert_eq!(
+            DecisionType::from_label("orchestration"),
+            DecisionType::Orchestration
+        );
+        // Unknown defaults to Session
+        assert_eq!(DecisionType::from_label("unknown"), DecisionType::Session);
+        assert_eq!(DecisionType::from_label(""), DecisionType::Session);
+    }
+
+    #[test]
+    fn test_orchestration_decision_tagged() {
+        let d = make_orchestration_decision("Bash", "proj", "accept");
+        assert_eq!(d.decision_type, DecisionType::Orchestration);
+        assert_eq!(d.brain_action, "spawn");
+    }
+
+    #[test]
+    fn test_session_decision_tagged() {
+        let d = make_decision("Bash", "proj", "accept");
+        assert_eq!(d.decision_type, DecisionType::Session);
+    }
+
+    #[test]
+    fn test_backward_compat_decision_type() {
+        // Old records without decision_type should default to Session
+        let json_str = r#"{"ts":"123","pid":1,"project":"proj","tool":"Bash","command":"ls","brain_action":"approve","brain_confidence":0.9,"brain_reasoning":"safe","user_action":"accept"}"#;
+        let json: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let dt = json
+            .get("decision_type")
+            .and_then(|v| v.as_str())
+            .map(DecisionType::from_label)
+            .unwrap_or(DecisionType::Session);
+        assert_eq!(dt, DecisionType::Session);
+    }
+
+    #[test]
+    fn test_backward_compat_no_hour_in_context() {
+        // Old context records without hour field → hour should be None
+        let json_str = r#"{"cost_usd":1.0,"context_pct":50,"last_tool_error":false,"model":"sonnet","elapsed_secs":60,"files_modified_count":2,"total_tool_calls":10,"has_file_conflict":false,"status":"Working","burn_rate_per_hr":1.0,"recent_error_count":0,"subagent_count":0}"#;
+        let ctx: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let hour: Option<u8> = ctx.get("hour").and_then(|v| v.as_u64()).map(|v| v as u8);
+        assert!(hour.is_none());
+    }
+
+    #[test]
+    fn test_preferences_to_json_roundtrip() {
+        let prefs = DistilledPreferences {
+            patterns: vec![PreferencePattern {
+                tool: "Bash".into(),
+                command_pattern: Some("cargo test".into()),
+                preferred_action: "approve".into(),
+                sample_count: 10,
+                accept_rate: 0.9,
+                conditions: vec![PreferenceCondition::HourRange(8, 18)],
+                confidence: 0.8,
+            }],
+            tool_accuracy: vec![ToolAccuracy {
+                tool: "Bash".into(),
+                total: 10,
+                correct: 9,
+                confidence_threshold: 0.5,
+            }],
+            total_decisions: 10,
+            overall_accuracy: 0.9,
+            temporal: vec![TemporalPattern {
+                description: "test pattern".into(),
+                sample_count: 5,
+                strength: 0.8,
+            }],
+        };
+
+        let json = preferences_to_json(&prefs);
+        let parsed = parse_preferences_json(&json).unwrap();
+
+        assert_eq!(parsed.patterns.len(), 1);
+        assert_eq!(parsed.patterns[0].tool, "Bash");
+        assert_eq!(parsed.tool_accuracy.len(), 1);
+        assert_eq!(parsed.total_decisions, 10);
+        assert!((parsed.overall_accuracy - 0.9).abs() < f64::EPSILON);
+        assert_eq!(parsed.temporal.len(), 1);
     }
 }

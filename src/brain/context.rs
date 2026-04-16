@@ -18,6 +18,8 @@ pub struct BrainContext {
     pub decision_prompt: String,
     /// Few-shot examples from past decisions (empty if no history).
     pub few_shot_examples: String,
+    /// Distilled preference summary (compact alternative to few-shot for small contexts).
+    pub preference_summary: String,
     /// Global view of all active sessions (empty if only one session).
     pub global_session_map: String,
 }
@@ -39,6 +41,7 @@ pub fn build_context(
         recent_transcript,
         decision_prompt,
         few_shot_examples: String::new(), // Set by engine after retrieval
+        preference_summary: String::new(), // Set by engine from distilled preferences
         global_session_map,
     }
 }
@@ -328,15 +331,32 @@ fn format_entry_compact(entry: &TranscriptEntry) -> String {
 
 /// Format the full brain prompt by combining summary, transcript, and decision prompt.
 /// Uses the prompt library (user override or built-in template).
+///
+/// Context budget strategy for small LLMs (Gemma4):
+/// - If distilled preferences exist, use the compact summary (~200 tokens)
+///   instead of raw few-shot examples (~500+ tokens)
+/// - If both exist and context is generous, include both
+/// - Preference summary always takes priority since it's pre-distilled
 pub fn format_brain_prompt(ctx: &BrainContext) -> String {
-    let few_shot = if ctx.few_shot_examples.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\n## Past Decisions (learn from these)\n{}",
-            ctx.few_shot_examples
-        )
-    };
+    // Build the learning context section: prefer compact preferences,
+    // fall back to raw few-shot, or use both if context budget allows
+    let learning_section =
+        if !ctx.preference_summary.is_empty() && !ctx.few_shot_examples.is_empty() {
+            // Both available: preferences are compact, include both
+            format!(
+                "\n\n## Learned Preferences\n{}\n\n## Recent Examples\n{}",
+                ctx.preference_summary, ctx.few_shot_examples,
+            )
+        } else if !ctx.preference_summary.is_empty() {
+            format!("\n\n## Learned Preferences\n{}", ctx.preference_summary,)
+        } else if !ctx.few_shot_examples.is_empty() {
+            format!(
+                "\n\n## Past Decisions (learn from these)\n{}",
+                ctx.few_shot_examples,
+            )
+        } else {
+            String::new()
+        };
 
     let global_map = if ctx.global_session_map.is_empty() {
         String::new()
@@ -351,7 +371,7 @@ pub fn format_brain_prompt(ctx: &BrainContext) -> String {
             ("session_summary", &ctx.session_summary),
             ("global_session_map", &global_map),
             ("recent_transcript", &ctx.recent_transcript),
-            ("few_shot_examples", &few_shot),
+            ("few_shot_examples", &learning_section),
             ("decision_prompt", &ctx.decision_prompt),
         ],
     )
@@ -458,6 +478,7 @@ mod tests {
             recent_transcript: "transcript".into(),
             decision_prompt: "decide".into(),
             few_shot_examples: String::new(),
+            preference_summary: String::new(),
             global_session_map: String::new(),
         };
         let prompt = format_brain_prompt(&ctx);
@@ -496,6 +517,7 @@ mod tests {
             recent_transcript: "transcript".into(),
             decision_prompt: "decide".into(),
             few_shot_examples: String::new(),
+            preference_summary: String::new(),
             global_session_map: "- session1: Processing\n- session2: Idle".into(),
         };
         let prompt = format_brain_prompt(&ctx);

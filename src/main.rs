@@ -177,6 +177,10 @@ struct Cli {
     #[arg(long, help_heading = "Brain (Local LLM)")]
     brain_prompts: bool,
 
+    /// Brain statistics and metrics (subcommands: learning-curve, accuracy, baseline, false-approve, help)
+    #[arg(long, help_heading = "Brain (Local LLM)")]
+    brain_stats: Option<String>,
+
     // ── Orchestration ──────────────────────────────────────────────────
     /// Run tasks from a JSON file (e.g., claudectl --run tasks.json)
     #[arg(long, help_heading = "Orchestration")]
@@ -349,6 +353,11 @@ fn main() -> io::Result<()> {
         println!();
         let results = brain::evals::run_evals(&brain_cfg, &scenarios);
         brain::evals::print_results(&results);
+        return Ok(());
+    }
+
+    if let Some(ref subcommand) = cli.brain_stats {
+        brain::metrics::dispatch(subcommand);
         return Ok(());
     }
 

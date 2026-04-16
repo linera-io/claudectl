@@ -2,6 +2,26 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.28.0] - 2026-04-16
+
+### Added
+- `--brain-stats` CLI command with four metrics subcommands for measuring brain effectiveness:
+  - `learning-curve`: rolling correction rate over decision history with ASCII chart, phase transition detection, and improvement tracking (#129)
+  - `accuracy`: per-tool, per-risk-tier, per-project, and temporal accuracy breakdown (#131)
+  - `baseline`: replay all decisions against a deterministic rules-only classifier and compare accuracy by risk tier, with agreement analysis (#136)
+  - `false-approve`: false-approve rate on risky actions by risk tier, with worst-case audit trail (#133)
+- Risk tier classification system (Low/Medium/High/Critical) based on tool type and command patterns, shared across all metrics
+- `src/brain/metrics.rs` module with 19 unit tests
+- Passive observation logging: brain learns from ALL user actions, not just brain-involved decisions. Manual approves (`y` key), user input (`i` key), per-PID auto-approve (`a` key), static rule execution, and file conflict auto-deny all generate learning signals
+- Multi-level learning architecture with four dimensions of intelligence:
+  - **Rich context logging**: every decision captures 13 session state fields (cost, context%, errors, model, elapsed time, files modified, tool calls, conflicts, burn rate, subagents) — zero inference cost
+  - **Conditional preferences**: distillation now learns context-dependent rules via Gini impurity splits (e.g., "approve git push when cost<$5", "deny writes when context>80%")
+  - **Outcome tracking**: correlates consecutive decisions to detect "user accepted but it broke" (downweighted) vs "user rejected and it would have broken" (reinforced)
+  - **Temporal patterns**: detects error streaks, cost pressure, and context pressure as compact situational rules in the prompt
+
+### Fixed
+- Observation records (passive learning signals) were silently dropped by the parser because `brain_action` field was required but observations have `null` — now correctly parsed
+
 ## [0.26.0] - 2026-04-16
 
 ### Added

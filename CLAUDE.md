@@ -32,6 +32,7 @@ cargo fmt --check            # Check formatting
 - `recorder.rs` — Dashboard recording (asciicast/GIF capture of full TUI)
 - `session_recorder.rs` — Per-session highlight reel recording (extracts edits, commands, errors; strips idle time)
 - `transcript.rs` — JSONL transcript parser (messages, tool use, tool results, usage data)
+- `metrics.rs` — Brain effectiveness metrics: learning curve, accuracy breakdown, rules baseline comparison, false-approve rate
 - `demo.rs` — Deterministic fake sessions for screenshots, recordings, and demos
 - `theme.rs` — Color theming (dark/light/monochrome, respects NO_COLOR)
 - `logger.rs` — Structured diagnostic logging

@@ -4,8 +4,14 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::brain::client::BrainSuggestion;
+
+/// Counter for decisions logged this process lifetime (avoids reading file to check).
+static DECISION_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Guard to prevent concurrent distillation threads.
+static DISTILLING: AtomicBool = AtomicBool::new(false);
 
 /// A single decision record: what the brain suggested and what the user did.
 #[derive(Debug, Clone)]
@@ -80,16 +86,40 @@ pub fn log_decision(
         );
     }
 
-    // Re-distill preferences after every Nth decision (amortized cost)
-    let all = read_all_decisions();
-    if all.len() % DISTILL_INTERVAL == 0 {
-        let prefs = distill_preferences(&all);
-        let _ = save_preferences(&prefs);
-    }
+    // Re-distill preferences in a background thread every Nth decision.
+    // The file append above is fast (single write), but distillation reads
+    // the full history and computes patterns — must not block the TUI.
+    maybe_distill_background();
 }
 
 /// How often to re-distill preferences (every N decisions).
-const DISTILL_INTERVAL: usize = 10;
+const DISTILL_INTERVAL: u32 = 10;
+
+/// Spawn a background thread to re-distill preferences if the interval has been reached.
+/// Uses atomic guards to avoid blocking the main thread and prevent concurrent distillation.
+fn maybe_distill_background() {
+    let count = DECISION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if count % DISTILL_INTERVAL != 0 {
+        return;
+    }
+
+    // Prevent concurrent distillation (compare_exchange: only one thread wins)
+    if DISTILLING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return; // Another distillation is already running
+    }
+
+    std::thread::spawn(|| {
+        let all = read_all_decisions();
+        if !all.is_empty() {
+            let prefs = distill_preferences(&all);
+            let _ = save_preferences(&prefs);
+        }
+        DISTILLING.store(false, Ordering::Release);
+    });
+}
 
 /// Read decision stats for display.
 pub fn read_stats() -> DecisionStats {

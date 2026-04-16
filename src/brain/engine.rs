@@ -86,6 +86,15 @@ impl BrainEngine {
                         let deny_match = rules::evaluate(deny_rules, session);
                         if let Some(dm) = &deny_match {
                             if dm.action == RuleAction::Deny {
+                                // Log the override so the brain learns deny-rule boundaries
+                                super::decisions::log_decision(
+                                    result.pid,
+                                    session.display_name(),
+                                    session.pending_tool_name.as_deref(),
+                                    session.pending_tool_input.as_deref(),
+                                    &suggestion,
+                                    "deny_rule_override",
+                                );
                                 actions.push((
                                     result.pid,
                                     format!(
@@ -100,14 +109,46 @@ impl BrainEngine {
                     }
 
                     if self.config.auto_mode {
-                        // Auto mode: execute immediately
+                        // Auto mode: check adaptive confidence threshold before executing.
+                        // If the brain's track record for this tool is poor, require
+                        // higher confidence before auto-executing.
+                        if let Some(session) = session {
+                            let tool_name = session.pending_tool_name.as_deref();
+                            let threshold =
+                                super::decisions::adaptive_threshold(tool_name).unwrap_or(0.6);
+                            if suggestion.confidence < threshold {
+                                // Below adaptive threshold — demote to advisory mode
+                                super::decisions::log_decision(
+                                    result.pid,
+                                    session.display_name(),
+                                    tool_name,
+                                    session.pending_tool_input.as_deref(),
+                                    &suggestion,
+                                    "deferred_low_confidence",
+                                );
+                                self.pending.insert(result.pid, suggestion);
+                                continue;
+                            }
+                        }
+
+                        // Confidence meets threshold — execute
                         if let Some(session) = session {
                             match &suggestion.action {
                                 RuleAction::Route { target_pid } => {
                                     let target = sessions.iter().find(|s| s.pid == *target_pid);
                                     if let Some(target) = target {
                                         match self.execute_route(session, target) {
-                                            Ok(msg) => actions.push((result.pid, msg)),
+                                            Ok(msg) => {
+                                                super::decisions::log_decision(
+                                                    result.pid,
+                                                    session.display_name(),
+                                                    session.pending_tool_name.as_deref(),
+                                                    session.pending_tool_input.as_deref(),
+                                                    &suggestion,
+                                                    "auto",
+                                                );
+                                                actions.push((result.pid, msg));
+                                            }
                                             Err(e) => actions
                                                 .push((result.pid, format!("Route error: {e}"))),
                                         }
@@ -135,13 +176,31 @@ impl BrainEngine {
                                     } else {
                                         let rule_match = suggestion_to_rule_match(&suggestion);
                                         match rules::execute(&rule_match, session) {
-                                            Ok(msg) => actions.push((result.pid, msg)),
+                                            Ok(msg) => {
+                                                super::decisions::log_decision(
+                                                    result.pid,
+                                                    session.display_name(),
+                                                    session.pending_tool_name.as_deref(),
+                                                    session.pending_tool_input.as_deref(),
+                                                    &suggestion,
+                                                    "auto",
+                                                );
+                                                actions.push((result.pid, msg));
+                                            }
                                             Err(e) => actions
                                                 .push((result.pid, format!("Spawn error: {e}"))),
                                         }
                                     }
                                 }
                                 RuleAction::Delegate { agent, prompt } => {
+                                    super::decisions::log_decision(
+                                        result.pid,
+                                        session.display_name(),
+                                        session.pending_tool_name.as_deref(),
+                                        session.pending_tool_input.as_deref(),
+                                        &suggestion,
+                                        "auto",
+                                    );
                                     actions.push((
                                         result.pid,
                                         format!(
@@ -158,7 +217,17 @@ impl BrainEngine {
                                 _ => {
                                     let rule_match = suggestion_to_rule_match(&suggestion);
                                     match rules::execute(&rule_match, session) {
-                                        Ok(msg) => actions.push((result.pid, msg)),
+                                        Ok(msg) => {
+                                            super::decisions::log_decision(
+                                                result.pid,
+                                                session.display_name(),
+                                                session.pending_tool_name.as_deref(),
+                                                session.pending_tool_input.as_deref(),
+                                                &suggestion,
+                                                "auto",
+                                            );
+                                            actions.push((result.pid, msg));
+                                        }
                                         Err(e) => {
                                             actions.push((result.pid, format!("Brain error: {e}")))
                                         }
@@ -223,12 +292,25 @@ impl BrainEngine {
         let mut brain_ctx =
             context::build_context(session, all_sessions, config.max_context_tokens);
 
-        // Inject few-shot examples from past decisions
-        if config.few_shot_count > 0 {
+        // Load distilled preferences (compact, ~200 tokens — always fits)
+        if let Some(prefs) = super::decisions::load_preferences() {
+            brain_ctx.preference_summary = super::decisions::format_preference_summary(&prefs);
+        }
+
+        // Inject raw few-shot examples (outcome-weighted retrieval)
+        // When preferences exist, reduce few-shot count to save context budget
+        let few_shot_limit = if brain_ctx.preference_summary.is_empty() {
+            config.few_shot_count
+        } else {
+            // Preferences cover learned patterns; fewer raw examples needed
+            config.few_shot_count.min(3)
+        };
+
+        if few_shot_limit > 0 {
             let similar = super::decisions::retrieve_similar(
                 session.pending_tool_name.as_deref(),
                 session.display_name(),
-                config.few_shot_count,
+                few_shot_limit,
             );
             brain_ctx.few_shot_examples = super::decisions::format_few_shot_examples(&similar);
         }

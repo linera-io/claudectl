@@ -73,7 +73,7 @@ The brain is claudectl's core intelligence layer. A local LLM continuously obser
 - **Spawn** new sessions when the brain detects parallelizable work
 - **Delegate** tasks to external agents (Codex, Aider, custom tools)
 
-The brain learns from your corrections. Every accept/reject is logged as a few-shot example, so its suggestions improve over time. All data stays on your machine — no cloud API, no telemetry.
+The brain **continuously learns** from your corrections. Every accept/reject is logged, distilled into compact preference patterns, and used to adapt future decisions. Accuracy is tracked per tool — if the brain keeps getting Bash wrong, it raises the confidence bar before auto-executing. All data stays on your machine — no cloud API, no telemetry.
 
 ```bash
 # Start with one command (requires ollama)
@@ -103,7 +103,9 @@ Any endpoint that accepts a JSON POST and returns generated text will work.
 - Cost, burn rate, context window utilization
 - Recent transcript (last 8 messages, earlier ones compacted)
 - All other active sessions (for cross-session reasoning)
-- Past decisions on similar tool calls (few-shot examples)
+- Distilled preference patterns (compact rules learned from your history)
+- Outcome-weighted few-shot examples (corrections weighted highest)
+- Per-tool adaptive confidence thresholds
 
 **Diagnostics and customization:**
 

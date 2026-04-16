@@ -79,7 +79,7 @@ pub fn list_prompts() -> Vec<(String, String)> {
 const ADVISORY_PROMPT: &str = r#"You are a session supervisor for Claude Code. Analyze the session state and recent conversation to decide what action to take. Consider the state of other active sessions when making decisions.
 
 ## Session State
-{{session_summary}}{{global_session_map}}
+{{session_summary}}{{git_context}}{{global_session_map}}
 
 ## Recent Conversation
 {{recent_transcript}}{{few_shot_examples}}

@@ -184,7 +184,7 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
             Style::default().fg(t.header).add_modifier(Modifier::BOLD),
         )));
         let mut tools: Vec<_> = session.tool_usage.iter().collect();
-        tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls));
+        tools.sort_by_key(|t| std::cmp::Reverse(t.1.calls));
         for (name, stats) in tools.iter().take(10) {
             lines.push(detail_line(
                 &format!("  {name}"),

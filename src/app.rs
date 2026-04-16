@@ -882,7 +882,7 @@ impl App {
                     .partial_cmp(&a.burn_rate_per_hr)
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
-            4 => sessions.sort_by(|a, b| b.elapsed.cmp(&a.elapsed)),
+            4 => sessions.sort_by_key(|s| std::cmp::Reverse(s.elapsed)),
             _ => {}
         }
     }

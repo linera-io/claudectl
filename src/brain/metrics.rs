@@ -366,7 +366,7 @@ pub fn print_accuracy() {
     println!();
     println!("  By project:");
     let mut project_list: Vec<CategoryAccuracy> = by_project.into_values().collect();
-    project_list.sort_by(|a, b| b.total.cmp(&a.total));
+    project_list.sort_by_key(|p| std::cmp::Reverse(p.total));
     project_list.truncate(10);
     print_accuracy_table(&mut project_list);
 
@@ -377,7 +377,7 @@ pub fn print_accuracy() {
 }
 
 fn print_accuracy_table(entries: &mut Vec<CategoryAccuracy>) {
-    entries.sort_by(|a, b| b.total.cmp(&a.total));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.total));
 
     println!(
         "    {:<20} {:>6} {:>8} {:>8} {:>8}",

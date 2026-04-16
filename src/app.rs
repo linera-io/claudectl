@@ -1149,6 +1149,13 @@ impl App {
 
         for pid in legacy_pids {
             if let Some(session) = self.sessions.iter().find(|s| s.pid == pid) {
+                crate::brain::decisions::log_observation(
+                    session.pid,
+                    session.display_name(),
+                    session.pending_tool_name.as_deref(),
+                    session.pending_tool_input.as_deref(),
+                    "user_approve",
+                );
                 match terminals::approve_session(session) {
                     Ok(()) => self.status_msg = format!("Auto-approved {}", session.display_name()),
                     Err(e) => self.status_msg = format!("Auto-approve error: {e}"),
@@ -1191,6 +1198,14 @@ impl App {
                     }
                 }
                 if let Some(session) = self.sessions.iter().find(|s| s.pid == pid) {
+                    // Log passive observation: conflict auto-deny
+                    crate::brain::decisions::log_observation(
+                        session.pid,
+                        session.display_name(),
+                        session.pending_tool_name.as_deref(),
+                        session.pending_tool_input.as_deref(),
+                        "conflict_deny",
+                    );
                     let short = file.rsplit('/').next().unwrap_or(&file);
                     let msg = format!("File {short} is being edited by {other}");
                     match terminals::send_input(session, &msg) {
@@ -1244,6 +1259,16 @@ impl App {
                 let Some(rule_match) = result else {
                     continue;
                 };
+
+                // Log passive observation: static rule fired
+                let obs_action = format!("rule_{}", rule_match.action.label());
+                crate::brain::decisions::log_observation(
+                    session.pid,
+                    session.display_name(),
+                    session.pending_tool_name.as_deref(),
+                    session.pending_tool_input.as_deref(),
+                    &obs_action,
+                );
 
                 let msg = crate::rules::execute(&rule_match, session);
                 match msg {
@@ -1420,6 +1445,14 @@ impl App {
             KeyCode::Enter => {
                 if let Some(pid) = self.input_target_pid {
                     if let Some(session) = self.sessions.iter().find(|s| s.pid == pid) {
+                        // Log passive observation: user sent manual input
+                        crate::brain::decisions::log_observation(
+                            session.pid,
+                            session.display_name(),
+                            session.pending_tool_name.as_deref(),
+                            session.pending_tool_input.as_deref(),
+                            "user_input",
+                        );
                         let text = format!("{}\n", self.input_buffer);
                         match terminals::send_input(session, &text) {
                             Ok(()) => {
@@ -1805,6 +1838,14 @@ impl App {
     fn handle_approve(&mut self) {
         if let Some(session) = self.selected_session() {
             if session.status == SessionStatus::NeedsInput {
+                // Log passive observation: user approved without brain involvement
+                crate::brain::decisions::log_observation(
+                    session.pid,
+                    session.display_name(),
+                    session.pending_tool_name.as_deref(),
+                    session.pending_tool_input.as_deref(),
+                    "user_approve",
+                );
                 match terminals::approve_session(session) {
                     Ok(()) => self.status_msg = format!("Approved {}", session.display_name()),
                     Err(e) => self.status_msg = format!("Error: {e}"),

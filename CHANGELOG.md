@@ -12,6 +12,7 @@ All notable changes to claudectl are documented here.
   - `false-approve`: false-approve rate on risky actions by risk tier, with worst-case audit trail (#133)
 - Risk tier classification system (Low/Medium/High/Critical) based on tool type and command patterns, shared across all metrics
 - `src/brain/metrics.rs` module with 19 unit tests
+- Passive observation logging: brain learns from ALL user actions, not just brain-involved decisions. Manual approves (`y` key), user input (`i` key), per-PID auto-approve (`a` key), static rule execution, and file conflict auto-deny all generate learning signals
 
 ## [0.26.0] - 2026-04-16
 

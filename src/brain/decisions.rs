@@ -30,12 +30,31 @@ pub struct DecisionRecord {
 impl DecisionRecord {
     /// Whether this decision represents a positive outcome (user agreed or auto-executed).
     pub fn is_positive(&self) -> bool {
-        matches!(self.user_action.as_str(), "accept" | "auto")
+        matches!(
+            self.user_action.as_str(),
+            "accept" | "auto" | "user_approve" | "rule_approve"
+        )
     }
 
     /// Whether this decision represents a negative outcome (user disagreed).
     pub fn is_negative(&self) -> bool {
-        matches!(self.user_action.as_str(), "reject" | "deny_rule_override")
+        matches!(
+            self.user_action.as_str(),
+            "reject" | "deny_rule_override" | "rule_deny" | "conflict_deny"
+        )
+    }
+
+    /// Whether this is a passive observation (brain was NOT involved).
+    pub fn is_observation(&self) -> bool {
+        matches!(
+            self.user_action.as_str(),
+            "user_approve"
+                | "user_input"
+                | "rule_approve"
+                | "rule_deny"
+                | "rule_send"
+                | "conflict_deny"
+        )
     }
 }
 
@@ -92,6 +111,44 @@ pub fn log_decision(
     maybe_distill_background();
 }
 
+/// Log a passive observation: a user action the brain was NOT involved in.
+/// These provide ground-truth training data — what the user does when
+/// deciding on their own. Same JSONL format so distillation picks them up.
+pub fn log_observation(
+    pid: u32,
+    project: &str,
+    tool: Option<&str>,
+    command: Option<&str>,
+    observed_action: &str, // "user_approve", "user_input", "rule_approve", "rule_deny", etc.
+) {
+    let record = serde_json::json!({
+        "ts": timestamp_now(),
+        "pid": pid,
+        "project": project,
+        "tool": tool,
+        "command": command,
+        "brain_action": null,
+        "brain_confidence": 0.0,
+        "brain_reasoning": "",
+        "user_action": observed_action,
+    });
+
+    let path = decisions_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&record).unwrap_or_default()
+        );
+    }
+
+    maybe_distill_background();
+}
+
 /// How often to re-distill preferences (every N decisions).
 const DISTILL_INTERVAL: u32 = 10;
 
@@ -133,6 +190,7 @@ pub fn read_stats() -> DecisionStats {
     let mut accepted = 0u32;
     let mut rejected = 0u32;
     let mut auto_executed = 0u32;
+    let mut observations = 0u32;
 
     for line in content.lines() {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -143,6 +201,10 @@ pub fn read_stats() -> DecisionStats {
             Some("accept") => accepted += 1,
             Some("reject") => rejected += 1,
             Some("auto") => auto_executed += 1,
+            Some(
+                "user_approve" | "user_input" | "rule_approve" | "rule_deny" | "rule_send"
+                | "conflict_deny",
+            ) => observations += 1,
             _ => {}
         }
     }
@@ -152,6 +214,7 @@ pub fn read_stats() -> DecisionStats {
         accepted,
         rejected,
         auto_executed,
+        observations,
     }
 }
 
@@ -202,7 +265,9 @@ pub fn retrieve_similar(tool: Option<&str>, project: &str, limit: usize) -> Vec<
             }
 
             // Outcome weighting: user-confirmed decisions are more informative
-            if d.is_positive() {
+            if d.is_observation() {
+                score += 2; // Passive observation: ground truth but no correction signal
+            } else if d.is_positive() {
                 score += 3; // Accepted/auto = brain was right, reinforce
             } else if d.is_negative() {
                 score += 8; // Rejected = correction signal, very valuable for learning
@@ -253,12 +318,20 @@ pub fn format_few_shot_examples(decisions: &[DecisionRecord]) -> String {
         } else {
             format!(", command=\"{cmd}\"")
         };
-        lines.push(format!(
-            "[tool={tool}{cmd_part}] brain: {} ({}%) → user: {}",
-            d.brain_action,
-            (d.brain_confidence * 100.0) as u32,
-            d.user_action,
-        ));
+        if d.is_observation() {
+            // Passive observation: show what the user did directly
+            lines.push(format!(
+                "[tool={tool}{cmd_part}] user action: {}",
+                d.user_action,
+            ));
+        } else {
+            lines.push(format!(
+                "[tool={tool}{cmd_part}] brain: {} ({}%) → user: {}",
+                d.brain_action,
+                (d.brain_confidence * 100.0) as u32,
+                d.user_action,
+            ));
+        }
     }
 
     lines.join("\n")
@@ -653,6 +726,7 @@ pub struct DecisionStats {
     pub accepted: u32,
     pub rejected: u32,
     pub auto_executed: u32,
+    pub observations: u32,
 }
 
 impl DecisionStats {
@@ -735,6 +809,7 @@ mod tests {
             accepted: 8,
             rejected: 2,
             auto_executed: 0,
+            observations: 0,
         };
         assert!((stats.accuracy_pct() - 80.0).abs() < f64::EPSILON);
     }
@@ -981,18 +1056,92 @@ mod tests {
         let accept = make_decision("Bash", "proj", "accept");
         assert!(accept.is_positive());
         assert!(!accept.is_negative());
+        assert!(!accept.is_observation());
 
         let reject = make_decision("Bash", "proj", "reject");
         assert!(!reject.is_positive());
         assert!(reject.is_negative());
+        assert!(!reject.is_observation());
 
         let auto = make_decision("Bash", "proj", "auto");
         assert!(auto.is_positive());
         assert!(!auto.is_negative());
+        assert!(!auto.is_observation());
 
         let deny_override = make_decision("Bash", "proj", "deny_rule_override");
         assert!(!deny_override.is_positive());
         assert!(deny_override.is_negative());
+    }
+
+    // ── Passive observation tests ─────────────────────────────────────
+
+    #[test]
+    fn observation_user_approve_is_positive() {
+        let d = make_decision("Read", "proj", "user_approve");
+        assert!(d.is_positive());
+        assert!(!d.is_negative());
+        assert!(d.is_observation());
+    }
+
+    #[test]
+    fn observation_rule_approve_is_positive() {
+        let d = make_decision("Bash", "proj", "rule_approve");
+        assert!(d.is_positive());
+        assert!(d.is_observation());
+    }
+
+    #[test]
+    fn observation_rule_deny_is_negative() {
+        let d = make_decision("Bash", "proj", "rule_deny");
+        assert!(d.is_negative());
+        assert!(d.is_observation());
+    }
+
+    #[test]
+    fn observation_conflict_deny_is_negative() {
+        let d = make_decision("Write", "proj", "conflict_deny");
+        assert!(d.is_negative());
+        assert!(d.is_observation());
+    }
+
+    #[test]
+    fn observation_user_input_is_observation() {
+        let d = make_decision("Bash", "proj", "user_input");
+        assert!(d.is_observation());
+        // user_input is neither approve nor deny
+        assert!(!d.is_positive());
+        assert!(!d.is_negative());
+    }
+
+    #[test]
+    fn observations_feed_into_distillation() {
+        // Mix of brain decisions and observations — all should be used
+        let mut decisions: Vec<DecisionRecord> = (0..3)
+            .map(|_| make_decision("Read", "proj", "accept"))
+            .collect();
+        decisions.extend((0..5).map(|_| make_decision("Read", "proj", "user_approve")));
+
+        let prefs = distill_preferences(&decisions);
+        // Read should show as strongly positive (8/8 positive outcomes)
+        let read_pattern = prefs.patterns.iter().find(|p| p.tool == "Read");
+        assert!(read_pattern.is_some());
+        assert!(read_pattern.unwrap().accept_rate >= 0.9);
+    }
+
+    #[test]
+    fn format_few_shot_observation_format() {
+        let d = make_decision("Read", "proj", "user_approve");
+        let output = format_few_shot_examples(&[d]);
+        assert!(output.contains("user action: user_approve"));
+        assert!(!output.contains("brain:"));
+    }
+
+    #[test]
+    fn format_few_shot_brain_decision_format() {
+        let d = make_decision("Bash", "proj", "accept");
+        let output = format_few_shot_examples(&[d]);
+        assert!(output.contains("brain: approve"));
+        assert!(output.contains("user: accept"));
     }
 
     #[test]

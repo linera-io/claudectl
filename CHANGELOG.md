@@ -2,6 +2,17 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.27.0] - 2026-04-16
+
+### Added
+- `--brain-stats` CLI command with four metrics subcommands for measuring brain effectiveness:
+  - `learning-curve`: rolling correction rate over decision history with ASCII chart, phase transition detection, and improvement tracking (#129)
+  - `accuracy`: per-tool, per-risk-tier, per-project, and temporal accuracy breakdown (#131)
+  - `baseline`: replay all decisions against a deterministic rules-only classifier and compare accuracy by risk tier, with agreement analysis (#136)
+  - `false-approve`: false-approve rate on risky actions by risk tier, with worst-case audit trail (#133)
+- Risk tier classification system (Low/Medium/High/Critical) based on tool type and command patterns, shared across all metrics
+- `src/brain/metrics.rs` module with 19 unit tests
+
 ## [0.26.0] - 2026-04-16
 
 ### Added

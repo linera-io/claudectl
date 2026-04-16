@@ -29,12 +29,12 @@ pub struct DecisionRecord {
 
 impl DecisionRecord {
     /// Whether this decision represents a positive outcome (user agreed or auto-executed).
-    fn is_positive(&self) -> bool {
+    pub fn is_positive(&self) -> bool {
         matches!(self.user_action.as_str(), "accept" | "auto")
     }
 
     /// Whether this decision represents a negative outcome (user disagreed).
-    fn is_negative(&self) -> bool {
+    pub fn is_negative(&self) -> bool {
         matches!(self.user_action.as_str(), "reject" | "deny_rule_override")
     }
 }
@@ -611,7 +611,7 @@ pub fn adaptive_threshold(tool: Option<&str>) -> Option<f64> {
         .map(|ta| ta.confidence_threshold)
 }
 
-fn read_all_decisions() -> Vec<DecisionRecord> {
+pub fn read_all_decisions() -> Vec<DecisionRecord> {
     let path = decisions_path();
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,

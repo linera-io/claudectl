@@ -94,6 +94,7 @@ impl BrainEngine {
                                     session.pending_tool_input.as_deref(),
                                     &suggestion,
                                     "deny_rule_override",
+                                    Some(session),
                                 );
                                 actions.push((
                                     result.pid,
@@ -125,6 +126,7 @@ impl BrainEngine {
                                     session.pending_tool_input.as_deref(),
                                     &suggestion,
                                     "deferred_low_confidence",
+                                    Some(session),
                                 );
                                 self.pending.insert(result.pid, suggestion);
                                 continue;
@@ -146,6 +148,7 @@ impl BrainEngine {
                                                     session.pending_tool_input.as_deref(),
                                                     &suggestion,
                                                     "auto",
+                                                    Some(session),
                                                 );
                                                 actions.push((result.pid, msg));
                                             }
@@ -184,6 +187,7 @@ impl BrainEngine {
                                                     session.pending_tool_input.as_deref(),
                                                     &suggestion,
                                                     "auto",
+                                                    Some(session),
                                                 );
                                                 actions.push((result.pid, msg));
                                             }
@@ -200,6 +204,7 @@ impl BrainEngine {
                                         session.pending_tool_input.as_deref(),
                                         &suggestion,
                                         "auto",
+                                        Some(session),
                                     );
                                     actions.push((
                                         result.pid,
@@ -225,6 +230,7 @@ impl BrainEngine {
                                                 session.pending_tool_input.as_deref(),
                                                 &suggestion,
                                                 "auto",
+                                                Some(session),
                                             );
                                             actions.push((result.pid, msg));
                                         }

@@ -1120,6 +1120,8 @@ mod tests {
             brain_confidence: 0.9,
             brain_reasoning: "test".into(),
             user_action: user_action.into(),
+            context: None,
+            outcome: None,
         }
     }
 

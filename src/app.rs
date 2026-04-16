@@ -1155,6 +1155,7 @@ impl App {
                     session.pending_tool_name.as_deref(),
                     session.pending_tool_input.as_deref(),
                     "user_approve",
+                    Some(session),
                 );
                 match terminals::approve_session(session) {
                     Ok(()) => self.status_msg = format!("Auto-approved {}", session.display_name()),
@@ -1205,6 +1206,7 @@ impl App {
                         session.pending_tool_name.as_deref(),
                         session.pending_tool_input.as_deref(),
                         "conflict_deny",
+                        Some(session),
                     );
                     let short = file.rsplit('/').next().unwrap_or(&file);
                     let msg = format!("File {short} is being edited by {other}");
@@ -1268,6 +1270,7 @@ impl App {
                     session.pending_tool_name.as_deref(),
                     session.pending_tool_input.as_deref(),
                     &obs_action,
+                    Some(session),
                 );
 
                 let msg = crate::rules::execute(&rule_match, session);
@@ -1452,6 +1455,7 @@ impl App {
                             session.pending_tool_name.as_deref(),
                             session.pending_tool_input.as_deref(),
                             "user_input",
+                            Some(session),
                         );
                         let text = format!("{}\n", self.input_buffer);
                         match terminals::send_input(session, &text) {
@@ -1845,6 +1849,7 @@ impl App {
                     session.pending_tool_name.as_deref(),
                     session.pending_tool_input.as_deref(),
                     "user_approve",
+                    Some(session),
                 );
                 match terminals::approve_session(session) {
                     Ok(()) => self.status_msg = format!("Approved {}", session.display_name()),
@@ -1881,6 +1886,7 @@ impl App {
                     session.pending_tool_input.as_deref(),
                     sg,
                     "accept",
+                    Some(&session),
                 );
             }
             crate::logger::log("BRAIN", &format!("Accepted: {msg}"));
@@ -1905,6 +1911,7 @@ impl App {
                 session.pending_tool_input.as_deref(),
                 &suggestion,
                 "reject",
+                Some(&session),
             );
             let msg = format!(
                 "Rejected brain suggestion: {} ({})",

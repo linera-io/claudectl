@@ -1,8 +1,8 @@
 # claudectl
 
-**Mission control for Claude Code.**
+**Auto-pilot for Claude Code.**
 
-A local LLM watches your Claude Code sessions and decides what to approve. You press one key to record a highlight reel GIF. You orchestrate 5 sessions with dependencies. And you never tab-hunt again.
+A local model watches every session and decides what to approve — no cloud API, no telemetry, learns from your corrections. Also: orchestration, health monitoring, spend control, and highlight-reel recording.
 
 [![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)

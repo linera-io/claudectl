@@ -2,7 +2,7 @@
 
 **Auto-pilot for Claude Code.**
 
-A local model watches every session and decides what to approve — no cloud API, no telemetry, learns from your corrections. Also: orchestration, health monitoring, spend control, and highlight-reel recording.
+Fully local on-device model that learns and decide what to approve - no cloud API, no telemetry. +orchestration, health monitoring, spend control, and highlight-reels.
 
 [![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)

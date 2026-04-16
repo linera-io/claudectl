@@ -55,6 +55,18 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("_", Style::default().fg(t.text_muted)),
         ]));
         frame.render_widget(msg, area);
+    } else if app.idle_mode_active {
+        let idle_mins = app.last_user_interaction.elapsed().as_secs() / 60;
+        let tasks = if app.idle_tasks_launched.is_empty() {
+            "no tasks running".to_string()
+        } else {
+            format!("{} task(s) running", app.idle_tasks_launched.len())
+        };
+        let msg = Paragraph::new(Span::styled(
+            format!(" Idle ({idle_mins}m) | {tasks}"),
+            Style::default().fg(t.text_muted),
+        ));
+        frame.render_widget(msg, area);
     } else if !app.status_msg.is_empty() {
         let color = if app.status_msg.starts_with("Error") {
             t.error

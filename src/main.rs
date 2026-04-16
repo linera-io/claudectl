@@ -1118,6 +1118,7 @@ fn run_tui<W: io::Write>(
     app.health_thresholds = cfg.health.clone();
     app.file_conflicts_enabled = cfg.file_conflicts;
     app.auto_deny_file_conflicts = cfg.auto_deny_file_conflicts;
+    app.idle_config = cfg.idle.clone();
     app.brain_config = cfg.brain.clone();
     if let Some(ref brain_cfg) = cfg.brain {
         if brain_cfg.enabled {

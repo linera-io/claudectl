@@ -28,6 +28,7 @@ pub struct Config {
     pub auto_deny_file_conflicts: bool, // Auto-deny writes to conflicting files
     pub brain: Option<BrainConfig>,
     pub lifecycle: LifecycleConfig,
+    pub idle: IdleConfig,
     pub agents: Vec<AgentConfig>,
 }
 
@@ -130,6 +131,37 @@ impl Default for LifecycleConfig {
     }
 }
 
+/// Configuration for idle mode and unattended work queue.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct IdleConfig {
+    pub enabled: bool,
+    pub after_idle_mins: u64,
+    pub max_concurrent: usize,
+    pub max_cost_usd: f64,
+    pub tasks: Vec<IdleTask>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct IdleTask {
+    pub prompt: String,
+    pub cwd: Option<String>,
+    pub priority: u32,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            after_idle_mins: 15,
+            max_concurrent: 2,
+            max_cost_usd: 5.0,
+            tasks: Vec::new(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -152,6 +184,7 @@ impl Default for Config {
             auto_deny_file_conflicts: false,
             brain: None,
             lifecycle: LifecycleConfig::default(),
+            idle: IdleConfig::default(),
             agents: Vec::new(),
         }
     }
@@ -179,6 +212,7 @@ struct RawConfig {
     auto_deny_file_conflicts: Option<bool>,
     brain: Option<BrainConfig>,
     lifecycle: Option<RawLifecycleConfig>,
+    idle: Option<RawIdleConfig>,
     agents: Vec<AgentConfig>,
 }
 
@@ -187,6 +221,14 @@ struct RawLifecycleConfig {
     auto_restart: Option<bool>,
     restart_threshold_pct: Option<f64>,
     restart_only_when_idle: Option<bool>,
+}
+
+#[derive(Debug, Default)]
+struct RawIdleConfig {
+    enabled: Option<bool>,
+    after_idle_mins: Option<u64>,
+    max_concurrent: Option<usize>,
+    max_cost_usd: Option<f64>,
 }
 
 impl Config {
@@ -308,6 +350,20 @@ impl Config {
             }
             if let Some(v) = lc.restart_only_when_idle {
                 self.lifecycle.restart_only_when_idle = v;
+            }
+        }
+        if let Some(idle) = raw.idle {
+            if let Some(v) = idle.enabled {
+                self.idle.enabled = v;
+            }
+            if let Some(v) = idle.after_idle_mins {
+                self.idle.after_idle_mins = v;
+            }
+            if let Some(v) = idle.max_concurrent {
+                self.idle.max_concurrent = v;
+            }
+            if let Some(v) = idle.max_cost_usd {
+                self.idle.max_cost_usd = v;
             }
         }
         for agent in raw.agents {
@@ -740,6 +796,16 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     "auto_restart" => lc.auto_restart = parse_bool(value),
                     "restart_threshold_pct" => lc.restart_threshold_pct = value.parse().ok(),
                     "restart_only_when_idle" => lc.restart_only_when_idle = parse_bool(value),
+                    _ => {}
+                }
+            }
+            ("idle", key) => {
+                let idle = raw.idle.get_or_insert_with(RawIdleConfig::default);
+                match key {
+                    "enabled" => idle.enabled = parse_bool(value),
+                    "after_idle_mins" => idle.after_idle_mins = value.parse().ok(),
+                    "max_concurrent" => idle.max_concurrent = value.parse().ok(),
+                    "max_cost_usd" => idle.max_cost_usd = value.parse().ok(),
                     _ => {}
                 }
             }

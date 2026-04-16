@@ -2,7 +2,7 @@
 
 All notable changes to claudectl are documented here.
 
-## [0.27.0] - 2026-04-16
+## [0.28.0] - 2026-04-16
 
 ### Added
 - `--brain-stats` CLI command with four metrics subcommands for measuring brain effectiveness:

@@ -239,8 +239,9 @@ impl SessionRecorder {
                             frame.push_str(&format!(
                                 "    \x1b[90mAdded \x1b[1;37m{new_count}\x1b[0m\x1b[90m lines, removed \x1b[1;37m{old_count}\x1b[0m\x1b[90m lines\x1b[0m\r\n"
                             ));
-                            let mut line_num = 1u32;
-                            for line in diff_content.lines().take(MAX_DIFF_LINES) {
+                            for (line_num, line) in
+                                (1u32..).zip(diff_content.lines().take(MAX_DIFF_LINES))
+                            {
                                 let colored = if let Some(content) = line.strip_prefix('+') {
                                     format!("    \x1b[42;30m{line_num:>3} +{content}\x1b[0m\r\n")
                                 } else if let Some(content) = line.strip_prefix('-') {
@@ -248,7 +249,6 @@ impl SessionRecorder {
                                 } else {
                                     format!("    \x1b[90m{line_num:>3}  {line}\x1b[0m\r\n")
                                 };
-                                line_num += 1;
                                 frame.push_str(&colored);
                             }
                             let total = diff_content.lines().count();

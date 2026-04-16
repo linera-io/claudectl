@@ -99,22 +99,18 @@ fn extract_session_meta(cmd: &[&str], session: &mut ClaudeSession) {
     let mut i = 0;
     while i < cmd.len() {
         match cmd[i] {
-            "--name" | "-n" => {
-                if i + 1 < cmd.len() {
-                    session.session_name = cmd[i + 1].to_string();
-                    i += 2;
-                    continue;
-                }
+            "--name" | "-n" if i + 1 < cmd.len() => {
+                session.session_name = cmd[i + 1].to_string();
+                i += 2;
+                continue;
             }
-            "--resume" | "-r" => {
-                if i + 1 < cmd.len() {
-                    let val = cmd[i + 1];
-                    if !looks_like_uuid(val) {
-                        session.session_name = val.to_string();
-                    }
-                    i += 2;
-                    continue;
+            "--resume" | "-r" if i + 1 < cmd.len() => {
+                let val = cmd[i + 1];
+                if !looks_like_uuid(val) {
+                    session.session_name = val.to_string();
                 }
+                i += 2;
+                continue;
             }
             _ => {}
         }

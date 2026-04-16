@@ -38,14 +38,24 @@ pub fn switch(session: &ClaudeSession) -> Result<(), String> {
 pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     let cwd = session.cwd.replace('"', "\\\"");
+    let tty = &session.tty;
 
     let script = format!(
         r#"
         tell application "Ghostty"
             set matches to every terminal whose working directory contains "{cwd}"
+
+            -- Find the one matching our TTY if multiple matches
+            repeat with t in matches
+                if tty of t contains "{tty}" then
+                    input text "{escaped}" to t
+                    return "ok"
+                end if
+            end repeat
+
+            -- Fallback: send to first match by cwd
             if (count of matches) > 0 then
-                set t to item 1 of matches
-                input text "{escaped}" to t
+                input text "{escaped}" to (item 1 of matches)
             end if
         end tell
         "#,
@@ -55,14 +65,24 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
 
 pub fn approve(session: &ClaudeSession) -> Result<(), String> {
     let cwd = session.cwd.replace('"', "\\\"");
+    let tty = &session.tty;
 
     let script = format!(
         r#"
         tell application "Ghostty"
             set matches to every terminal whose working directory contains "{cwd}"
+
+            -- Find the one matching our TTY if multiple matches
+            repeat with t in matches
+                if tty of t contains "{tty}" then
+                    input text "\r" to t
+                    return "ok"
+                end if
+            end repeat
+
+            -- Fallback: send to first match by cwd
             if (count of matches) > 0 then
-                set t to item 1 of matches
-                send key "enter" to t
+                input text "\r" to (item 1 of matches)
             end if
         end tell
         "#,

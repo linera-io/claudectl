@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn outcome_weighted_retrieval_prefers_corrections() {
         // Rejected decisions should score higher (correction signal)
-        let decisions = vec![
+        let decisions = [
             make_decision("Bash", "proj", "accept"),
             make_decision("Bash", "proj", "reject"),
         ];

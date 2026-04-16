@@ -2,6 +2,17 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.26.0] - 2026-04-16
+
+### Added
+- Continuous learning system: brain now closes the feedback loop — every accept, reject, auto-execute, and deny-rule override is logged and used to improve future decisions
+- Preference distillation: decision history is periodically compacted into `~/.claudectl/brain/preferences.json` with compact rules like "always approve [Read]" — uses ~200 tokens vs ~500+ for raw few-shot examples, critical for Gemma4's limited context window
+- Outcome-weighted few-shot retrieval: rejected decisions score higher than accepts (corrections are the strongest learning signal), with recency bonus for newer decisions
+- Adaptive confidence thresholds: per-tool accuracy tracking adjusts the auto-execution bar — high-accuracy tools get lower thresholds (0.5), low-accuracy tools require 0.95 confidence. Below-threshold suggestions are automatically demoted to advisory mode
+- Smart context budgeting: when distilled preferences exist, raw few-shot count is reduced to save context for transcript and decision prompt
+- Auto-mode decision logging: all auto-executed brain suggestions are now recorded to decisions.jsonl (previously only advisory-mode accept/reject was captured)
+- Deny-rule override logging: when static deny rules override brain suggestions, the override is logged so the brain learns the boundaries
+
 ## [0.25.2] - 2026-04-15
 
 ### Fixed

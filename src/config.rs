@@ -27,6 +27,7 @@ pub struct Config {
     pub file_conflicts: bool, // Detect file-level conflicts across sessions
     pub auto_deny_file_conflicts: bool, // Auto-deny writes to conflicting files
     pub brain: Option<BrainConfig>,
+    pub lifecycle: LifecycleConfig,
     pub agents: Vec<AgentConfig>,
 }
 
@@ -111,6 +112,24 @@ impl Default for BrainConfig {
     }
 }
 
+/// Configuration for session lifecycle management (auto-restart on context saturation).
+#[derive(Debug, Clone)]
+pub struct LifecycleConfig {
+    pub auto_restart: bool,
+    pub restart_threshold_pct: f64,
+    pub restart_only_when_idle: bool,
+}
+
+impl Default for LifecycleConfig {
+    fn default() -> Self {
+        Self {
+            auto_restart: false,
+            restart_threshold_pct: 90.0,
+            restart_only_when_idle: true,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -132,6 +151,7 @@ impl Default for Config {
             file_conflicts: true,
             auto_deny_file_conflicts: false,
             brain: None,
+            lifecycle: LifecycleConfig::default(),
             agents: Vec::new(),
         }
     }
@@ -158,7 +178,15 @@ struct RawConfig {
     file_conflicts: Option<bool>,
     auto_deny_file_conflicts: Option<bool>,
     brain: Option<BrainConfig>,
+    lifecycle: Option<RawLifecycleConfig>,
     agents: Vec<AgentConfig>,
+}
+
+#[derive(Debug, Default)]
+struct RawLifecycleConfig {
+    auto_restart: Option<bool>,
+    restart_threshold_pct: Option<f64>,
+    restart_only_when_idle: Option<bool>,
 }
 
 impl Config {
@@ -270,6 +298,17 @@ impl Config {
         }
         if let Some(brain) = raw.brain {
             self.brain = Some(brain);
+        }
+        if let Some(lc) = raw.lifecycle {
+            if let Some(v) = lc.auto_restart {
+                self.lifecycle.auto_restart = v;
+            }
+            if let Some(v) = lc.restart_threshold_pct {
+                self.lifecycle.restart_threshold_pct = v;
+            }
+            if let Some(v) = lc.restart_only_when_idle {
+                self.lifecycle.restart_only_when_idle = v;
+            }
         }
         for agent in raw.agents {
             if let Some(pos) = self.agents.iter().position(|a| a.name == agent.name) {
@@ -690,6 +729,17 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                         }
                     }
                     "message" => rule.message = Some(unquote(value)),
+                    _ => {}
+                }
+            }
+            ("lifecycle", key) => {
+                let lc = raw
+                    .lifecycle
+                    .get_or_insert_with(RawLifecycleConfig::default);
+                match key {
+                    "auto_restart" => lc.auto_restart = parse_bool(value),
+                    "restart_threshold_pct" => lc.restart_threshold_pct = value.parse().ok(),
+                    "restart_only_when_idle" => lc.restart_only_when_idle = parse_bool(value),
                     _ => {}
                 }
             }

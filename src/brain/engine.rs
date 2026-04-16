@@ -33,6 +33,8 @@ pub struct BrainEngine {
     last_orchestrate: Option<Instant>,
     /// Whether an orchestration inference is in-flight.
     orchestrate_inflight: bool,
+    /// PIDs that have been restarted due to context saturation (prevents restart loops).
+    restarted_pids: HashSet<u32>,
 }
 
 const COOLDOWN_SECS: u64 = 10;
@@ -49,6 +51,7 @@ impl BrainEngine {
             pending: HashMap::new(),
             last_orchestrate: None,
             orchestrate_inflight: false,
+            restarted_pids: HashSet::new(),
         }
     }
 
@@ -415,6 +418,86 @@ impl BrainEngine {
         self.pending.remove(&pid)
     }
 
+    /// Check for sessions with saturated context and auto-restart them.
+    /// Saves a checkpoint and spawns a fresh session with the summary as prompt.
+    pub fn maybe_restart_saturated(
+        &mut self,
+        sessions: &[ClaudeSession],
+        lifecycle: &crate::config::LifecycleConfig,
+        is_idle: bool,
+    ) -> Vec<(u32, String)> {
+        if !lifecycle.auto_restart {
+            return Vec::new();
+        }
+        if lifecycle.restart_only_when_idle && !is_idle {
+            return Vec::new();
+        }
+
+        let threshold = lifecycle.restart_threshold_pct / 100.0;
+        let mut actions = Vec::new();
+
+        for session in sessions {
+            if self.restarted_pids.contains(&session.pid) {
+                continue;
+            }
+            if session.context_max == 0 {
+                continue;
+            }
+            let pct = session.context_tokens as f64 / session.context_max as f64;
+            if pct < threshold {
+                continue;
+            }
+            // Don't restart if actively waiting for tool approval
+            if session.status == SessionStatus::NeedsInput {
+                continue;
+            }
+
+            // Build summary for checkpoint
+            let ctx =
+                context::build_context(session, &[session.clone()], self.config.max_context_tokens);
+            let summary = format!(
+                "Continue the work from a previous session that hit context limits.\n\
+                 Project: {}\nModel: {}\nCost so far: ${:.2}\n\n\
+                 Recent context:\n{}",
+                session.display_name(),
+                session.model,
+                session.cost_usd,
+                &ctx.recent_transcript,
+            );
+
+            // Save checkpoint
+            if let Err(e) = save_checkpoint(&session.session_id, session, &summary) {
+                crate::logger::log("BRAIN", &format!("Checkpoint save failed: {e}"));
+            }
+
+            // Spawn fresh session
+            match crate::terminals::launch_session(&session.cwd, Some(&summary), None) {
+                Ok(msg) => {
+                    self.restarted_pids.insert(session.pid);
+                    actions.push((
+                        session.pid,
+                        format!(
+                            "Lifecycle: restarted {} (context at {:.0}%) → {msg}",
+                            session.display_name(),
+                            pct * 100.0,
+                        ),
+                    ));
+                }
+                Err(e) => {
+                    actions.push((
+                        session.pid,
+                        format!(
+                            "Lifecycle: restart failed for {}: {e}",
+                            session.display_name()
+                        ),
+                    ));
+                }
+            }
+        }
+
+        actions
+    }
+
     /// Clear pending suggestions for PIDs that are no longer in NeedsInput/WaitingInput.
     pub fn cleanup(&mut self, sessions: &[ClaudeSession]) {
         let active_pids: HashSet<u32> = sessions.iter().map(|s| s.pid).collect();
@@ -644,6 +727,40 @@ fn extract_file_path(input: &str) -> Option<String> {
     None
 }
 
+fn save_checkpoint(session_id: &str, session: &ClaudeSession, summary: &str) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {e}"))?;
+    let dir = std::path::PathBuf::from(home)
+        .join(".claudectl")
+        .join("brain")
+        .join("checkpoints");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir failed: {e}"))?;
+
+    let path = dir.join(format!("{session_id}.md"));
+    let content = format!(
+        "# Session Checkpoint\n\n\
+         - Session: {}\n\
+         - Project: {}\n\
+         - Model: {}\n\
+         - Cost: ${:.2}\n\
+         - Context: {}/{}  ({:.0}%)\n\n\
+         ## Summary\n\n{}\n",
+        session_id,
+        session.display_name(),
+        session.model,
+        session.cost_usd,
+        session.context_tokens,
+        session.context_max,
+        if session.context_max > 0 {
+            session.context_tokens as f64 / session.context_max as f64 * 100.0
+        } else {
+            0.0
+        },
+        summary,
+    );
+    std::fs::write(&path, content).map_err(|e| format!("write failed: {e}"))?;
+    Ok(())
+}
+
 fn suggestion_to_rule_match(suggestion: &BrainSuggestion) -> RuleMatch {
     RuleMatch {
         rule_name: format!(
@@ -814,6 +931,84 @@ mod tests {
     #[test]
     fn extract_file_path_none_for_plain_text() {
         assert_eq!(extract_file_path("hello world"), None);
+    }
+
+    #[test]
+    fn lifecycle_below_threshold_no_restart() {
+        let config = crate::config::LifecycleConfig {
+            auto_restart: true,
+            restart_threshold_pct: 90.0,
+            restart_only_when_idle: false,
+        };
+        let mut engine = BrainEngine::new(make_config());
+        let mut s = make_session(100, SessionStatus::Processing);
+        s.context_tokens = 50_000;
+        s.context_max = 200_000;
+
+        let actions = engine.maybe_restart_saturated(&[s], &config, true);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_above_threshold_flags_restart() {
+        let config = crate::config::LifecycleConfig {
+            auto_restart: true,
+            restart_threshold_pct: 90.0,
+            restart_only_when_idle: false,
+        };
+        let mut engine = BrainEngine::new(make_config());
+        let mut s = make_session(100, SessionStatus::Processing);
+        s.context_tokens = 190_000;
+        s.context_max = 200_000;
+
+        let actions = engine.maybe_restart_saturated(&[s], &config, true);
+        assert!(!actions.is_empty());
+        assert!(actions[0].1.contains("Lifecycle:"));
+    }
+
+    #[test]
+    fn lifecycle_no_restart_loop() {
+        let config = crate::config::LifecycleConfig {
+            auto_restart: true,
+            restart_threshold_pct: 90.0,
+            restart_only_when_idle: false,
+        };
+        let mut engine = BrainEngine::new(make_config());
+        engine.restarted_pids.insert(100);
+        let mut s = make_session(100, SessionStatus::Processing);
+        s.context_tokens = 190_000;
+        s.context_max = 200_000;
+
+        let actions = engine.maybe_restart_saturated(&[s], &config, true);
+        assert!(actions.is_empty(), "Should skip already-restarted PID");
+    }
+
+    #[test]
+    fn lifecycle_respects_idle_only() {
+        let config = crate::config::LifecycleConfig {
+            auto_restart: true,
+            restart_threshold_pct: 90.0,
+            restart_only_when_idle: true,
+        };
+        let mut engine = BrainEngine::new(make_config());
+        let mut s = make_session(100, SessionStatus::Processing);
+        s.context_tokens = 190_000;
+        s.context_max = 200_000;
+
+        let actions = engine.maybe_restart_saturated(&[s], &config, false);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_disabled_no_restart() {
+        let config = crate::config::LifecycleConfig::default();
+        let mut engine = BrainEngine::new(make_config());
+        let mut s = make_session(100, SessionStatus::Processing);
+        s.context_tokens = 190_000;
+        s.context_max = 200_000;
+
+        let actions = engine.maybe_restart_saturated(&[s], &config, true);
+        assert!(actions.is_empty());
     }
 
     #[test]

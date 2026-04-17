@@ -136,6 +136,30 @@ impl BrainEngine {
                             }
                         }
 
+                        // Check for file conflicts before executing
+                        if let Some(session) = session {
+                            if let Some(conflict_msg) = check_file_conflicts(session, sessions) {
+                                // Demote to advisory — require user confirmation
+                                super::decisions::log_decision(
+                                    result.pid,
+                                    session.display_name(),
+                                    session.pending_tool_name.as_deref(),
+                                    session.pending_tool_input.as_deref(),
+                                    &suggestion,
+                                    "deferred_file_conflict",
+                                    Some(session),
+                                    DecisionType::Session,
+                                );
+                                let mut flagged = suggestion.clone();
+                                flagged.reasoning =
+                                    format!("{} [CONFLICT: {}]", flagged.reasoning, conflict_msg);
+                                self.pending.insert(result.pid, flagged);
+                                actions
+                                    .push((result.pid, format!("File conflict: {conflict_msg}")));
+                                continue;
+                            }
+                        }
+
                         // Confidence meets threshold — execute
                         if let Some(session) = session {
                             match &suggestion.action {
@@ -558,6 +582,68 @@ fn build_orchestration_prompt(sessions: &[ClaudeSession], _config: &BrainConfig)
     )
 }
 
+/// Check if a Write/Edit/NotebookEdit tool call targets a file that another
+/// running session has in its `files_modified` map.
+/// Returns a warning message if a conflict is found, or None if clear.
+fn check_file_conflicts(session: &ClaudeSession, all_sessions: &[ClaudeSession]) -> Option<String> {
+    let tool = session.pending_tool_name.as_deref()?;
+    if !matches!(tool, "Write" | "Edit" | "NotebookEdit") {
+        return None;
+    }
+
+    let input = session.pending_tool_input.as_deref()?;
+
+    // Extract file path from the tool input.
+    // Write/Edit inputs typically start with or contain the absolute file path.
+    let target_path = extract_file_path(input)?;
+
+    for other in all_sessions {
+        if other.pid == session.pid {
+            continue;
+        }
+        if other.files_modified.contains_key(&target_path) {
+            return Some(format!(
+                "{} is also being modified by session {} (PID {})",
+                target_path,
+                other.display_name(),
+                other.pid,
+            ));
+        }
+    }
+    None
+}
+
+/// Extract a file path from tool input. Looks for the first path-like token
+/// (absolute path starting with / or relative path with a file extension).
+fn extract_file_path(input: &str) -> Option<String> {
+    // Try to find an absolute path
+    for token in input.split_whitespace() {
+        let cleaned = token.trim_matches('"').trim_matches('\'');
+        if cleaned.starts_with('/') && cleaned.len() > 1 {
+            return Some(cleaned.to_string());
+        }
+    }
+    // Try to find a relative path with common extensions
+    for token in input.split_whitespace() {
+        let cleaned = token.trim_matches('"').trim_matches('\'');
+        if cleaned.contains('.')
+            && (cleaned.starts_with("./")
+                || cleaned.starts_with("src/")
+                || cleaned.starts_with("tests/")
+                || cleaned.contains(".rs")
+                || cleaned.contains(".ts")
+                || cleaned.contains(".py")
+                || cleaned.contains(".js")
+                || cleaned.contains(".toml")
+                || cleaned.contains(".json")
+                || cleaned.contains(".md"))
+        {
+            return Some(cleaned.to_string());
+        }
+    }
+    None
+}
+
 fn suggestion_to_rule_match(suggestion: &BrainSuggestion) -> RuleMatch {
     RuleMatch {
         rule_name: format!(
@@ -655,6 +741,79 @@ mod tests {
 
         engine.cleanup(&[session]);
         assert!(engine.pending.contains_key(&100));
+    }
+
+    #[test]
+    fn file_conflict_detected_same_file() {
+        let mut s1 = make_session(100, SessionStatus::NeedsInput);
+        s1.pending_tool_name = Some("Write".into());
+        s1.pending_tool_input = Some("/tmp/project/src/main.rs".into());
+
+        let mut s2 = make_session(200, SessionStatus::Processing);
+        s2.files_modified
+            .insert("/tmp/project/src/main.rs".to_string(), 1);
+
+        let result = check_file_conflicts(&s1, &[s1.clone(), s2]);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("main.rs"));
+    }
+
+    #[test]
+    fn file_conflict_no_conflict_different_files() {
+        let mut s1 = make_session(100, SessionStatus::NeedsInput);
+        s1.pending_tool_name = Some("Edit".into());
+        s1.pending_tool_input = Some("/tmp/project/src/lib.rs".into());
+
+        let mut s2 = make_session(200, SessionStatus::Processing);
+        s2.files_modified
+            .insert("/tmp/project/src/main.rs".to_string(), 1);
+
+        let result = check_file_conflicts(&s1, &[s1.clone(), s2]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn file_conflict_no_self_conflict() {
+        let mut s1 = make_session(100, SessionStatus::NeedsInput);
+        s1.pending_tool_name = Some("Write".into());
+        s1.pending_tool_input = Some("/tmp/project/src/main.rs".into());
+        s1.files_modified
+            .insert("/tmp/project/src/main.rs".to_string(), 1);
+
+        let result = check_file_conflicts(&s1, &[s1.clone()]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn file_conflict_skips_non_write_tools() {
+        let mut s1 = make_session(100, SessionStatus::NeedsInput);
+        s1.pending_tool_name = Some("Bash".into());
+        s1.pending_tool_input = Some("/tmp/project/src/main.rs".into());
+
+        let mut s2 = make_session(200, SessionStatus::Processing);
+        s2.files_modified
+            .insert("/tmp/project/src/main.rs".to_string(), 1);
+
+        let result = check_file_conflicts(&s1, &[s1.clone(), s2]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_file_path_absolute() {
+        assert_eq!(
+            extract_file_path("/tmp/project/src/main.rs"),
+            Some("/tmp/project/src/main.rs".into())
+        );
+    }
+
+    #[test]
+    fn extract_file_path_relative() {
+        assert_eq!(extract_file_path("src/main.rs"), Some("src/main.rs".into()));
+    }
+
+    #[test]
+    fn extract_file_path_none_for_plain_text() {
+        assert_eq!(extract_file_path("hello world"), None);
     }
 
     #[test]

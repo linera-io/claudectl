@@ -148,6 +148,7 @@ impl BrainEngine {
                                     &suggestion,
                                     "deferred_file_conflict",
                                     Some(session),
+                                    DecisionType::Session,
                                 );
                                 let mut flagged = suggestion.clone();
                                 flagged.reasoning =

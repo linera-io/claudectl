@@ -366,12 +366,21 @@ fn build_git_context(cwd: &str) -> String {
 }
 
 fn build_git_context_uncached(cwd: &str) -> String {
-    let branch = run_git_cmd(cwd, &["branch", "--show-current"]).unwrap_or_default();
-    if branch.is_empty() {
-        return String::new(); // Not a git repo
+    // Check if we're in a git repo at all
+    let is_git = run_git_cmd(cwd, &["rev-parse", "--is-inside-work-tree"]);
+    if is_git.as_deref() != Some("true") {
+        return String::new();
     }
 
-    let mut lines = vec![format!("Branch: {branch}")];
+    let mut lines = Vec::new();
+
+    // Branch name (may be empty in detached HEAD, e.g. CI checkouts)
+    let branch = run_git_cmd(cwd, &["branch", "--show-current"]).unwrap_or_default();
+    if !branch.is_empty() {
+        lines.push(format!("Branch: {branch}"));
+    } else if let Some(rev) = run_git_cmd(cwd, &["rev-parse", "--short", "HEAD"]) {
+        lines.push(format!("HEAD: {rev} (detached)"));
+    }
 
     if let Some(status) = run_git_cmd(cwd, &["status", "--short"]) {
         let file_count = status.lines().count();
@@ -396,8 +405,8 @@ fn build_git_context_uncached(cwd: &str) -> String {
         }
     }
 
-    if lines.len() <= 1 {
-        return String::new(); // Only branch, not useful
+    if lines.is_empty() || (lines.len() == 1 && !lines[0].contains("Uncommitted")) {
+        return String::new(); // No useful git state
     }
 
     format!("Git state:\n  {}", lines.join("\n  "))
@@ -628,10 +637,13 @@ mod tests {
     #[test]
     fn git_context_in_git_repo() {
         let cwd = env!("CARGO_MANIFEST_DIR");
-        let ctx = build_git_context(cwd);
-        // This project is a git repo, so we should get context
-        assert!(!ctx.is_empty(), "Expected git context in a git repo");
-        assert!(ctx.contains("Branch:"));
+        let ctx = build_git_context_uncached(cwd);
+        // This project is a git repo — we should get either Branch or HEAD plus commits
+        // In CI (detached HEAD), branch may be empty but HEAD + commits should exist
+        assert!(
+            ctx.contains("Branch:") || ctx.contains("HEAD:") || ctx.contains("Recent commits:"),
+            "Expected git context in a git repo, got: {ctx:?}"
+        );
     }
 
     #[test]

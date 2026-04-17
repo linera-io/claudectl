@@ -140,8 +140,9 @@ fn project_preferences_path(project: &str) -> PathBuf {
 }
 
 /// Convert a project name to a filesystem-safe slug.
+/// Returns "unknown" for empty or whitespace-only names.
 fn project_slug(project: &str) -> String {
-    project
+    let slug: String = project
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
@@ -151,17 +152,37 @@ fn project_slug(project: &str) -> String {
             }
         })
         .collect::<String>()
-        .to_lowercase()
+        .to_lowercase();
+    if slug.is_empty() || slug.chars().all(|c| c == '_') {
+        "unknown".to_string()
+    } else {
+        slug
+    }
 }
 
-/// Compute the current hour (0-23) from SystemTime without chrono.
+/// Compute the current local hour (0-23) without chrono.
+/// Uses libc::localtime_r for timezone-aware hour so that work-hours
+/// pattern detection aligns with the user's actual schedule.
 fn current_hour() -> u8 {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // UTC-based hour; good enough for pattern detection (consistent baseline).
-    ((secs % 86400) / 3600) as u8
+    local_hour_from_epoch(secs as i64)
+}
+
+fn local_hour_from_epoch(epoch_secs: i64) -> u8 {
+    #[cfg(unix)]
+    {
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&epoch_secs, &mut tm) };
+        tm.tm_hour as u8
+    }
+    #[cfg(not(unix))]
+    {
+        // Fallback to UTC on non-unix platforms
+        ((epoch_secs as u64 % 86400) / 3600) as u8
+    }
 }
 
 /// Build a JSON snapshot of session state for embedding in a JSONL record.
@@ -279,6 +300,15 @@ pub fn log_observation(
     maybe_distill_background();
 }
 
+/// Work-hours range used for time-of-day pattern detection (local time).
+const WORK_HOUR_START: u8 = 8;
+const WORK_HOUR_END: u8 = 18;
+
+/// Check if an hour falls within work hours.
+fn is_work_hour(h: u8) -> bool {
+    (WORK_HOUR_START..WORK_HOUR_END).contains(&h)
+}
+
 /// How often to re-distill preferences (every N decisions).
 const DISTILL_INTERVAL: u32 = 10;
 
@@ -301,8 +331,24 @@ fn maybe_distill_background() {
     std::thread::spawn(|| {
         let all = read_all_decisions();
         if !all.is_empty() {
+            // Global distillation
             let prefs = distill_preferences(&all);
             let _ = save_preferences(&prefs);
+
+            // Per-project distillation for projects with enough data
+            let mut projects: HashMap<String, Vec<DecisionRecord>> = HashMap::new();
+            for d in &all {
+                projects
+                    .entry(d.project.to_lowercase())
+                    .or_default()
+                    .push(d.clone());
+            }
+            for (project, decisions) in &projects {
+                if decisions.len() >= MIN_PROJECT_DECISIONS {
+                    let proj_prefs = distill_preferences(decisions);
+                    let _ = save_project_preferences(project, &proj_prefs);
+                }
+            }
         }
         DISTILLING.store(false, Ordering::Release);
     });
@@ -766,22 +812,23 @@ fn best_split(decisions: &[&DecisionRecord]) -> Option<(PreferenceCondition, Pre
         }
     }
 
-    // Split on time-of-day: work hours (8-18) vs off hours
+    // Split on time-of-day: work hours vs off hours (using local time)
     {
-        let hour_enriched: Vec<bool> = enriched.iter().map(|(_, ctx)| ctx.hour.is_some()).collect();
-        let has_hours = hour_enriched.iter().filter(|&&h| h).count();
-        // Only attempt hour split if enough records have hour data
+        let has_hours = enriched
+            .iter()
+            .filter(|(_, ctx)| ctx.hour.is_some())
+            .count();
         if has_hours >= 5 {
             let left_mask: Vec<bool> = enriched
                 .iter()
-                .map(|(_, ctx)| ctx.hour.map(|h| (8..18).contains(&h)).unwrap_or(false))
+                .map(|(_, ctx)| ctx.hour.map(is_work_hour).unwrap_or(false))
                 .collect();
             let gain = try_split(&left_mask, &enriched);
             if gain > best_gain {
                 best_gain = gain;
                 best_result = Some((
-                    PreferenceCondition::HourRange(8, 18),
-                    PreferenceCondition::HourRange(18, 8),
+                    PreferenceCondition::HourRange(WORK_HOUR_START, WORK_HOUR_END),
+                    PreferenceCondition::HourRange(WORK_HOUR_END, WORK_HOUR_START),
                 ));
             }
         }
@@ -965,13 +1012,11 @@ fn detect_temporal_patterns(decisions: &[DecisionRecord]) -> Vec<TemporalPattern
             .collect();
 
         if with_hour.len() >= 8 {
-            let work_hours: Vec<&(&DecisionRecord, u8)> = with_hour
-                .iter()
-                .filter(|(_, h)| *h >= 8 && *h < 18)
-                .collect();
+            let work_hours: Vec<&(&DecisionRecord, u8)> =
+                with_hour.iter().filter(|(_, h)| is_work_hour(*h)).collect();
             let off_hours: Vec<&(&DecisionRecord, u8)> = with_hour
                 .iter()
-                .filter(|(_, h)| *h < 8 || *h >= 18)
+                .filter(|(_, h)| !is_work_hour(*h))
                 .collect();
 
             if work_hours.len() >= 3 && off_hours.len() >= 3 {
@@ -2756,6 +2801,8 @@ mod tests {
         assert_eq!(project_slug("My Project"), "my_project");
         assert_eq!(project_slug("/tmp/foo/bar"), "_tmp_foo_bar");
         assert_eq!(project_slug("proj_123"), "proj_123");
+        assert_eq!(project_slug(""), "unknown");
+        assert_eq!(project_slug("   "), "unknown");
     }
 
     #[test]

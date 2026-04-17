@@ -457,18 +457,25 @@ impl BrainEngine {
         self.orchestrate_inflight = false;
         let mut actions = Vec::new();
 
-        // Log orchestration decisions with the Orchestration type
+        // Log orchestration decisions with the Orchestration type.
+        // Use the action label as the user_action so "deny" (no action) isn't
+        // misleadingly logged as "auto" (executed).
         let project = sessions
             .first()
             .map(|s| s.display_name().to_string())
             .unwrap_or_default();
+        let orch_user_action = if suggestion.action == RuleAction::Deny {
+            "deny"
+        } else {
+            "auto"
+        };
         super::decisions::log_decision(
             0,
             &project,
             None,
             None,
             suggestion,
-            "auto",
+            orch_user_action,
             None,
             DecisionType::Orchestration,
         );

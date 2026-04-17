@@ -453,8 +453,11 @@ impl BrainEngine {
             }
 
             // Build summary for checkpoint
-            let ctx =
-                context::build_context(session, &[session.clone()], self.config.max_context_tokens);
+            let ctx = context::build_context(
+                session,
+                std::slice::from_ref(session),
+                self.config.max_context_tokens,
+            );
             let summary = format!(
                 "Continue the work from a previous session that hit context limits.\n\
                  Project: {}\nModel: {}\nCost so far: ${:.2}\n\n\

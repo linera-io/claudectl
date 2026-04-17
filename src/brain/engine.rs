@@ -10,6 +10,7 @@ use crate::session::{ClaudeSession, SessionStatus};
 
 use super::client::BrainSuggestion;
 use super::context;
+use super::decisions::DecisionType;
 
 /// Result sent back from inference thread.
 pub struct BrainResult {
@@ -95,6 +96,7 @@ impl BrainEngine {
                                     &suggestion,
                                     "deny_rule_override",
                                     Some(session),
+                                    DecisionType::Session,
                                 );
                                 actions.push((
                                     result.pid,
@@ -127,6 +129,7 @@ impl BrainEngine {
                                     &suggestion,
                                     "deferred_low_confidence",
                                     Some(session),
+                                    DecisionType::Session,
                                 );
                                 self.pending.insert(result.pid, suggestion);
                                 continue;
@@ -149,6 +152,7 @@ impl BrainEngine {
                                                     &suggestion,
                                                     "auto",
                                                     Some(session),
+                                                    DecisionType::Session,
                                                 );
                                                 actions.push((result.pid, msg));
                                             }
@@ -188,6 +192,7 @@ impl BrainEngine {
                                                     &suggestion,
                                                     "auto",
                                                     Some(session),
+                                                    DecisionType::Session,
                                                 );
                                                 actions.push((result.pid, msg));
                                             }
@@ -205,6 +210,7 @@ impl BrainEngine {
                                         &suggestion,
                                         "auto",
                                         Some(session),
+                                        DecisionType::Session,
                                     );
                                     actions.push((
                                         result.pid,
@@ -231,6 +237,7 @@ impl BrainEngine {
                                                 &suggestion,
                                                 "auto",
                                                 Some(session),
+                                                DecisionType::Session,
                                             );
                                             actions.push((result.pid, msg));
                                         }
@@ -298,8 +305,9 @@ impl BrainEngine {
         let mut brain_ctx =
             context::build_context(session, all_sessions, config.max_context_tokens);
 
-        // Load distilled preferences (compact, ~200 tokens — always fits)
-        if let Some(prefs) = super::decisions::load_preferences() {
+        // Load distilled preferences: prefer project-specific, fall back to global
+        if let Some(prefs) = super::decisions::load_preferences_for_project(session.display_name())
+        {
             brain_ctx.preference_summary = super::decisions::format_preference_summary(&prefs);
         }
 
@@ -317,6 +325,7 @@ impl BrainEngine {
                 session.pending_tool_name.as_deref(),
                 session.display_name(),
                 few_shot_limit,
+                Some(DecisionType::Session),
             );
             brain_ctx.few_shot_examples = super::decisions::format_few_shot_examples(&similar);
         }
@@ -447,6 +456,29 @@ impl BrainEngine {
     ) -> Vec<(u32, String)> {
         self.orchestrate_inflight = false;
         let mut actions = Vec::new();
+
+        // Log orchestration decisions with the Orchestration type.
+        // Use the action label as the user_action so "deny" (no action) isn't
+        // misleadingly logged as "auto" (executed).
+        let project = sessions
+            .first()
+            .map(|s| s.display_name().to_string())
+            .unwrap_or_default();
+        let orch_user_action = if suggestion.action == RuleAction::Deny {
+            "deny"
+        } else {
+            "auto"
+        };
+        super::decisions::log_decision(
+            0,
+            &project,
+            None,
+            None,
+            suggestion,
+            orch_user_action,
+            None,
+            DecisionType::Orchestration,
+        );
 
         // The orchestration response may suggest multiple actions.
         // For now, handle the primary action.

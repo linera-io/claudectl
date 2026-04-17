@@ -1887,6 +1887,7 @@ impl App {
                     sg,
                     "accept",
                     Some(&session),
+                    crate::brain::decisions::DecisionType::Session,
                 );
             }
             crate::logger::log("BRAIN", &format!("Accepted: {msg}"));
@@ -1912,6 +1913,7 @@ impl App {
                 &suggestion,
                 "reject",
                 Some(&session),
+                crate::brain::decisions::DecisionType::Session,
             );
             let msg = format!(
                 "Rejected brain suggestion: {} ({})",

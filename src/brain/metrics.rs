@@ -904,6 +904,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
+    use super::super::decisions::DecisionType;
     use super::*;
 
     // ── Risk classification tests ────────────────────────────────────
@@ -1122,6 +1123,7 @@ mod tests {
             user_action: user_action.into(),
             context: None,
             outcome: None,
+            decision_type: DecisionType::Session,
         }
     }
 

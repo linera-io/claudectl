@@ -2,6 +2,11 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.29.1] - 2026-04-17
+
+### Fixed
+- Few-shot retrieval rejection weight now auto-calibrates based on the user's actual accept/reject ratio instead of using a hardcoded factor of 8. Rare rejections (99/1) get amplified to 12, typical ratios (90/10) produce ~9, and frequent rejecters (60/40) see the weight drop to the floor of 3. (#158)
+
 ## [0.28.0] - 2026-04-16
 
 ### Added

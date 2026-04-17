@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::session::{self, ClaudeSession};
 use crate::transcript::{self, TranscriptBlock, TranscriptEvent};
@@ -22,6 +25,8 @@ pub struct BrainContext {
     pub preference_summary: String,
     /// Global view of all active sessions (empty if only one session).
     pub global_session_map: String,
+    /// Git state for the session's working directory (empty if not a git repo).
+    pub git_context: String,
 }
 
 /// Build a compact context for the brain from a session's state and JSONL transcript.
@@ -36,6 +41,8 @@ pub fn build_context(
     let decision_prompt = format_decision_prompt(session);
     let global_session_map = format_global_session_map(session.pid, all_sessions);
 
+    let git_context = build_git_context(&session.cwd);
+
     BrainContext {
         session_summary,
         recent_transcript,
@@ -43,6 +50,7 @@ pub fn build_context(
         few_shot_examples: String::new(), // Set by engine after retrieval
         preference_summary: String::new(), // Set by engine from distilled preferences
         global_session_map,
+        git_context,
     }
 }
 
@@ -329,6 +337,98 @@ fn format_entry_compact(entry: &TranscriptEntry) -> String {
     format!("[{}] {}", entry.role, summary_parts.join(", "))
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Git context
+// ────────────────────────────────────────────────────────────────────────────
+
+static GIT_CACHE: Mutex<Option<HashMap<String, (Instant, String)>>> = Mutex::new(None);
+const GIT_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Build a compact git state summary for the session's CWD. Cached per-CWD with 30s TTL.
+fn build_git_context(cwd: &str) -> String {
+    if let Ok(mut guard) = GIT_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        if let Some((ts, cached)) = cache.get(cwd) {
+            if ts.elapsed() < GIT_CACHE_TTL {
+                return cached.clone();
+            }
+        }
+    }
+
+    let result = build_git_context_uncached(cwd);
+
+    if let Ok(mut guard) = GIT_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        cache.insert(cwd.to_string(), (Instant::now(), result.clone()));
+    }
+
+    result
+}
+
+fn build_git_context_uncached(cwd: &str) -> String {
+    // Check if we're in a git repo at all
+    let is_git = run_git_cmd(cwd, &["rev-parse", "--is-inside-work-tree"]);
+    if is_git.as_deref() != Some("true") {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+
+    // Branch name (may be empty in detached HEAD, e.g. CI checkouts)
+    let branch = run_git_cmd(cwd, &["branch", "--show-current"]).unwrap_or_default();
+    if !branch.is_empty() {
+        lines.push(format!("Branch: {branch}"));
+    } else if let Some(rev) = run_git_cmd(cwd, &["rev-parse", "--short", "HEAD"]) {
+        lines.push(format!("HEAD: {rev} (detached)"));
+    }
+
+    if let Some(status) = run_git_cmd(cwd, &["status", "--short"]) {
+        let file_count = status.lines().count();
+        if file_count > 0 {
+            lines.push(format!("Uncommitted: {file_count} files changed"));
+        }
+    }
+
+    if let Some(diff) = run_git_cmd(cwd, &["diff", "--stat", "--stat-width=60"]) {
+        let last_line = diff.lines().last().unwrap_or("");
+        if last_line.contains("changed") {
+            lines.push(format!("Diff: {}", last_line.trim()));
+        }
+    }
+
+    if let Some(log) = run_git_cmd(cwd, &["log", "--oneline", "-3"]) {
+        if !log.is_empty() {
+            lines.push("Recent commits:".to_string());
+            for commit in log.lines().take(3) {
+                lines.push(format!("  {commit}"));
+            }
+        }
+    }
+
+    if lines.is_empty() || (lines.len() == 1 && !lines[0].contains("Uncommitted")) {
+        return String::new(); // No useful git state
+    }
+
+    format!("Git state:\n  {}", lines.join("\n  "))
+}
+
+fn run_git_cmd(cwd: &str, args: &[&str]) -> Option<String> {
+    let child = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
 /// Format the full brain prompt by combining summary, transcript, and decision prompt.
 /// Uses the prompt library (user override or built-in template).
 ///
@@ -358,6 +458,12 @@ pub fn format_brain_prompt(ctx: &BrainContext) -> String {
             String::new()
         };
 
+    let git_section = if ctx.git_context.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n## Repository State\n{}", ctx.git_context)
+    };
+
     let global_map = if ctx.global_session_map.is_empty() {
         String::new()
     } else {
@@ -369,6 +475,7 @@ pub fn format_brain_prompt(ctx: &BrainContext) -> String {
         &template,
         &[
             ("session_summary", &ctx.session_summary),
+            ("git_context", &git_section),
             ("global_session_map", &global_map),
             ("recent_transcript", &ctx.recent_transcript),
             ("few_shot_examples", &learning_section),
@@ -480,6 +587,7 @@ mod tests {
             few_shot_examples: String::new(),
             preference_summary: String::new(),
             global_session_map: String::new(),
+            git_context: String::new(),
         };
         let prompt = format_brain_prompt(&ctx);
         assert!(prompt.contains("summary"));
@@ -519,9 +627,59 @@ mod tests {
             few_shot_examples: String::new(),
             preference_summary: String::new(),
             global_session_map: "- session1: Processing\n- session2: Idle".into(),
+            git_context: String::new(),
         };
         let prompt = format_brain_prompt(&ctx);
         assert!(prompt.contains("All Active Sessions"));
         assert!(prompt.contains("session1: Processing"));
+    }
+
+    #[test]
+    fn git_context_in_git_repo() {
+        let cwd = env!("CARGO_MANIFEST_DIR");
+        let ctx = build_git_context_uncached(cwd);
+        // This project is a git repo — we should get either Branch or HEAD plus commits
+        // In CI (detached HEAD), branch may be empty but HEAD + commits should exist
+        assert!(
+            ctx.contains("Branch:") || ctx.contains("HEAD:") || ctx.contains("Recent commits:"),
+            "Expected git context in a git repo, got: {ctx:?}"
+        );
+    }
+
+    #[test]
+    fn git_context_empty_for_non_git() {
+        let ctx = build_git_context("/tmp");
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn git_context_in_prompt_when_present() {
+        let ctx = BrainContext {
+            session_summary: "summary".into(),
+            recent_transcript: "transcript".into(),
+            decision_prompt: "decide".into(),
+            few_shot_examples: String::new(),
+            preference_summary: String::new(),
+            global_session_map: String::new(),
+            git_context: "Git state:\n  Branch: main\n  Uncommitted: 3 files".into(),
+        };
+        let prompt = format_brain_prompt(&ctx);
+        assert!(prompt.contains("Repository State"));
+        assert!(prompt.contains("Branch: main"));
+    }
+
+    #[test]
+    fn git_context_omitted_when_empty() {
+        let ctx = BrainContext {
+            session_summary: "summary".into(),
+            recent_transcript: "transcript".into(),
+            decision_prompt: "decide".into(),
+            few_shot_examples: String::new(),
+            preference_summary: String::new(),
+            global_session_map: String::new(),
+            git_context: String::new(),
+        };
+        let prompt = format_brain_prompt(&ctx);
+        assert!(!prompt.contains("Repository State"));
     }
 }

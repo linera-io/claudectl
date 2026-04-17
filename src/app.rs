@@ -305,6 +305,11 @@ pub struct App {
     pub health_thresholds: crate::config::HealthThresholds,
     pub brain_config: Option<crate::config::BrainConfig>,
     pub brain_engine: Option<crate::brain::engine::BrainEngine>,
+    pub idle_config: crate::config::IdleConfig,
+    pub last_user_interaction: std::time::Instant,
+    pub idle_mode_active: bool,
+    pub idle_tasks_launched: Vec<String>,
+    pub idle_report: Vec<String>,
 }
 
 #[derive(Default, Clone)]
@@ -416,6 +421,11 @@ impl App {
             health_thresholds: crate::config::HealthThresholds::default(),
             brain_config: None,
             brain_engine: None,
+            idle_config: crate::config::IdleConfig::default(),
+            last_user_interaction: std::time::Instant::now(),
+            idle_mode_active: false,
+            idle_tasks_launched: Vec::new(),
+            idle_report: Vec::new(),
         };
         app.refresh();
         if app.visible_session_count() > 0 {
@@ -1002,6 +1012,9 @@ impl App {
         self.refresh();
         self.run_auto_actions();
 
+        // Check idle mode transition
+        self.check_idle_mode();
+
         // Refresh weekly summary every ~30s (15 ticks at 2s interval)
         self.weekly_summary_tick += 1;
         if self.weekly_summary_tick >= 15 {
@@ -1131,6 +1144,25 @@ impl App {
                 }
             }
         }
+    }
+
+    fn check_idle_mode(&mut self) {
+        if !self.idle_config.enabled {
+            return;
+        }
+        let idle_threshold = std::time::Duration::from_secs(self.idle_config.after_idle_mins * 60);
+        let was_idle = self.idle_mode_active;
+        self.idle_mode_active = self.last_user_interaction.elapsed() > idle_threshold;
+
+        if self.idle_mode_active && !was_idle {
+            crate::logger::log("IDLE", "Entering idle mode");
+        }
+    }
+
+    /// Check if currently in idle mode (used by other systems like lifecycle restart).
+    #[allow(dead_code)]
+    pub fn is_idle(&self) -> bool {
+        self.idle_mode_active
     }
 
     fn run_auto_actions(&mut self) {
@@ -1415,6 +1447,19 @@ impl App {
 
     /// Handle a key event. Returns false if the application should quit.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.last_user_interaction = std::time::Instant::now();
+
+        // Transition out of idle mode on any key press
+        if self.idle_mode_active {
+            self.idle_mode_active = false;
+            if !self.idle_report.is_empty() {
+                let report = self.idle_report.join("; ");
+                self.status_msg = format!("Idle report: {report}");
+                self.idle_report.clear();
+            }
+            self.idle_tasks_launched.clear();
+        }
+
         // Help overlay: any key dismisses
         if self.show_help {
             self.show_help = false;

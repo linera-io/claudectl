@@ -2760,7 +2760,7 @@ mod tests {
 
     #[test]
     fn test_project_filtered_decisions() {
-        let decisions = vec![
+        let decisions = [
             make_decision("Bash", "alpha", "accept"),
             make_decision("Bash", "beta", "reject"),
             make_decision("Read", "alpha", "accept"),

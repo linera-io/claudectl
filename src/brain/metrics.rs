@@ -904,8 +904,8 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::decisions::DecisionType;
+    use super::*;
 
     // ── Risk classification tests ────────────────────────────────────
 

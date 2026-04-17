@@ -42,6 +42,7 @@ claudectl                                 # Live dashboard
 claudectl --brain                         # Local LLM auto-pilot
 claudectl --new --cwd ./myproject         # Launch a new session
 claudectl --run tasks.json --parallel     # Orchestrate multiple sessions
+claudectl --decompose "Add auth and update tests and docs"  # Split into parallel tasks
 ```
 
 ## Why claudectl
@@ -57,7 +58,10 @@ claudectl --run tasks.json --parallel     # Orchestrate multiple sessions
 | Know which session is blocked | Tab-hunt | **At a glance** |
 | Track cost per session | Manually | **Live $/hr burn rate** |
 | Enforce spend budgets | No | **Auto-kill at limit** |
-| File conflict detection | No | **Auto-detect + auto-deny** |
+| File conflict detection | No | **Auto-detect + brain pre-check + auto-deny** |
+| Idle mode / unattended work | No | **Run tasks while you sleep** |
+| Session auto-restart | No | **Checkpoint + restart on context saturation** |
+| Task decomposition | No | **`--decompose` splits prompts into parallel DAGs** |
 | Auto-rule engine | No | **Match by tool/command/project/cost** |
 | Approve prompts without switching | No | **Press `y`** |
 | Get notified on stalls/blocks | No | **Desktop + webhook** |
@@ -108,6 +112,8 @@ The brain captures rich context at every decision point and distills it into com
 | **Conditional preferences** | Learns context-dependent rules via decision tree splits | `approve [Bash] "git push" when cost<$5 (n=8)` |
 | **Outcome tracking** | Correlates consecutive decisions to detect "approved but broke" | Downweights false-positive approvals, reinforces correct rejections |
 | **Temporal patterns** | Detects behavioral sequences across decisions | `After 3+ errors: user usually denies (n=12)` |
+| **Time-of-day** | Learns work-hours vs off-hours approval behavior | `More permissive during work hours (accept 90% vs 40%)` |
+| **Per-project models** | Distills separate preferences per project | `[Read] always approve in frontend, usually deny in infra` |
 
 The brain learns passively from all user actions, not just brain-involved decisions:
 
@@ -124,10 +130,11 @@ Adaptive confidence thresholds track accuracy per tool — if the brain is 90%+ 
 **What the brain sees per session:**
 - Project name, status, model, pending tool call + command
 - Cost, burn rate, context window utilization
+- **Git state** — branch, uncommitted changes, diff stats, recent commits (cached, 30s TTL)
 - Recent transcript (last 8 messages, earlier ones compacted)
 - All other active sessions (for cross-session reasoning)
-- Distilled conditional preferences (compact rules with context conditions)
-- Situational rules (error streaks, cost pressure, context pressure)
+- **Per-project preferences** — distilled from project-specific decision history (falls back to global with <10 decisions)
+- Situational rules (error streaks, cost pressure, context pressure, **time-of-day patterns**)
 - Outcome-weighted few-shot examples (corrections weighted highest)
 
 **Measure brain effectiveness:**
@@ -162,6 +169,37 @@ orchestrate_interval = 30   # Seconds between orchestration passes
 
 Override any prompt template by placing files in `~/.claudectl/brain/prompts/`.
 
+**File conflict pre-check** — before auto-approving Write/Edit calls, the brain checks if another session has the target file in its edit history. Conflicts are demoted to advisory mode, requiring your confirmation.
+
+## Idle Mode
+
+When you step away, claudectl detects inactivity and can run pre-configured low-risk tasks:
+
+```toml
+# .claudectl.toml
+[idle]
+enabled = true
+after_idle_mins = 15         # Transition to idle after 15 minutes
+max_concurrent = 2           # Max parallel idle tasks
+max_cost_usd = 5.0           # Budget cap for idle work
+```
+
+The status bar shows idle state and elapsed time. On your first keypress back, a morning report summarizes what happened while you were away.
+
+## Session Lifecycle
+
+Long-running sessions degrade as their context window fills. claudectl can auto-restart them:
+
+```toml
+# .claudectl.toml
+[lifecycle]
+auto_restart = true          # Enable auto-restart on context saturation
+restart_threshold_pct = 90.0 # Restart when context exceeds 90%
+restart_only_when_idle = true # Only restart during idle mode
+```
+
+When triggered, the brain summarizes the session state, saves a checkpoint to `~/.claudectl/brain/checkpoints/`, and spawns a fresh session with the summary as context.
+
 ## Record and Share
 
 **Highlight reels** — Press `R` on any session. claudectl extracts file edits, bash commands, errors, and successes. Idle time and noise are stripped. Output is a shareable GIF.
@@ -190,6 +228,18 @@ Run coordinated tasks with dependency ordering, retries, cross-session data rout
 ```bash
 claudectl --run tasks.json --parallel
 ```
+
+**Auto-decompose prompts** — let the brain split large prompts into parallel sub-tasks:
+
+```bash
+# Analyze a prompt and output a task DAG (pipe to --run)
+claudectl --decompose "Add JWT auth, write tests for all endpoints, and update the API docs"
+
+# Decompose and run in one pipeline
+claudectl --decompose "..." > tasks.json && claudectl --run tasks.json --parallel
+```
+
+The decomposition prompt template is user-overridable via `~/.claudectl/brain/prompts/decomposition.md`.
 
 ## Session Health Monitoring
 

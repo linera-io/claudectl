@@ -416,6 +416,22 @@ pub fn forget() -> Result<(), String> {
 // Outcome-weighted few-shot retrieval
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Compute rejection weight from the accept/reject ratio in a decision set.
+/// Returns a value in [3, 12]: rare rejections get amplified, frequent ones don't.
+fn dynamic_rejection_weight(decisions: &[&DecisionRecord]) -> i32 {
+    let mut accepts: u32 = 0;
+    let mut rejects: u32 = 0;
+    for d in decisions {
+        if d.is_positive() {
+            accepts += 1;
+        } else if d.is_negative() {
+            rejects += 1;
+        }
+    }
+    let weight = accepts as f64 / rejects.max(1) as f64;
+    weight.clamp(3.0, 12.0) as i32
+}
+
 /// Retrieve past decisions most relevant to the current context.
 /// Weights: same tool, same project, user-confirmed outcomes rank higher.
 /// When `decision_type` is specified, only decisions of that type are returned.
@@ -445,6 +461,12 @@ pub fn retrieve_similar(
         return Vec::new();
     }
 
+    // Dynamic rejection weight: scale based on accept/reject ratio so that
+    // rejections stay proportionally informative regardless of the user's
+    // approval habits.  At 90/10 → ~9 (close to the old hardcoded 8),
+    // at 60/40 → 3 (floor), at 99/1 → 12 (cap).
+    let rejection_weight = dynamic_rejection_weight(&filtered);
+
     // Score each decision by relevance + outcome signal
     let mut scored: Vec<(i32, usize, &DecisionRecord)> = filtered
         .iter()
@@ -468,7 +490,7 @@ pub fn retrieve_similar(
             } else if d.is_positive() {
                 score += 3; // Accepted/auto = brain was right, reinforce
             } else if d.is_negative() {
-                score += 8; // Rejected = correction signal, very valuable for learning
+                score += rejection_weight; // Rejected = correction signal, weight scales with ratio
             }
 
             // Recency bonus: newer decisions reflect current preferences
@@ -2174,11 +2196,73 @@ mod tests {
             make_decision("Bash", "proj", "reject"),
         ];
 
-        // Simulate scoring: reject gets +8, accept gets +3
-        // Both match on tool (+10) and project (+5)
-        // reject total = 10+5+8+recency = higher
+        // Reject gets dynamic weight (here 1:1 ratio → clamped to floor 3),
+        // accept gets +3. Both match on tool (+10) and project (+5).
         let reject = &decisions[1];
         assert!(reject.is_negative());
+    }
+
+    #[test]
+    fn dynamic_rejection_weight_typical_ratio() {
+        // 90/10 ratio → weight = 9
+        let mut decisions: Vec<DecisionRecord> = (0..9)
+            .map(|_| make_decision("Bash", "proj", "accept"))
+            .collect();
+        decisions.push(make_decision("Bash", "proj", "reject"));
+        let refs: Vec<&DecisionRecord> = decisions.iter().collect();
+        assert_eq!(dynamic_rejection_weight(&refs), 9);
+    }
+
+    #[test]
+    fn dynamic_rejection_weight_frequent_rejects() {
+        // 60/40 ratio → 6/4 = 1.5 → clamp to floor of 3
+        let mut decisions: Vec<DecisionRecord> = (0..6)
+            .map(|_| make_decision("Bash", "proj", "accept"))
+            .collect();
+        decisions.extend((0..4).map(|_| make_decision("Bash", "proj", "reject")));
+        let refs: Vec<&DecisionRecord> = decisions.iter().collect();
+        assert_eq!(dynamic_rejection_weight(&refs), 3);
+    }
+
+    #[test]
+    fn dynamic_rejection_weight_rare_rejects() {
+        // 99/1 ratio → clamp to cap of 12
+        let mut decisions: Vec<DecisionRecord> = (0..99)
+            .map(|_| make_decision("Bash", "proj", "accept"))
+            .collect();
+        decisions.push(make_decision("Bash", "proj", "reject"));
+        let refs: Vec<&DecisionRecord> = decisions.iter().collect();
+        assert_eq!(dynamic_rejection_weight(&refs), 12);
+    }
+
+    #[test]
+    fn dynamic_rejection_weight_no_rejects() {
+        // All accepts, 0 rejects → 10/max(0,1) = 10 → clamps to 10
+        let decisions: Vec<DecisionRecord> = (0..10)
+            .map(|_| make_decision("Bash", "proj", "accept"))
+            .collect();
+        let refs: Vec<&DecisionRecord> = decisions.iter().collect();
+        assert_eq!(dynamic_rejection_weight(&refs), 10);
+    }
+
+    #[test]
+    fn dynamic_rejection_weight_no_accepts() {
+        // All rejects, 0 accepts → 0/10 = 0 → clamps to floor of 3
+        let decisions: Vec<DecisionRecord> = (0..10)
+            .map(|_| make_decision("Bash", "proj", "reject"))
+            .collect();
+        let refs: Vec<&DecisionRecord> = decisions.iter().collect();
+        assert_eq!(dynamic_rejection_weight(&refs), 3);
+    }
+
+    #[test]
+    fn dynamic_rejection_weight_only_observations() {
+        // No accepts or rejects (neutral observations) → 0/max(0,1) = 0 → clamps to 3
+        let decisions: Vec<DecisionRecord> = (0..5)
+            .map(|_| make_decision("Read", "proj", "user_input"))
+            .collect();
+        let refs: Vec<&DecisionRecord> = decisions.iter().collect();
+        assert_eq!(dynamic_rejection_weight(&refs), 3);
     }
 
     // ── Multi-level learning tests ───────────────────────────────────

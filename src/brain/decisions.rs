@@ -191,6 +191,7 @@ fn snapshot_context(session: &crate::session::ClaudeSession) -> serde_json::Valu
 
 /// Log a brain decision (suggestion + user response) to the local JSONL file.
 /// `decision_type` distinguishes session-level vs orchestration-level decisions.
+#[allow(clippy::too_many_arguments)]
 pub fn log_decision(
     pid: u32,
     project: &str,
@@ -773,7 +774,7 @@ fn best_split(decisions: &[&DecisionRecord]) -> Option<(PreferenceCondition, Pre
         if has_hours >= 5 {
             let left_mask: Vec<bool> = enriched
                 .iter()
-                .map(|(_, ctx)| ctx.hour.map(|h| h >= 8 && h < 18).unwrap_or(false))
+                .map(|(_, ctx)| ctx.hour.map(|h| (8..18).contains(&h)).unwrap_or(false))
                 .collect();
             let gain = try_split(&left_mask, &enriched);
             if gain > best_gain {

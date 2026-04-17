@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::decisions::{DecisionRecord, DecisionType, read_all_decisions};
+use super::decisions::{DecisionRecord, read_all_decisions};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Risk tier classification
@@ -905,6 +905,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::decisions::DecisionType;
 
     // ── Risk classification tests ────────────────────────────────────
 

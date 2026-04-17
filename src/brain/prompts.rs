@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub const ADVISORY: &str = "advisory";
 pub const ORCHESTRATION: &str = "orchestration";
 pub const SUMMARIZE: &str = "summarize";
+pub const DECOMPOSITION: &str = "decomposition";
 
 /// Load a prompt template by name. Checks user overrides first, falls back to built-in.
 pub fn load(name: &str) -> String {
@@ -50,6 +51,7 @@ fn builtin(name: &str) -> &'static str {
         ADVISORY => ADVISORY_PROMPT,
         ORCHESTRATION => ORCHESTRATION_PROMPT,
         SUMMARIZE => SUMMARIZE_PROMPT,
+        DECOMPOSITION => DECOMPOSITION_PROMPT,
         _ => {
             "Respond with JSON: {\"action\": \"deny\", \"reasoning\": \"unknown prompt\", \"confidence\": 0.0}"
         }
@@ -58,7 +60,7 @@ fn builtin(name: &str) -> &'static str {
 
 /// List all available prompt names and their source (builtin vs user override).
 pub fn list_prompts() -> Vec<(String, String)> {
-    let names = [ADVISORY, ORCHESTRATION, SUMMARIZE];
+    let names = [ADVISORY, ORCHESTRATION, SUMMARIZE, DECOMPOSITION];
     names
         .iter()
         .map(|name| {
@@ -102,6 +104,23 @@ Analyze all sessions and decide if any cross-session action should be taken:
 Consider: Are sessions doing redundant work? Could work be parallelized? Is a session stuck? Has one session produced output another needs?
 
 Respond with JSON: {"action": "spawn"|"route"|"terminate"|"deny", "target_pid": <pid if route>, "spawn_prompt": "...", "spawn_cwd": ".", "reasoning": "...", "confidence": 0.0-1.0}"#;
+
+const DECOMPOSITION_PROMPT: &str = r#"Analyze this task prompt and determine if it can be split into independent parallel sub-tasks.
+
+Task prompt:
+{{prompt}}
+
+Working directory: {{cwd}}
+
+Rules:
+- Only split if parts are truly independent (can run in parallel without file conflicts)
+- Each sub-task must be self-contained with a clear, actionable prompt
+- Keep the number of sub-tasks between 2 and {{max_tasks}}
+- If the task is already focused/atomic, set decomposable to false
+- Name each sub-task with a short slug (lowercase, hyphens)
+
+Respond with JSON:
+{"decomposable": true/false, "reasoning": "why or why not", "tasks": [{"name": "short-name", "prompt": "full prompt text", "depends_on": ["other-task-name"]}]}"#;
 
 const SUMMARIZE_PROMPT: &str = r#"Summarize this output from session '{{source_project}}' for another Claude Code session working on: {{target_task}}
 
@@ -159,10 +178,11 @@ mod tests {
     #[test]
     fn list_prompts_returns_all() {
         let prompts = list_prompts();
-        assert_eq!(prompts.len(), 3);
+        assert_eq!(prompts.len(), 4);
         assert!(prompts.iter().any(|(n, _)| n == ADVISORY));
         assert!(prompts.iter().any(|(n, _)| n == ORCHESTRATION));
         assert!(prompts.iter().any(|(n, _)| n == SUMMARIZE));
+        assert!(prompts.iter().any(|(n, _)| n == DECOMPOSITION));
     }
 
     #[test]

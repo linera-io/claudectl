@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A task definition from the tasks file.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TaskDef {
     pub name: String,
@@ -29,7 +29,7 @@ pub struct TaskDef {
 }
 
 /// Task file containing a list of tasks.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskFile {
     pub tasks: Vec<TaskDef>,
@@ -163,6 +163,27 @@ struct TaskReport {
     latest_stderr_log: Option<String>,
     recent_output: Vec<String>,
     attempts: Vec<AttemptArtifact>,
+}
+
+/// Convert decomposed tasks into a TaskFile compatible with the orchestrator.
+pub fn decomposition_to_task_file(
+    tasks: Vec<crate::brain::client::DecomposedTask>,
+    cwd: &str,
+) -> TaskFile {
+    TaskFile {
+        tasks: tasks
+            .into_iter()
+            .map(|t| TaskDef {
+                name: t.name,
+                cwd: Some(cwd.to_string()),
+                prompt: t.prompt,
+                depends_on: t.depends_on,
+                resume: None,
+                retries: None,
+            })
+            .collect(),
+        retries: None,
+    }
 }
 
 /// Load tasks from a JSON file.
@@ -1443,5 +1464,34 @@ mod tests {
         let outputs = HashMap::new();
         let err = expand_prompt_templates("{{a.stderr}}", &outputs).unwrap_err();
         assert!(err.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn test_decomposition_to_task_file() {
+        let tasks = vec![
+            crate::brain::client::DecomposedTask {
+                name: "analyze".into(),
+                prompt: "analyze code".into(),
+                depends_on: vec![],
+            },
+            crate::brain::client::DecomposedTask {
+                name: "fix".into(),
+                prompt: "fix issues".into(),
+                depends_on: vec!["analyze".into()],
+            },
+        ];
+        let task_file = decomposition_to_task_file(tasks, "/tmp/proj");
+        assert_eq!(task_file.tasks.len(), 2);
+        assert_eq!(task_file.tasks[0].name, "analyze");
+        assert_eq!(task_file.tasks[0].cwd, Some("/tmp/proj".into()));
+        assert_eq!(task_file.tasks[1].depends_on, vec!["analyze"]);
+        // Validate the resulting task file is valid
+        assert!(validate_task_file(&task_file).is_ok());
+    }
+
+    #[test]
+    fn test_decomposition_empty_tasks() {
+        let task_file = decomposition_to_task_file(vec![], "/tmp");
+        assert!(task_file.tasks.is_empty());
     }
 }

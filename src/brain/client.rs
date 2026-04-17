@@ -70,6 +70,93 @@ pub fn infer(config: &BrainConfig, prompt: &str) -> Result<BrainSuggestion, Stri
     }
 }
 
+/// Result of a task decomposition analysis.
+#[derive(Debug, Clone)]
+pub struct DecompositionResult {
+    pub decomposable: bool,
+    pub reasoning: String,
+    pub tasks: Vec<DecomposedTask>,
+}
+
+/// A single sub-task from decomposition.
+#[derive(Debug, Clone)]
+pub struct DecomposedTask {
+    pub name: String,
+    pub prompt: String,
+    pub depends_on: Vec<String>,
+}
+
+/// Analyze a prompt and determine if it can be split into parallel sub-tasks.
+pub fn decompose_prompt(
+    config: &BrainConfig,
+    prompt: &str,
+    cwd: &str,
+    max_tasks: usize,
+) -> Result<DecompositionResult, String> {
+    let template = super::prompts::load(super::prompts::DECOMPOSITION);
+    let expanded = super::prompts::expand(
+        &template,
+        &[
+            ("prompt", prompt),
+            ("cwd", cwd),
+            ("max_tasks", &max_tasks.to_string()),
+        ],
+    );
+
+    let response = call_llm(config, &expanded)?;
+    parse_decomposition_json(&response)
+}
+
+/// Parse the decomposition JSON response.
+pub fn parse_decomposition_json(text: &str) -> Result<DecompositionResult, String> {
+    let json: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("invalid decomposition JSON: {e}"))?;
+
+    let decomposable = json
+        .get("decomposable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let reasoning = json
+        .get("reasoning")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let tasks = if decomposable {
+        json.get("tasks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        Some(DecomposedTask {
+                            name: t.get("name")?.as_str()?.to_string(),
+                            prompt: t.get("prompt")?.as_str()?.to_string(),
+                            depends_on: t
+                                .get("depends_on")
+                                .and_then(|v| v.as_array())
+                                .map(|deps| {
+                                    deps.iter()
+                                        .filter_map(|d| d.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    Ok(DecompositionResult {
+        decomposable,
+        reasoning,
+        tasks,
+    })
+}
+
 /// Detect if the endpoint is OpenAI-compatible based on URL path.
 fn is_openai_compatible(endpoint: &str) -> bool {
     endpoint.contains("/v1/chat") || endpoint.contains("/v1/completions")
@@ -354,5 +441,37 @@ mod tests {
         ));
         assert!(is_openai_compatible("http://host/v1/completions"));
         assert!(!is_openai_compatible("http://localhost:11434/api/generate"));
+    }
+
+    #[test]
+    fn parse_decomposition_decomposable() {
+        let json = r#"{"decomposable": true, "reasoning": "two independent modules", "tasks": [{"name": "task-a", "prompt": "update module A", "depends_on": []}, {"name": "task-b", "prompt": "update module B", "depends_on": []}]}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert!(result.decomposable);
+        assert_eq!(result.tasks.len(), 2);
+        assert_eq!(result.tasks[0].name, "task-a");
+        assert_eq!(result.tasks[1].name, "task-b");
+        assert!(result.tasks[0].depends_on.is_empty());
+    }
+
+    #[test]
+    fn parse_decomposition_not_decomposable() {
+        let json = r#"{"decomposable": false, "reasoning": "task is atomic", "tasks": []}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert!(!result.decomposable);
+        assert!(result.tasks.is_empty());
+        assert!(result.reasoning.contains("atomic"));
+    }
+
+    #[test]
+    fn parse_decomposition_with_dependencies() {
+        let json = r#"{"decomposable": true, "reasoning": "pipeline", "tasks": [{"name": "analyze", "prompt": "analyze code", "depends_on": []}, {"name": "fix", "prompt": "fix issues", "depends_on": ["analyze"]}]}"#;
+        let result = parse_decomposition_json(json).unwrap();
+        assert_eq!(result.tasks[1].depends_on, vec!["analyze"]);
+    }
+
+    #[test]
+    fn parse_decomposition_invalid_json() {
+        assert!(parse_decomposition_json("not json").is_err());
     }
 }

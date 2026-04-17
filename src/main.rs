@@ -182,6 +182,10 @@ struct Cli {
     brain_stats: Option<String>,
 
     // ── Orchestration ──────────────────────────────────────────────────
+    /// Analyze a prompt and suggest parallel sub-tasks (outputs TaskFile JSON)
+    #[arg(long, help_heading = "Orchestration")]
+    decompose: Option<String>,
+
     /// Run tasks from a JSON file (e.g., claudectl --run tasks.json)
     #[arg(long, help_heading = "Orchestration")]
     run: Option<String>,
@@ -358,6 +362,38 @@ fn main() -> io::Result<()> {
 
     if let Some(ref subcommand) = cli.brain_stats {
         brain::metrics::dispatch(subcommand);
+        return Ok(());
+    }
+
+    if let Some(ref prompt) = cli.decompose {
+        let brain_cfg = cfg.brain.clone().unwrap_or_default();
+        if prompt.len() < 200 {
+            println!(
+                "Prompt is short ({} chars) — decomposition works best with larger, multi-part prompts.",
+                prompt.len()
+            );
+        }
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".into());
+        let max_tasks = brain_cfg.max_sessions.min(6);
+        eprintln!("Analyzing prompt for decomposition...");
+        match brain::client::decompose_prompt(&brain_cfg, prompt, &cwd, max_tasks) {
+            Ok(result) => {
+                if result.decomposable {
+                    let task_file = orchestrator::decomposition_to_task_file(result.tasks, &cwd);
+                    let json = serde_json::to_string_pretty(&task_file)
+                        .unwrap_or_else(|e| format!("JSON error: {e}"));
+                    println!("{json}");
+                } else {
+                    println!("Not decomposable: {}", result.reasoning);
+                }
+            }
+            Err(e) => {
+                eprintln!("Decomposition failed: {e}");
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
 

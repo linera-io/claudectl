@@ -7,6 +7,7 @@ All notable changes to claudectl are documented here.
 ### Fixed
 - Kitty terminal not detected on Linux — `detect_terminal()` now checks `KITTY_WINDOW_ID` and `TERM=xterm-kitty` env vars before falling back to `TERM_PROGRAM`. Kitty on Linux doesn't set `TERM_PROGRAM`. (#160)
 - Added native env var detection for WezTerm (`WEZTERM_EXECUTABLE`) and Ghostty (`GHOSTTY_RESOURCES_DIR`) as fallbacks when `TERM_PROGRAM` is not set.
+- "No TTY associated with this session" error when pressing Tab in kitty — the blanket TTY guard now only applies to terminals that match by TTY name (tmux, WezTerm, iTerm2, Terminal.app). Kitty, Ghostty, and Warp use PID/cwd-based IPC and don't need a TTY. (#160)
 
 ## [0.29.2] - 2026-04-18
 

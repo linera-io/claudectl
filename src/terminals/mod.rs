@@ -992,11 +992,17 @@ pub fn launch_session(
 }
 
 pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
-    if session.tty.is_empty() {
+    let terminal = detect_terminal();
+
+    // Only require a TTY for terminals that match sessions by TTY name.
+    // Kitty, Ghostty, and Warp use their own IPC (PID/cwd matching) and don't need it.
+    let needs_tty = matches!(
+        terminal,
+        Terminal::Tmux | Terminal::WezTerm | Terminal::Apple | Terminal::ITerm2
+    );
+    if needs_tty && session.tty.is_empty() {
         return Err("No TTY associated with this session".into());
     }
-
-    let terminal = detect_terminal();
     crate::logger::log(
         "DEBUG",
         &format!(

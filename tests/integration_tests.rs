@@ -928,3 +928,150 @@ fn recorder_cast_file_creation() {
 
     let _ = std::fs::remove_file(&output_path);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Transcript Discovery Tests (Issue #161)
+//
+// These tests mutate the HOME env var so projects_dir() resolves to a temp dir.
+// A mutex serializes them to prevent concurrent HOME changes across threads.
+// ────────────────────────────────────────────────────────────────────────────
+
+use std::sync::Mutex;
+static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+/// Helper: build a fake ~/.claude layout in a temp dir and run resolve_jsonl_paths.
+/// Holds HOME_LOCK for the duration.
+fn resolve_with_layout(
+    cwd: &str,
+    session_id: &str,
+    slug_on_disk: &str,
+) -> (ClaudeSession, tempfile::TempDir) {
+    let _guard = HOME_LOCK.lock().unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let original_home = std::env::var("HOME").ok();
+    unsafe { std::env::set_var("HOME", home.path()) };
+
+    let project_dir = home.path().join(".claude/projects").join(slug_on_disk);
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let jsonl_content = r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"cache_creation_input_tokens":523,"cache_read_input_tokens":79425,"output_tokens":937}}}"#;
+    std::fs::write(
+        project_dir.join(format!("{session_id}.jsonl")),
+        jsonl_content,
+    )
+    .unwrap();
+
+    let raw = RawSession {
+        pid: 86131,
+        session_id: session_id.to_string(),
+        cwd: cwd.to_string(),
+        started_at: 1776421121745,
+    };
+    let mut session = ClaudeSession::from_raw(raw);
+    discovery::resolve_jsonl_paths(std::slice::from_mut(&mut session));
+
+    // Restore HOME
+    if let Some(h) = original_home {
+        unsafe { std::env::set_var("HOME", h) };
+    }
+
+    (session, home)
+}
+
+#[test]
+fn resolve_jsonl_standard_cwd() {
+    let (s, _home) = resolve_with_layout(
+        "/Users/testuser/Repos/data-platform-answers",
+        "db55eb53-8ff0-45b7-9f8f-0d5dfa51e701",
+        "-Users-testuser-Repos-data-platform-answers",
+    );
+    assert!(
+        s.jsonl_path.is_some(),
+        "should find JSONL for standard cwd (no trailing slash)"
+    );
+}
+
+#[test]
+fn resolve_jsonl_trailing_slash_cwd() {
+    let (s, _home) = resolve_with_layout(
+        "/Users/testuser/Repos/data-platform-answers/",
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "-Users-testuser-Repos-data-platform-answers",
+    );
+    assert!(
+        s.jsonl_path.is_some(),
+        "should find JSONL even when cwd has trailing slash"
+    );
+}
+
+#[test]
+fn resolve_jsonl_cwd_with_hyphens() {
+    let (s, _home) = resolve_with_layout(
+        "/Users/dev/my-cool-project",
+        "11111111-2222-3333-4444-555555555555",
+        "-Users-dev-my-cool-project",
+    );
+    assert!(
+        s.jsonl_path.is_some(),
+        "should find JSONL when cwd contains hyphens"
+    );
+}
+
+#[test]
+fn resolve_jsonl_encoding_mismatch_fallback() {
+    let _guard = HOME_LOCK.lock().unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let original_home = std::env::var("HOME").ok();
+    unsafe { std::env::set_var("HOME", home.path()) };
+
+    let session_id = "deadbeef-1234-5678-9abc-def012345678";
+    let cwd = "/Users/testuser/projects/webapp";
+
+    // JSONL under a slug that does NOT match cwd_to_slug(cwd)
+    let wrong_slug = "-some-other-encoding-of-the-cwd";
+    let project_dir = home.path().join(".claude/projects").join(wrong_slug);
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join(format!("{session_id}.jsonl")),
+        r#"{"type":"assistant","message":{"model":"claude-opus-4-6","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    ).unwrap();
+
+    let raw = RawSession {
+        pid: 99999,
+        session_id: session_id.to_string(),
+        cwd: cwd.to_string(),
+        started_at: 0,
+    };
+    let mut session = ClaudeSession::from_raw(raw);
+    discovery::resolve_jsonl_paths(std::slice::from_mut(&mut session));
+
+    if let Some(h) = original_home {
+        unsafe { std::env::set_var("HOME", h) };
+    }
+
+    assert!(
+        session.jsonl_path.is_some(),
+        "should find JSONL via fallback scan when slug encoding differs"
+    );
+}
+
+#[test]
+fn resolve_jsonl_telemetry_available_after_resolution() {
+    let (mut s, _home) = resolve_with_layout(
+        "/Users/testuser/myproject",
+        "face0000-face-face-face-faceface0000",
+        "-Users-testuser-myproject",
+    );
+    assert!(s.jsonl_path.is_some(), "precondition: jsonl_path found");
+
+    monitor::update_tokens(&mut s);
+    assert_eq!(
+        s.telemetry_status,
+        TelemetryStatus::Available,
+        "telemetry should be Available after parsing JSONL, not {:?}",
+        s.telemetry_status
+    );
+    assert!(s.usage_metrics_available);
+    assert!(s.own_output_tokens > 0, "should have parsed output tokens");
+}

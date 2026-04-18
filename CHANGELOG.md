@@ -2,6 +2,15 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.29.2] - 2026-04-18
+
+### Fixed
+- Active sessions showing "No transcript" when JSONL files exist on disk. `cwd_to_slug` now strips trailing slashes before encoding, and a new fallback scan searches all project directories by session ID when the slug-based lookup fails. (#161)
+
+### Added
+- `--doctor` now includes a "Transcript Discovery" section that shows each active session's cwd, computed slug, and resolved JSONL path (or the exact paths tried when resolution fails).
+- Debug-level logging at the transcript discovery step, showing which paths were tried and whether the fallback scan was used.
+
 ## [0.29.1] - 2026-04-17
 
 ### Fixed

@@ -181,6 +181,8 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                         } => {
                                             session.last_tool_error = *is_error;
                                             if *is_error {
+                                                session.total_error_count += 1;
+                                                session.current_window_errors += 1;
                                                 let truncated = if content.len() > 256 {
                                                     format!(
                                                         "{}...",
@@ -423,6 +425,27 @@ fn record_tool_usage(tool_name: &str, input: &Value, session: &mut ClaudeSession
     if matches!(tool_name, "Edit" | "Write" | "NotebookEdit") {
         if let Some(path) = input.get("file_path").and_then(|p| p.as_str()) {
             *session.files_modified.entry(path.to_string()).or_insert(0) += 1;
+            // Reset file-read tracker for this path (it was just edited)
+            session.file_reads_since_edit.remove(path);
+        }
+        // Track token efficiency: cumulative tokens at each edit event
+        let total_tokens = session.total_input_tokens + session.total_output_tokens;
+        session.total_tokens_at_edit_count += total_tokens;
+        session.edit_event_count += 1;
+        // Freeze baseline tokens-per-edit after first 5 edits
+        if session.baseline_tokens_per_edit.is_none() && session.edit_event_count >= 5 {
+            session.baseline_tokens_per_edit =
+                Some(session.total_tokens_at_edit_count as f64 / session.edit_event_count as f64);
+        }
+    }
+
+    // Track file reads for repetition detection
+    if matches!(tool_name, "Read" | "Grep" | "Glob") {
+        if let Some(path) = input.get("file_path").and_then(|p| p.as_str()) {
+            *session
+                .file_reads_since_edit
+                .entry(path.to_string())
+                .or_insert(0) += 1;
         }
     }
 }

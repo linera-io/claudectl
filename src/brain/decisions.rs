@@ -2340,6 +2340,16 @@ mod tests {
                 tool_name: "Bash".into(),
                 message: "exit code 1".into(),
             }],
+            total_tokens_at_edit_count: 0,
+            edit_event_count: 0,
+            baseline_tokens_per_edit: None,
+            error_counts_per_window: vec![],
+            current_window_errors: 0,
+            window_tick_counter: 0,
+            baseline_error_rate: None,
+            file_reads_since_edit: HashMap::new(),
+            total_error_count: 0,
+            decay_score: 0,
         };
 
         let ctx = snapshot_context(&session);

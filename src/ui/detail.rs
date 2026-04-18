@@ -92,11 +92,86 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, session: &ClaudeSessio
         detail_line("  Total", &cost, t),
         detail_line("  Burn Rate", &burn_rate, t),
         detail_line("  Estimate", &estimate, t),
+    ];
+
+    // Cognitive Health section
+    if session.has_usage_metrics() && session.decay_score > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Cognitive Health",
+            Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        )));
+
+        let decay_label = match session.decay_score {
+            0..=29 => "healthy",
+            30..=59 => "early decay",
+            60..=79 => "significant decay",
+            _ => "severe decay",
+        };
+        lines.push(detail_line(
+            "  Decay Score",
+            &format!("{}/100 {}", session.decay_score, decay_label),
+            t,
+        ));
+        lines.push(detail_line(
+            "  Context",
+            &format!("{}%", session.context_percent() as u32),
+            t,
+        ));
+
+        if let Some(baseline) = session.baseline_tokens_per_edit {
+            if session.edit_event_count > 5 && baseline > 0.0 {
+                let current =
+                    session.total_tokens_at_edit_count as f64 / session.edit_event_count as f64;
+                let pct_change = ((current / baseline) - 1.0) * 100.0;
+                let arrow = if pct_change > 5.0 { "↓" } else { "→" };
+                lines.push(detail_line(
+                    "  Efficiency",
+                    &format!("{}{:.0}% vs baseline", arrow, pct_change.abs()),
+                    t,
+                ));
+            }
+        }
+
+        if session.error_counts_per_window.len() >= 2 {
+            let recent = session.error_counts_per_window.last().unwrap_or(&0);
+            let first = session.error_counts_per_window.first().unwrap_or(&0);
+            if recent > first {
+                lines.push(detail_line("  Error trend", "↑ accelerating", t));
+            }
+        }
+
+        let max_rereads = session
+            .file_reads_since_edit
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        if max_rereads >= 2 {
+            lines.push(detail_line(
+                "  Repetition",
+                &format!("{} file re-reads detected", max_rereads),
+                t,
+            ));
+        }
+
+        if session.decay_score >= 30 {
+            let suggestion = match session.decay_score {
+                30..=49 => "Consider /compact with preservation notes",
+                50..=69 => "Compact recommended — preserve architectural decisions",
+                70..=84 => "Restart recommended — generate state transfer first",
+                _ => "Session compromised — restart with fresh context",
+            };
+            lines.push(detail_line("  Suggestion", suggestion, t));
+        }
+    }
+
+    lines.extend([
         Line::from(""),
         detail_line("Command", &command, t),
         detail_line("JSONL", &jsonl, t),
         detail_line("Subagents", &subagents, t),
-    ];
+    ]);
 
     if !subagent_breakdown.is_empty() {
         lines.push(Line::from(""));

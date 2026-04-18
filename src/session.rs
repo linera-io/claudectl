@@ -147,6 +147,27 @@ pub struct ClaudeSession {
     pub last_tool_error: bool,
     pub last_error_message: Option<String>,
     pub recent_errors: Vec<ErrorEntry>, // Last 5 errors (ring buffer)
+    // ── Cognitive health tracking ────────────────────────────────────
+    /// Cumulative tokens at each Edit/Write event (for efficiency trending).
+    pub total_tokens_at_edit_count: u64,
+    /// Number of Edit/Write events (for averaging tokens-per-edit).
+    pub edit_event_count: u32,
+    /// Baseline tokens-per-edit, frozen after first 5 edits.
+    pub baseline_tokens_per_edit: Option<f64>,
+    /// Error count ring buffer: one entry per window (~10s each).
+    pub error_counts_per_window: Vec<u32>, // max 10 entries
+    /// Accumulator for current error window.
+    pub current_window_errors: u32,
+    /// Ticks since last window flush.
+    pub window_tick_counter: u32,
+    /// Baseline error rate (errors per window), frozen after 3 windows.
+    pub baseline_error_rate: Option<f64>,
+    /// File reads since last edit: path -> read count. Reset when file is edited.
+    pub file_reads_since_edit: HashMap<String, u32>,
+    /// All-time error count.
+    pub total_error_count: u32,
+    /// Cached composite decay score (0-100), recomputed each tick.
+    pub decay_score: u32,
 }
 
 /// A captured tool error with context.
@@ -326,6 +347,16 @@ impl ClaudeSession {
             last_tool_error: false,
             last_error_message: None,
             recent_errors: Vec::new(),
+            total_tokens_at_edit_count: 0,
+            edit_event_count: 0,
+            baseline_tokens_per_edit: None,
+            error_counts_per_window: Vec::new(),
+            current_window_errors: 0,
+            window_tick_counter: 0,
+            baseline_error_rate: None,
+            file_reads_since_edit: HashMap::new(),
+            total_error_count: 0,
+            decay_score: 0,
         }
     }
 
@@ -343,6 +374,24 @@ impl ClaudeSession {
         self.activity_history.push(level);
         if self.activity_history.len() > 15 {
             self.activity_history.remove(0);
+        }
+
+        // Flush error window every 5 ticks (~10s at default 2s interval)
+        self.window_tick_counter += 1;
+        if self.window_tick_counter >= 5 {
+            self.error_counts_per_window
+                .push(self.current_window_errors);
+            if self.error_counts_per_window.len() > 10 {
+                self.error_counts_per_window.remove(0);
+            }
+            // Freeze baseline error rate after 3 windows
+            if self.baseline_error_rate.is_none() && self.error_counts_per_window.len() >= 3 {
+                let sum: u32 = self.error_counts_per_window.iter().sum();
+                self.baseline_error_rate =
+                    Some(sum as f64 / self.error_counts_per_window.len() as f64);
+            }
+            self.current_window_errors = 0;
+            self.window_tick_counter = 0;
         }
     }
 
@@ -623,6 +672,7 @@ impl ClaudeSession {
                     },
                 })
             }).collect::<Vec<_>>(),
+            "decay_score": if self.usage_metrics_available { serde_json::json!(self.decay_score) } else { serde_json::Value::Null },
             "last_error": self.last_error_message,
             "recent_errors": self.recent_errors.iter().map(|e| {
                 serde_json::json!({
@@ -798,5 +848,44 @@ mod tests {
         assert_eq!(rows[0].display_label(), "completed (2)");
         assert_eq!(rows[0].count, 2);
         assert_eq!(rows[0].format_tokens(), "20.0k/2.0k");
+    }
+
+    // ── Cognitive health tracking tests ──────────────────────────────
+
+    #[test]
+    fn error_window_flush() {
+        let mut s = make_session();
+        s.current_window_errors = 3;
+        // Call record_activity 5 times to trigger one window flush
+        for _ in 0..5 {
+            s.record_activity();
+        }
+        assert_eq!(s.error_counts_per_window.len(), 1);
+        assert_eq!(s.error_counts_per_window[0], 3);
+        assert_eq!(s.current_window_errors, 0);
+        assert_eq!(s.window_tick_counter, 0);
+    }
+
+    #[test]
+    fn baseline_error_rate_freezes() {
+        let mut s = make_session();
+        // Simulate 3 windows of errors
+        for errors in [2, 3, 4] {
+            s.current_window_errors = errors;
+            for _ in 0..5 {
+                s.record_activity();
+            }
+        }
+        assert_eq!(s.error_counts_per_window.len(), 3);
+        let baseline = s.baseline_error_rate.expect("baseline should be set");
+        // baseline = (2+3+4)/3 = 3.0
+        assert!((baseline - 3.0).abs() < 0.01);
+
+        // Add another window — baseline should NOT change
+        s.current_window_errors = 10;
+        for _ in 0..5 {
+            s.record_activity();
+        }
+        assert_eq!(s.baseline_error_rate.unwrap(), baseline);
     }
 }

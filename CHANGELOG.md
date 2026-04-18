@@ -2,6 +2,22 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.30.0] - 2026-04-18
+
+### Added
+- **Cognitive rot detection** — temporal health monitoring that detects session degradation over time, not just point-in-time snapshots (#165)
+  - Composite decay score (0-100) combining context saturation, error acceleration, token efficiency decline, and file re-read repetition
+  - `check_proactive_compaction` — suggests `/compact` at 50% context usage (research shows degradation begins at 40-50%), independent of existing 80/90% context thresholds
+  - `check_token_efficiency` — detects when a session spends increasingly more tokens per file edit vs its frozen baseline
+  - `check_error_acceleration` — detects rising error rates over sliding windows vs a frozen baseline
+  - `check_repetition` — detects files being re-read repeatedly without intervening edits (agent confusion signal)
+  - `check_cognitive_decay` — composite check with severity-ranked icons: `◐` early (30-59), `◉` significant (60-79), `⊘` severe (80-100)
+- **Cognitive Health section** in the detail panel showing decay score, efficiency vs baseline, error trend, repetition count, and context-aware mitigation suggestions
+- `decay_score` field in `--json` output for programmatic access
+- Brain context now includes decay score so the LLM factors cognitive health into its decisions
+- Four new configurable thresholds in `[health]`: `decay_compaction_pct`, `efficiency_critical_factor`, `error_accel_factor`, `repetition_threshold`
+- Demo mode showcases cognitive decay indicators on the ml-pipeline session
+
 ## [0.29.3] - 2026-04-18
 
 ### Fixed

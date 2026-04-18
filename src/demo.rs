@@ -284,6 +284,16 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                 s.burn_rate_per_hr = avg_rate * 6.0;
             }
 
+            // Session 3 (ml-pipeline): Cognitive decay — high context + declining efficiency
+            if i == 3 && tick > 8 {
+                s.baseline_tokens_per_edit = Some(5000.0);
+                s.edit_event_count = 12;
+                s.total_tokens_at_edit_count = 12 * 12_000; // ~12k per edit vs 5k baseline
+                s.error_counts_per_window = vec![0, 1, 1, 2, 3, 4];
+                s.baseline_error_rate = Some(0.7); // average of first 3 windows
+                s.file_reads_since_edit.insert("src/pipeline.rs".into(), 4);
+            }
+
             // Session 4 (ml-pipeline worktree): Loop detection → 🔄
             if i == 4 && tick > 5 {
                 s.last_tool_error = true;

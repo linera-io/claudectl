@@ -591,9 +591,11 @@ impl App {
             }
         }
 
-        // Record activity for sparkline
+        // Record activity for sparkline and cache decay score
         for session in &mut sessions {
             session.record_activity();
+            session.decay_score =
+                crate::health::compute_decay_score(session, &self.health_thresholds);
         }
 
         // Track when sessions first appear as Finished, remove after 30s

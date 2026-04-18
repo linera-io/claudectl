@@ -50,7 +50,7 @@ claudectl --decompose "Add auth and update tests and docs"  # Split into paralle
 | Capability | Claude Code alone | With claudectl |
 |-----------|:-:|:-:|
 | Local LLM auto-approve/deny | No | **Brain with ollama** |
-| Session health monitoring | No | **Cache, cost spikes, loops, stalls, context** |
+| Session health monitoring | No | **Cognitive rot, cache, cost spikes, loops, stalls, context** |
 | Record session highlight reels | No | **Press `R`** |
 | Orchestrate multi-session workflows | No | **Dependency-ordered tasks** |
 | Launch/resume sessions | Separate terminal | **Press `n` or `--new`** |
@@ -245,11 +245,15 @@ The decomposition prompt template is user-overridable via `~/.claudectl/brain/pr
 
 claudectl continuously checks each session for problems and surfaces them with severity-ranked icons in the dashboard:
 
+- **Cognitive rot detection** — composite 0-100 decay score that tracks degradation over time: token efficiency decline, error acceleration, file re-read repetition, and context pressure. Icons: `◐` early, `◉` significant, `⊘` severe
+- **Proactive compaction** — suggests `/compact` at 50% context (research shows degradation starts at 40-50%), before the existing 80/90% thresholds fire
 - **Cache health** — detects low cache hit ratios that can silently multiply costs
 - **Cost spikes** — flags when burn rate exceeds the session average
 - **Loop detection** — catches tools failing repeatedly in retry loops
 - **Stall detection** — sessions spending money but producing no file edits
 - **Context saturation** — warns when a session approaches its context window limit
+
+The detail panel shows a **Cognitive Health** section with decay score, efficiency vs baseline, error trend, repetition count, and actionable mitigation suggestions.
 
 Health issues appear as icons in the session table and as a summary in the status bar. No configuration needed.
 

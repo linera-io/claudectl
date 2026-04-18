@@ -82,6 +82,10 @@ fn format_session_summary(session: &ClaudeSession) -> String {
         }
     }
 
+    if session.decay_score > 0 {
+        summary.push_str(&format!(" | Decay: {}/100", session.decay_score));
+    }
+
     if session.last_tool_error {
         if let Some(ref msg) = session.last_error_message {
             let truncated = session::truncate_str(msg, 100);

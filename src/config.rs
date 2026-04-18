@@ -46,6 +46,10 @@ pub struct HealthThresholds {
     pub stall_min_minutes: u64,  // Min minutes with no edits to trigger stall (default 10)
     pub context_critical_pct: f64, // Context usage above this = critical (default 90%)
     pub context_warning_pct: f64, // Context usage above this = warning (default 80%)
+    pub decay_compaction_pct: f64, // Context % to suggest proactive compaction (default 50%)
+    pub efficiency_critical_factor: f64, // Tokens-per-edit ratio vs baseline to trigger (default 2.0)
+    pub error_accel_factor: f64,         // Error rate ratio vs baseline to trigger (default 2.0)
+    pub repetition_threshold: u32,       // File re-read count without edit to trigger (default 3)
 }
 
 impl Default for HealthThresholds {
@@ -61,6 +65,10 @@ impl Default for HealthThresholds {
             stall_min_minutes: 10,
             context_critical_pct: 90.0,
             context_warning_pct: 80.0,
+            decay_compaction_pct: 50.0,
+            efficiency_critical_factor: 2.0,
+            error_accel_factor: 2.0,
+            repetition_threshold: 3,
         }
     }
 }
@@ -78,6 +86,10 @@ struct RawHealthThresholds {
     stall_min_minutes: Option<u64>,
     context_critical_pct: Option<f64>,
     context_warning_pct: Option<f64>,
+    decay_compaction_pct: Option<f64>,
+    efficiency_critical_factor: Option<f64>,
+    error_accel_factor: Option<f64>,
+    repetition_threshold: Option<u32>,
 }
 
 /// Configuration for the optional local LLM brain.
@@ -320,6 +332,18 @@ impl Config {
             if let Some(v) = h.context_warning_pct {
                 self.health.context_warning_pct = v;
             }
+            if let Some(v) = h.decay_compaction_pct {
+                self.health.decay_compaction_pct = v;
+            }
+            if let Some(v) = h.efficiency_critical_factor {
+                self.health.efficiency_critical_factor = v;
+            }
+            if let Some(v) = h.error_accel_factor {
+                self.health.error_accel_factor = v;
+            }
+            if let Some(v) = h.repetition_threshold {
+                self.health.repetition_threshold = v;
+            }
         }
         if let Some(v) = raw.file_conflicts {
             self.file_conflicts = v;
@@ -463,6 +487,13 @@ impl Config {
             "  context:  critical >{:.0}%, warning >{:.0}%",
             self.health.context_critical_pct, self.health.context_warning_pct,
         );
+        println!(
+            "  decay:    compact >{:.0}%, efficiency >{:.1}x, errors >{:.1}x, repeats >{}",
+            self.health.decay_compaction_pct,
+            self.health.efficiency_critical_factor,
+            self.health.error_accel_factor,
+            self.health.repetition_threshold,
+        );
         if self.model_overrides.is_empty() {
             println!("  model_overrides: none");
         } else {
@@ -569,6 +600,12 @@ impl Config {
 # Context saturation thresholds (percentage, 0-100)
 # context_critical_pct = 90.0
 # context_warning_pct = 80.0
+
+# Cognitive decay detection
+# decay_compaction_pct = 50.0         # Context % to suggest proactive /compact
+# efficiency_critical_factor = 2.0    # Tokens-per-edit ratio vs baseline to trigger
+# error_accel_factor = 2.0            # Error rate ratio vs baseline to trigger
+# repetition_threshold = 3            # File re-reads without edit to trigger
 
 # ── Model Pricing Overrides ─────────────────────────────────────────
 # Override built-in pricing for specific models.
@@ -737,6 +774,12 @@ fn parse_config_file(path: &PathBuf) -> Option<RawConfig> {
                     "stall_min_minutes" => h.stall_min_minutes = value.parse().ok(),
                     "context_critical_pct" => h.context_critical_pct = value.parse().ok(),
                     "context_warning_pct" => h.context_warning_pct = value.parse().ok(),
+                    "decay_compaction_pct" => h.decay_compaction_pct = value.parse().ok(),
+                    "efficiency_critical_factor" => {
+                        h.efficiency_critical_factor = value.parse().ok()
+                    }
+                    "error_accel_factor" => h.error_accel_factor = value.parse().ok(),
+                    "repetition_threshold" => h.repetition_threshold = value.parse().ok(),
                     _ => {}
                 }
             }

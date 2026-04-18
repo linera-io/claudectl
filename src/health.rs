@@ -37,6 +37,21 @@ pub fn check_session(session: &ClaudeSession, t: &HealthThresholds) -> Vec<Healt
     if let Some(c) = check_context_saturation(session, t) {
         checks.push(c);
     }
+    if let Some(c) = check_cognitive_decay(session, t) {
+        checks.push(c);
+    }
+    if let Some(c) = check_proactive_compaction(session, t) {
+        checks.push(c);
+    }
+    if let Some(c) = check_token_efficiency(session, t) {
+        checks.push(c);
+    }
+    if let Some(c) = check_error_acceleration(session, t) {
+        checks.push(c);
+    }
+    if let Some(c) = check_repetition(session, t) {
+        checks.push(c);
+    }
 
     // Sort: Critical first, then Warning, then Info
     checks.sort_by_key(|c| match c.severity {
@@ -269,6 +284,213 @@ fn check_context_saturation(session: &ClaudeSession, t: &HealthThresholds) -> Op
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Cognitive decay checks
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Compute a composite cognitive decay score (0-100) from multiple signals.
+pub fn compute_decay_score(session: &ClaudeSession, _t: &HealthThresholds) -> u32 {
+    let mut score: f64 = 0.0;
+
+    // Context contribution: 0-40 points (linear from 40% to 100%)
+    let ctx_pct = session.context_percent();
+    if ctx_pct > 40.0 {
+        score += ((ctx_pct - 40.0) / 60.0) * 40.0;
+    }
+
+    // Error acceleration contribution: 0-25 points
+    if let Some(baseline) = session.baseline_error_rate {
+        if baseline > 0.0 && session.error_counts_per_window.len() >= 2 {
+            let recent_count = session.error_counts_per_window.len().min(3);
+            let recent: f64 = session
+                .error_counts_per_window
+                .iter()
+                .rev()
+                .take(recent_count)
+                .sum::<u32>() as f64
+                / recent_count as f64;
+            let ratio = recent / baseline;
+            score += (ratio - 1.0).clamp(0.0, 1.0) * 25.0;
+        }
+    }
+
+    // Token efficiency contribution: 0-20 points
+    if let Some(baseline) = session.baseline_tokens_per_edit {
+        if baseline > 0.0 && session.edit_event_count > 5 {
+            let current =
+                session.total_tokens_at_edit_count as f64 / session.edit_event_count as f64;
+            let ratio = current / baseline;
+            score += (ratio - 1.0).clamp(0.0, 1.0) * 20.0;
+        }
+    }
+
+    // Repetition contribution: 0-15 points
+    let max_rereads = session
+        .file_reads_since_edit
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    if max_rereads >= 2 {
+        score += ((max_rereads as f64 - 1.0) / 4.0).min(1.0) * 15.0;
+    }
+
+    (score.round() as u32).min(100)
+}
+
+/// Composite cognitive decay check — wraps the decay score into a HealthCheck.
+fn check_cognitive_decay(session: &ClaudeSession, t: &HealthThresholds) -> Option<HealthCheck> {
+    let score = compute_decay_score(session, t);
+    if score >= 80 {
+        Some(HealthCheck {
+            icon: "⊘",
+            name: "severe decay",
+            severity: Severity::Critical,
+            message: format!(
+                "Decay score {}/100 — session is severely compromised. Restart with fresh context.",
+                score,
+            ),
+        })
+    } else if score >= 60 {
+        Some(HealthCheck {
+            icon: "◉",
+            name: "significant decay",
+            severity: Severity::Warning,
+            message: format!(
+                "Decay score {}/100 — consider restarting. Generate a state transfer summary first.",
+                score,
+            ),
+        })
+    } else if score >= 30 {
+        Some(HealthCheck {
+            icon: "◐",
+            name: "early decay",
+            severity: Severity::Info,
+            message: format!(
+                "Decay score {}/100 — consider /compact with preservation notes.",
+                score,
+            ),
+        })
+    } else {
+        None
+    }
+}
+
+/// Suggest proactive compaction at moderate context usage (before degradation starts).
+fn check_proactive_compaction(
+    session: &ClaudeSession,
+    t: &HealthThresholds,
+) -> Option<HealthCheck> {
+    if session.context_max == 0 {
+        return None;
+    }
+
+    let pct = session.context_percent();
+    if pct > t.decay_compaction_pct && pct <= t.context_warning_pct {
+        Some(HealthCheck {
+            icon: "📋",
+            name: "consider compact",
+            severity: Severity::Info,
+            message: format!(
+                "Context at {:.0}% — research shows degradation begins here. Consider /compact.",
+                pct,
+            ),
+        })
+    } else {
+        None
+    }
+}
+
+/// Detect token efficiency degradation — spending more tokens per file edit over time.
+fn check_token_efficiency(session: &ClaudeSession, t: &HealthThresholds) -> Option<HealthCheck> {
+    let baseline = session.baseline_tokens_per_edit?;
+    if baseline < 100.0 || session.edit_event_count < 8 {
+        return None;
+    }
+
+    let current = session.total_tokens_at_edit_count as f64 / session.edit_event_count as f64;
+    let ratio = current / baseline;
+
+    if ratio > t.efficiency_critical_factor {
+        Some(HealthCheck {
+            icon: "📉",
+            name: "low efficiency",
+            severity: Severity::Warning,
+            message: format!(
+                "Tokens per edit is {:.1}x baseline — agent is working harder for less output.",
+                ratio,
+            ),
+        })
+    } else {
+        None
+    }
+}
+
+/// Detect error rate acceleration — errors are increasing over time.
+fn check_error_acceleration(session: &ClaudeSession, t: &HealthThresholds) -> Option<HealthCheck> {
+    let baseline = session.baseline_error_rate?;
+    if baseline <= 0.0 || session.error_counts_per_window.len() < 4 {
+        return None;
+    }
+
+    let recent_count = session.error_counts_per_window.len().min(3);
+    let recent: f64 = session
+        .error_counts_per_window
+        .iter()
+        .rev()
+        .take(recent_count)
+        .sum::<u32>() as f64
+        / recent_count as f64;
+    let ratio = recent / baseline;
+
+    if ratio > t.error_accel_factor {
+        Some(HealthCheck {
+            icon: "⚠",
+            name: "error acceleration",
+            severity: Severity::Warning,
+            message: format!(
+                "Error rate is {:.1}x baseline — agent may be stuck or confused.",
+                ratio,
+            ),
+        })
+    } else {
+        None
+    }
+}
+
+/// Detect file re-reads without intervening edits — possible confusion or looping.
+fn check_repetition(session: &ClaudeSession, t: &HealthThresholds) -> Option<HealthCheck> {
+    let max_rereads = session
+        .file_reads_since_edit
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0);
+
+    if max_rereads >= t.repetition_threshold {
+        let file = session
+            .file_reads_since_edit
+            .iter()
+            .max_by_key(|(_, v)| *v)
+            .map(|(k, _)| {
+                // Show just filename
+                k.rsplit('/').next().unwrap_or(k)
+            })
+            .unwrap_or("?");
+        Some(HealthCheck {
+            icon: "🔁",
+            name: "repetition",
+            severity: Severity::Warning,
+            message: format!(
+                "{} read {} times without editing — agent may be looping.",
+                file, max_rereads,
+            ),
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +669,140 @@ mod tests {
                 .iter()
                 .any(|c| c.name == "context full" && c.severity == Severity::Critical)
         );
+    }
+
+    // ── Cognitive decay tests ────────────────────────────────────────
+
+    #[test]
+    fn proactive_compaction_fires_at_50pct() {
+        let mut s = make_session();
+        s.context_tokens = 110_000;
+        s.context_max = 200_000; // 55%
+        s.usage_metrics_available = true;
+        let check = check_proactive_compaction(&s, &defaults());
+        assert!(check.is_some());
+        let c = check.unwrap();
+        assert_eq!(c.name, "consider compact");
+        assert_eq!(c.severity, Severity::Info);
+    }
+
+    #[test]
+    fn proactive_compaction_silent_below_threshold() {
+        let mut s = make_session();
+        s.context_tokens = 70_000;
+        s.context_max = 200_000; // 35%
+        assert!(check_proactive_compaction(&s, &defaults()).is_none());
+    }
+
+    #[test]
+    fn token_efficiency_detects_degradation() {
+        let mut s = make_session();
+        s.baseline_tokens_per_edit = Some(1000.0);
+        s.edit_event_count = 10;
+        s.total_tokens_at_edit_count = 25_000; // 2500 per edit = 2.5x baseline
+        let check = check_token_efficiency(&s, &defaults());
+        assert!(check.is_some());
+        let c = check.unwrap();
+        assert_eq!(c.name, "low efficiency");
+        assert_eq!(c.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn token_efficiency_silent_when_healthy() {
+        let mut s = make_session();
+        s.baseline_tokens_per_edit = Some(1000.0);
+        s.edit_event_count = 10;
+        s.total_tokens_at_edit_count = 12_000; // 1200 per edit = 1.2x baseline
+        assert!(check_token_efficiency(&s, &defaults()).is_none());
+    }
+
+    #[test]
+    fn error_acceleration_detects_increase() {
+        let mut s = make_session();
+        s.baseline_error_rate = Some(1.0);
+        s.error_counts_per_window = vec![1, 1, 1, 2, 3, 4]; // rising
+        let check = check_error_acceleration(&s, &defaults());
+        assert!(check.is_some());
+        let c = check.unwrap();
+        assert_eq!(c.name, "error acceleration");
+        assert_eq!(c.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn error_acceleration_silent_when_stable() {
+        let mut s = make_session();
+        s.baseline_error_rate = Some(1.0);
+        s.error_counts_per_window = vec![1, 1, 1, 1]; // stable
+        assert!(check_error_acceleration(&s, &defaults()).is_none());
+    }
+
+    #[test]
+    fn repetition_detects_rereads() {
+        let mut s = make_session();
+        s.file_reads_since_edit
+            .insert("/tmp/test/src/main.rs".into(), 4);
+        let check = check_repetition(&s, &defaults());
+        assert!(check.is_some());
+        let c = check.unwrap();
+        assert_eq!(c.name, "repetition");
+        assert_eq!(c.severity, Severity::Warning);
+        assert!(c.message.contains("main.rs"));
+    }
+
+    #[test]
+    fn repetition_silent_below_threshold() {
+        let mut s = make_session();
+        s.file_reads_since_edit.insert("/tmp/test/foo.rs".into(), 2);
+        assert!(check_repetition(&s, &defaults()).is_none());
+    }
+
+    #[test]
+    fn decay_score_zero_for_fresh_session() {
+        let s = make_session();
+        assert_eq!(compute_decay_score(&s, &defaults()), 0);
+    }
+
+    #[test]
+    fn decay_score_context_only_contribution() {
+        let mut s = make_session();
+        s.context_tokens = 140_000;
+        s.context_max = 200_000; // 70%
+        s.usage_metrics_available = true;
+        let score = compute_decay_score(&s, &defaults());
+        // 70% context: (70-40)/60 * 40 = 20 points
+        assert_eq!(score, 20);
+    }
+
+    #[test]
+    fn decay_score_high_for_saturated_session() {
+        let mut s = make_session();
+        s.context_tokens = 180_000;
+        s.context_max = 200_000; // 90% → 33 context points
+        s.usage_metrics_available = true;
+        s.baseline_error_rate = Some(1.0);
+        s.error_counts_per_window = vec![1, 1, 1, 3, 4, 5]; // accelerating
+        s.file_reads_since_edit
+            .insert("/tmp/test/main.rs".into(), 5); // repetition
+        let score = compute_decay_score(&s, &defaults());
+        assert!(score >= 60, "expected >= 60, got {score}");
+    }
+
+    #[test]
+    fn cognitive_decay_check_critical_at_80() {
+        let mut s = make_session();
+        s.context_tokens = 200_000;
+        s.context_max = 200_000; // 100% → 40 context points
+        s.usage_metrics_available = true;
+        s.baseline_tokens_per_edit = Some(1000.0);
+        s.edit_event_count = 10;
+        s.total_tokens_at_edit_count = 20_000; // 2x baseline → 20 efficiency points
+        s.baseline_error_rate = Some(1.0);
+        s.error_counts_per_window = vec![1, 1, 1, 3, 4, 5]; // → 25 error points
+        let check = check_cognitive_decay(&s, &defaults());
+        assert!(check.is_some());
+        let c = check.unwrap();
+        assert_eq!(c.name, "severe decay");
+        assert_eq!(c.severity, Severity::Critical);
+        assert!(c.icon == "⊘");
     }
 }

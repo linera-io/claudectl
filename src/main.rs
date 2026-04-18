@@ -532,9 +532,98 @@ fn launch_session(cwd: &str, prompt: Option<&str>, resume: Option<&str>) -> io::
     }
 }
 
+fn print_doctor_transcripts() {
+    println!();
+    println!("Transcript Discovery");
+
+    let sessions_dir = discovery::projects_dir().parent().unwrap().join("sessions");
+    let projects_dir = discovery::projects_dir();
+
+    // Check sessions directory
+    let sessions_exists = sessions_dir.exists();
+    println!(
+        "  [{}] sessions dir: {}",
+        if sessions_exists { "ok" } else { "!!" },
+        sessions_dir.display()
+    );
+
+    // Check projects directory
+    let projects_exists = projects_dir.exists();
+    println!(
+        "  [{}] projects dir: {}",
+        if projects_exists { "ok" } else { "!!" },
+        projects_dir.display()
+    );
+
+    if !sessions_exists {
+        println!("      No session pointer files found — Claude Code may not have run yet");
+        return;
+    }
+
+    // Scan sessions and attempt resolution
+    let mut sessions = discovery::scan_sessions();
+    if sessions.is_empty() {
+        println!("  [--] no session pointer files found");
+        return;
+    }
+
+    process::fetch_and_enrich(&mut sessions);
+    let alive: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.status != session::SessionStatus::Finished)
+        .collect();
+
+    if alive.is_empty() {
+        println!("  [--] no active Claude Code sessions");
+        return;
+    }
+
+    // Resolve JSONL paths for alive sessions
+    let mut alive_sessions: Vec<_> = alive.into_iter().cloned().collect();
+    for s in &mut alive_sessions {
+        discovery::resolve_jsonl_paths(std::slice::from_mut(s));
+    }
+
+    for s in &alive_sessions {
+        let found = s.jsonl_path.is_some();
+        let slug = s.cwd.trim_end_matches('/').replace('/', "-");
+        let expected_dir = projects_dir.join(&slug);
+
+        println!(
+            "  [{}] PID {} ({})",
+            if found { "ok" } else { "!!" },
+            s.pid,
+            s.project_name
+        );
+        println!("      cwd:  {}", s.cwd);
+        println!("      slug: {slug}");
+        if let Some(ref path) = s.jsonl_path {
+            println!("      jsonl: {}", path.display());
+        } else {
+            println!(
+                "      expected dir: {} (exists={})",
+                expected_dir.display(),
+                expected_dir.exists()
+            );
+            let expected_file = expected_dir.join(format!("{}.jsonl", s.session_id));
+            println!(
+                "      expected file: {} (exists={})",
+                expected_file.display(),
+                expected_file.exists()
+            );
+            println!(
+                "      fix: check that Claude Code's project directory slug matches the cwd encoding above"
+            );
+        }
+    }
+}
+
 fn print_doctor() -> io::Result<()> {
     let report = terminals::doctor_report();
     println!("{}", terminals::format_doctor_report(&report));
+
+    // Transcript discovery diagnostics
+    print_doctor_transcripts();
 
     // Brain diagnostics
     let cfg = config::Config::load();

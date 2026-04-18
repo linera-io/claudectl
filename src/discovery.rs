@@ -69,7 +69,7 @@ pub fn resolve_jsonl_paths(sessions: &mut [ClaudeSession]) {
         let slug = cwd_to_slug(&session.cwd);
         let project_dir = projects_dir().join(&slug);
 
-        // Priority 1: Try the session's own ID
+        // Priority 1: Try the session's own ID in the expected project dir
         let own_path = project_dir.join(format!("{}.jsonl", session.session_id));
         if own_path.exists() {
             session.jsonl_path = Some(own_path);
@@ -85,9 +85,58 @@ pub fn resolve_jsonl_paths(sessions: &mut [ClaudeSession]) {
             }
         }
 
-        // Priority 3: Fall back to most recently modified .jsonl
-        session.jsonl_path = find_latest_jsonl(&project_dir);
+        // Priority 3: Fall back to most recently modified .jsonl in the project dir
+        if let Some(latest) = find_latest_jsonl(&project_dir) {
+            session.jsonl_path = Some(latest);
+            continue;
+        }
+
+        // Priority 4: Search ALL project directories for a JSONL matching the session ID.
+        // This handles cwd encoding mismatches between claudectl and Claude Code
+        // (e.g., symlink resolution, path normalization differences).
+        if let Some(found) = search_all_projects_for_session(&session.session_id) {
+            crate::logger::log(
+                "DEBUG",
+                &format!(
+                    "session {}: slug mismatch — found JSONL via project scan: {}",
+                    session.session_id,
+                    found.display()
+                ),
+            );
+            session.jsonl_path = Some(found);
+            continue;
+        }
+
+        crate::logger::log(
+            "DEBUG",
+            &format!(
+                "session {}: no JSONL found (slug={}, project_dir_exists={})",
+                session.session_id,
+                slug,
+                project_dir.exists()
+            ),
+        );
     }
+}
+
+/// Search all directories under ~/.claude/projects/ for a JSONL file matching the session ID.
+/// This is a fallback when the cwd-based slug doesn't match the actual directory on disk.
+fn search_all_projects_for_session(session_id: &str) -> Option<PathBuf> {
+    let filename = format!("{session_id}.jsonl");
+    let base = projects_dir();
+    let entries = fs::read_dir(&base).ok()?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let candidate = path.join(&filename);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Extract the UUID from a --resume argument in command args.
@@ -212,7 +261,11 @@ pub fn resolve_worktree_ids(sessions: &mut [ClaudeSession]) {
 }
 
 fn cwd_to_slug(cwd: &str) -> String {
-    cwd.replace('/', "-")
+    let trimmed = cwd.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+    trimmed.replace('/', "-")
 }
 
 /// Remove session JSON files for dead PIDs whose files are older than 24 hours.
@@ -266,4 +319,47 @@ fn cleanup_stale_sessions(dir: &std::path::Path) {
 
 fn pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slug_basic_path() {
+        assert_eq!(cwd_to_slug("/Users/foo/bar"), "-Users-foo-bar");
+    }
+
+    #[test]
+    fn slug_trailing_slash() {
+        // Must strip trailing slash — otherwise slug ends with "-" and won't match disk
+        assert_eq!(
+            cwd_to_slug("/Users/foo/bar/"),
+            "-Users-foo-bar",
+            "trailing slash must be stripped before slugifying"
+        );
+    }
+
+    #[test]
+    fn slug_multiple_trailing_slashes() {
+        assert_eq!(cwd_to_slug("/Users/foo/bar///"), "-Users-foo-bar");
+    }
+
+    #[test]
+    fn slug_with_hyphens_in_name() {
+        assert_eq!(
+            cwd_to_slug("/Users/dev/data-platform-answers"),
+            "-Users-dev-data-platform-answers"
+        );
+    }
+
+    #[test]
+    fn slug_root() {
+        assert_eq!(cwd_to_slug("/"), "-");
+    }
+
+    #[test]
+    fn slug_single_component() {
+        assert_eq!(cwd_to_slug("/tmp"), "-tmp");
+    }
 }

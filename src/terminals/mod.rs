@@ -291,6 +291,12 @@ pub fn detect_terminal() -> Terminal {
         return Terminal::WindowsTerm;
     }
 
+    // Terminal-specific env vars that don't rely on TERM_PROGRAM.
+    // Some terminals (notably kitty on Linux) don't set TERM_PROGRAM at all.
+    if let Some(term) = detect_by_native_env() {
+        return term;
+    }
+
     match std::env::var("TERM_PROGRAM").as_deref() {
         Ok("ghostty") => Terminal::Ghostty,
         Ok("WarpTerminal") => Terminal::Warp,
@@ -301,6 +307,33 @@ pub fn detect_terminal() -> Terminal {
         Ok(other) => Terminal::Unknown(other.to_string()),
         Err(_) => Terminal::Unknown("unknown".to_string()),
     }
+}
+
+/// Detect terminal from native env vars that each terminal sets unconditionally,
+/// without relying on TERM_PROGRAM (which some terminals don't set on Linux).
+fn detect_by_native_env() -> Option<Terminal> {
+    // Kitty: KITTY_WINDOW_ID is set unconditionally per-window.
+    // TERM=xterm-kitty is also reliable but can be inherited by child shells.
+    if std::env::var_os("KITTY_WINDOW_ID").is_some() {
+        return Some(Terminal::Kitty);
+    }
+
+    // WezTerm: WEZTERM_EXECUTABLE is set on all platforms.
+    if std::env::var_os("WEZTERM_EXECUTABLE").is_some() {
+        return Some(Terminal::WezTerm);
+    }
+
+    // Ghostty: GHOSTTY_RESOURCES_DIR is set on all platforms.
+    if std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some() {
+        return Some(Terminal::Ghostty);
+    }
+
+    // TERM=xterm-kitty as last resort (weaker signal — can be inherited through ssh/tmux)
+    if std::env::var("TERM").as_deref() == Ok("xterm-kitty") {
+        return Some(Terminal::Kitty);
+    }
+
+    None
 }
 
 fn ancestor_process_contains(needle: &str) -> bool {
@@ -1127,5 +1160,96 @@ mod tests {
     fn wsl_interop_check_reports_when_available() {
         let check = wsl_interop_check(true).unwrap();
         assert_eq!(check.name, "Windows Terminal interop");
+    }
+
+    // Native env var detection tests.
+    // These mutate env vars and must be serialized.
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Helper: clear all terminal-related env vars, run f(), then restore.
+    fn with_clean_env<F: FnOnce() -> R, R>(f: F) -> R {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let keys = [
+            "KITTY_WINDOW_ID",
+            "KITTY_PID",
+            "WEZTERM_EXECUTABLE",
+            "GHOSTTY_RESOURCES_DIR",
+            "TERM",
+            "TERM_PROGRAM",
+            "TMUX",
+            "GNOME_TERMINAL_SERVICE",
+            "GNOME_TERMINAL_SCREEN",
+            "WT_SESSION",
+        ];
+        let saved: Vec<(&str, Option<String>)> =
+            keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+
+        for key in &keys {
+            unsafe { std::env::remove_var(key) };
+        }
+
+        let result = f();
+
+        for (key, val) in saved {
+            match val {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        result
+    }
+
+    #[test]
+    fn detect_kitty_via_kitty_window_id() {
+        with_clean_env(|| {
+            unsafe { std::env::set_var("KITTY_WINDOW_ID", "49") };
+            assert_eq!(detect_by_native_env(), Some(Terminal::Kitty));
+        });
+    }
+
+    #[test]
+    fn detect_kitty_via_term_xterm_kitty() {
+        with_clean_env(|| {
+            unsafe { std::env::set_var("TERM", "xterm-kitty") };
+            assert_eq!(detect_by_native_env(), Some(Terminal::Kitty));
+        });
+    }
+
+    #[test]
+    fn detect_wezterm_via_wezterm_executable() {
+        with_clean_env(|| {
+            unsafe { std::env::set_var("WEZTERM_EXECUTABLE", "/usr/bin/wezterm") };
+            assert_eq!(detect_by_native_env(), Some(Terminal::WezTerm));
+        });
+    }
+
+    #[test]
+    fn detect_ghostty_via_ghostty_resources_dir() {
+        with_clean_env(|| {
+            unsafe { std::env::set_var("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty") };
+            assert_eq!(detect_by_native_env(), Some(Terminal::Ghostty));
+        });
+    }
+
+    #[test]
+    fn detect_native_env_returns_none_when_clean() {
+        with_clean_env(|| {
+            assert_eq!(detect_by_native_env(), None);
+        });
+    }
+
+    #[test]
+    fn kitty_window_id_takes_priority_over_term_xterm_kitty() {
+        // Both set — KITTY_WINDOW_ID should match first (stronger signal)
+        with_clean_env(|| {
+            unsafe {
+                std::env::set_var("KITTY_WINDOW_ID", "1");
+                std::env::set_var("TERM", "xterm-kitty");
+            }
+            assert_eq!(detect_by_native_env(), Some(Terminal::Kitty));
+        });
     }
 }

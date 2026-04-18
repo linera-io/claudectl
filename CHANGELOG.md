@@ -2,6 +2,12 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.29.3] - 2026-04-18
+
+### Fixed
+- Kitty terminal not detected on Linux — `detect_terminal()` now checks `KITTY_WINDOW_ID` and `TERM=xterm-kitty` env vars before falling back to `TERM_PROGRAM`. Kitty on Linux doesn't set `TERM_PROGRAM`. (#160)
+- Added native env var detection for WezTerm (`WEZTERM_EXECUTABLE`) and Ghostty (`GHOSTTY_RESOURCES_DIR`) as fallbacks when `TERM_PROGRAM` is not set.
+
 ## [0.29.2] - 2026-04-18
 
 ### Fixed

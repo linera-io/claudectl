@@ -13,6 +13,7 @@ mod discovery;
 mod health;
 mod history;
 mod hooks;
+mod init;
 mod launch;
 mod logger;
 mod models;
@@ -181,6 +182,28 @@ struct Cli {
     #[arg(long, help_heading = "Brain (Local LLM)")]
     brain_stats: Option<String>,
 
+    /// Query the brain for a single tool-call decision and exit (JSON output).
+    /// Used by Claude Code plugin hooks for inline approve/deny.
+    #[arg(long, help_heading = "Brain (Local LLM)")]
+    brain_query: bool,
+
+    /// Tool name for --brain-query (e.g., "Bash", "Write", "Edit")
+    #[arg(long, help_heading = "Brain (Local LLM)")]
+    tool: Option<String>,
+
+    /// Command or input for --brain-query (e.g., "rm -rf /tmp")
+    #[arg(long, help_heading = "Brain (Local LLM)")]
+    tool_input: Option<String>,
+
+    /// Project name for --brain-query context (defaults to current directory name)
+    #[arg(long, help_heading = "Brain (Local LLM)")]
+    project: Option<String>,
+
+    /// Set brain gate mode: on (default), off (disable), auto (full auto-approve).
+    /// Controls whether the Claude Code plugin hook queries the brain.
+    #[arg(long, help_heading = "Brain (Local LLM)")]
+    mode: Option<String>,
+
     // ── Orchestration ──────────────────────────────────────────────────
     /// Analyze a prompt and suggest parallel sub-tasks (outputs TaskFile JSON)
     #[arg(long, help_heading = "Orchestration")]
@@ -248,6 +271,19 @@ struct Cli {
     /// Write diagnostic logs to a file (for debugging/bug reports)
     #[arg(long, help_heading = "History & Diagnostics")]
     log: Option<String>,
+
+    // ── Setup ─────────────────────────────────────────────────────────
+    /// Wire up Claude Code hooks in .claude/settings.json and exit
+    #[arg(long, help_heading = "Setup")]
+    init: bool,
+
+    /// Remove claudectl hooks from .claude/settings.json and exit
+    #[arg(long, help_heading = "Setup", conflicts_with = "init")]
+    uninstall: bool,
+
+    /// Configuration scope: user (global ~/.claude/settings.json) or project (.claude/settings.local.json)
+    #[arg(short, long, default_value = "user", help_heading = "Setup")]
+    scope: String,
 }
 
 fn main() -> io::Result<()> {
@@ -365,6 +401,16 @@ fn run_main(cli: Cli) -> io::Result<()> {
         return print_doctor();
     }
 
+    if cli.init {
+        let project = cli.scope == "project";
+        return init::run_init(project);
+    }
+
+    if cli.uninstall {
+        let project = cli.scope == "project";
+        return init::run_uninit(project);
+    }
+
     if cli.brain_prompts {
         println!("Brain Prompt Templates");
         println!("======================");
@@ -394,6 +440,14 @@ fn run_main(cli: Cli) -> io::Result<()> {
     if let Some(ref subcommand) = cli.brain_stats {
         brain::metrics::dispatch(subcommand);
         return Ok(());
+    }
+
+    if cli.brain_query {
+        return run_brain_query(&cfg, &cli);
+    }
+
+    if let Some(ref mode) = cli.mode {
+        return run_brain_mode(mode);
     }
 
     if let Some(ref prompt) = cli.decompose {
@@ -1396,6 +1450,236 @@ fn run_tui<W: io::Write>(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Path to the brain gate mode state file.
+fn brain_gate_mode_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home)
+        .join(".claudectl")
+        .join("brain")
+        .join("gate-mode")
+}
+
+/// Read the current brain gate mode from disk. Returns "on" if no file exists.
+fn read_brain_gate_mode() -> String {
+    let path = brain_gate_mode_path();
+    std::fs::read_to_string(&path)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "on".into())
+}
+
+/// Set the brain gate mode (on/off/auto) and print confirmation.
+fn run_brain_mode(mode: &str) -> io::Result<()> {
+    match mode {
+        "on" | "off" | "auto" => {}
+        "status" | "" => {
+            let current = read_brain_gate_mode();
+            println!("Brain gate mode: {current}");
+            println!();
+            println!("Modes:");
+            println!("  on   — brain evaluates tool calls, denies dangerous ones (default)");
+            println!("  off  — brain disabled, all tool calls pass through");
+            println!("  auto — brain auto-approves above confidence threshold");
+            return Ok(());
+        }
+        _ => {
+            eprintln!("Unknown brain mode: {mode}");
+            eprintln!("Valid modes: on, off, auto, status");
+            std::process::exit(1);
+        }
+    }
+
+    let path = brain_gate_mode_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    if mode == "on" {
+        // "on" is the default — remove the file so absence = on
+        let _ = std::fs::remove_file(&path);
+    } else {
+        std::fs::write(&path, mode)?;
+    }
+
+    let description = match mode {
+        "on" => "brain evaluates tool calls, denies dangerous ones",
+        "off" => "brain disabled — all tool calls pass through to normal permission flow",
+        "auto" => "brain auto-approves tool calls above confidence threshold",
+        _ => unreachable!(),
+    };
+
+    println!("Brain gate mode set to: {mode}");
+    println!("  {description}");
+    Ok(())
+}
+
+/// Standalone brain query: builds a minimal context from CLI args, calls the
+/// local LLM, and prints a JSON decision to stdout. Designed to be called
+/// by Claude Code plugin hooks (PreToolUse) for inline approve/deny.
+fn run_brain_query(cfg: &config::Config, cli: &Cli) -> io::Result<()> {
+    // Respect brain gate mode — if off, skip immediately
+    let gate_mode = read_brain_gate_mode();
+    if gate_mode == "off" {
+        let result = serde_json::json!({
+            "action": "abstain",
+            "reasoning": "Brain gate mode is off",
+            "confidence": 0.0,
+            "source": "gate",
+        });
+        println!("{}", serde_json::to_string(&result).unwrap());
+        return Ok(());
+    }
+
+    let brain_cfg = cfg.brain.clone().unwrap_or_default();
+
+    if !brain_cfg.enabled && !cli.brain {
+        eprintln!("Brain is not enabled. Use --brain or set brain.enabled = true in config.");
+        std::process::exit(1);
+    }
+
+    let tool_name = cli.tool.clone().unwrap_or_else(|| "unknown".into());
+    let command = cli.tool_input.clone().unwrap_or_default();
+    let project = cli.project.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "unknown".into())
+    });
+
+    // Step 1: Check static deny rules first (instant, no LLM needed)
+    let auto_rules = cfg.rules.clone();
+    let deny_rules: Vec<_> = auto_rules
+        .iter()
+        .filter(|r| r.action == rules::RuleAction::Deny)
+        .cloned()
+        .collect();
+
+    // Build a minimal synthetic session for rule matching
+    let mut synthetic = session::ClaudeSession::from_raw(session::RawSession {
+        pid: std::process::id(),
+        session_id: "brain-query".into(),
+        cwd: std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".into()),
+        started_at: 0,
+    });
+    synthetic.project_name = project.clone();
+    synthetic.status = session::SessionStatus::NeedsInput;
+    synthetic.pending_tool_name = Some(tool_name.clone());
+    synthetic.pending_tool_input = if command.is_empty() {
+        None
+    } else {
+        Some(command.clone())
+    };
+
+    // Check deny rules
+    if let Some(deny_match) = rules::evaluate(&deny_rules, &synthetic) {
+        let result = serde_json::json!({
+            "action": "deny",
+            "reasoning": format!("Deny rule '{}' matched", deny_match.rule_name),
+            "confidence": 1.0,
+            "source": "rule",
+        });
+        println!("{}", serde_json::to_string(&result).unwrap());
+        return Ok(());
+    }
+
+    // Step 2: Check approve rules
+    let approve_rules: Vec<_> = auto_rules
+        .iter()
+        .filter(|r| r.action == rules::RuleAction::Approve)
+        .cloned()
+        .collect();
+    if let Some(approve_match) = rules::evaluate(&approve_rules, &synthetic) {
+        let result = serde_json::json!({
+            "action": "approve",
+            "reasoning": format!("Approve rule '{}' matched", approve_match.rule_name),
+            "confidence": 1.0,
+            "source": "rule",
+        });
+        println!("{}", serde_json::to_string(&result).unwrap());
+        return Ok(());
+    }
+
+    // Step 3: Query the LLM brain
+    let tool_display = if command.is_empty() {
+        tool_name.clone()
+    } else {
+        format!("{tool_name}: {command}")
+    };
+
+    let session_summary = format!(
+        "Project: {project} | Status: Needs Input | Pending tool: {tool_name} | Command: {command}"
+    );
+
+    // Load distilled preferences
+    let pref_section = if let Some(prefs) = brain::decisions::load_preferences_for_project(&project)
+    {
+        let summary = brain::decisions::format_preference_summary(&prefs);
+        format!("\n\n## Learned Preferences\n{summary}")
+    } else {
+        String::new()
+    };
+
+    // Load few-shot examples
+    let few_shot_section = {
+        let similar = brain::decisions::retrieve_similar(
+            Some(&tool_name),
+            &project,
+            brain_cfg.few_shot_count.min(5),
+            Some(brain::decisions::DecisionType::Session),
+        );
+        if similar.is_empty() {
+            String::new()
+        } else {
+            let examples = brain::decisions::format_few_shot_examples(&similar);
+            format!("\n\n## Past Decisions\n{examples}")
+        }
+    };
+
+    let prompt = format!(
+        "You are a session supervisor deciding whether to approve or deny a tool call.\n\
+         \n## Session\n{session_summary}\
+         {pref_section}\
+         {few_shot_section}\n\
+         \n## Decision\n\
+         The session wants to run [{tool_display}]. \
+         Should this be approved or denied? \
+         Respond with JSON: {{\"action\": \"approve\"|\"deny\", \
+         \"message\": \"...\", \"reasoning\": \"...\", \"confidence\": 0.0-1.0}}"
+    );
+
+    match brain::client::infer(&brain_cfg, &prompt) {
+        Ok(suggestion) => {
+            // Check adaptive threshold
+            let threshold = brain::decisions::adaptive_threshold(Some(&tool_name)).unwrap_or(0.6);
+            let below_threshold = suggestion.confidence < threshold;
+
+            let result = serde_json::json!({
+                "action": suggestion.action.label(),
+                "reasoning": suggestion.reasoning,
+                "confidence": suggestion.confidence,
+                "message": suggestion.message,
+                "source": "brain",
+                "below_threshold": below_threshold,
+                "threshold": threshold,
+            });
+            println!("{}", serde_json::to_string(&result).unwrap());
+            Ok(())
+        }
+        Err(e) => {
+            // On brain failure, output abstain (don't block the user)
+            let result = serde_json::json!({
+                "action": "abstain",
+                "reasoning": format!("Brain query failed: {e}"),
+                "confidence": 0.0,
+                "source": "error",
+            });
+            println!("{}", serde_json::to_string(&result).unwrap());
+            Ok(())
         }
     }
 }

@@ -2,6 +2,7 @@
 
 ## No sessions found
 
+- Run `claudectl --init` if you haven't already -- this wires up the Claude Code hooks
 - Ensure Claude Code is running (`claude` in another terminal)
 - Check that `~/.claude/sessions/` contains `.json` files
 - Run `claudectl --log /tmp/claudectl.log` and check the log
@@ -25,10 +26,24 @@ claudectl reads token usage from JSONL logs. If the session just started, wait f
 
 Increase the poll interval: `claudectl --interval 3000` (default is 2000ms).
 
+## Brain not responding
+
+- Check the brain endpoint is running: `curl http://localhost:11434/api/tags`
+- Check brain gate mode: `claudectl --mode status` (if `off`, the brain is disabled)
+- Check the brain model is loaded: `ollama list`
+- Run `claudectl --doctor` for a full diagnostic
+
+## Plugin hook not firing
+
+- Verify the plugin is installed and enabled in Claude Code
+- Check that `claudectl` is on your PATH: `which claudectl`
+- Test the brain query manually: `claudectl --brain --brain-query --tool Bash --tool-input "echo hi"`
+- Check brain gate mode: `claudectl --mode status`
+
 ## FAQ
 
 **Does claudectl modify Claude Code or its files?**
-No. It is read-only. The only writes are to its own history file and log file.
+Only `--init` and `--uninstall` write to `.claude/settings.json` (to add/remove hooks). Everything else is read-only. The only other writes are to claudectl's own history and log files.
 
 **Does it need an API key?**
 No. It reads local files on disk. No network access required (unless you configure webhooks).

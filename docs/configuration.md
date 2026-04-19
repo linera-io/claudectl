@@ -94,3 +94,96 @@ Use `claudectl --hooks` to verify your configured hooks.
 ### Verified Hooks
 
 We maintain a curated set at [mercurialsolo/claudectl-hooks](https://github.com/mercurialsolo/claudectl-hooks). To submit a hook, [open an issue](https://github.com/mercurialsolo/claudectl-hooks/issues) with the config snippet, what it solves, and any dependencies.
+
+## Claude Code Integration
+
+claudectl can install hooks directly into Claude Code's settings so sessions automatically notify claudectl on tool use:
+
+```bash
+claudectl --init                    # Write hooks to ~/.claude/settings.json (user scope)
+claudectl --init -s project         # Write to .claude/settings.local.json instead
+```
+
+This adds `PreToolUse`, `PostToolUse`, and `Stop` hooks that call `claudectl --json` on each event. Existing settings and hooks are preserved.
+
+To remove:
+
+```bash
+claudectl --uninstall               # Remove claudectl hooks from user settings
+claudectl --uninstall -s project    # Remove from project-local settings
+```
+
+### How it works
+
+The hooks are standard Claude Code command hooks:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "claudectl --json 2>/dev/null || true", "timeout": 5 }]
+    }],
+    "PostToolUse": [{
+      "matcher": "*",
+      "hooks": [{ "type": "command", "command": "claudectl --json 2>/dev/null || true", "timeout": 5 }]
+    }],
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "claudectl --json 2>/dev/null || true", "timeout": 5 }]
+    }]
+  }
+}
+```
+
+The `2>/dev/null || true` suffix ensures Claude Code is never blocked if claudectl is not installed or fails.
+
+### Scope
+
+The `--scope` / `-s` flag controls where hooks are written, matching Claude Code's own scope convention (`claude mcp add -s project`):
+
+| Scope | Flag | File | Committed to git? |
+|-------|------|------|--------------------|
+| `user` (default) | `--init` | `~/.claude/settings.json` | No (user home) |
+| `project` | `--init -s project` | `.claude/settings.local.json` | No (gitignored) |
+
+Use `user` scope when you want claudectl active everywhere. Use `project` scope when you only want it for specific projects, or when working in a shared repo where not everyone uses claudectl.
+
+## Brain Gate Mode
+
+The brain gate controls whether the plugin hook queries the brain on tool calls.
+
+```bash
+claudectl --mode on                     # Default: brain evaluates, denies dangerous ops
+claudectl --mode off                    # Disable brain — pass through all tool calls
+claudectl --mode auto                   # Auto-approve above confidence threshold
+claudectl --mode status                 # Show current mode
+```
+
+The mode is stored in `~/.claudectl/brain/gate-mode`. If the file is absent, the default is `on`.
+
+The `/brain` command in the Claude Code plugin does the same thing:
+
+```
+/brain off     # Disable brain for exploratory work
+/brain on      # Re-enable brain
+/brain auto    # Full auto-approve
+```
+
+## Claude Code Plugin
+
+claudectl ships with a Claude Code plugin in `claude-plugin/` at the repository root. The plugin provides:
+
+- **PreToolUse hooks** that query the brain before Bash/Write/Edit calls
+- **Slash commands** (`/sessions`, `/spend`, `/brain-stats`, `/brain`)
+- **A supervisor agent** for proactive health triage
+- **A session monitoring skill** that auto-activates when relevant
+
+The plugin and the `--init` hooks are complementary:
+
+| Method | What it does | Best for |
+|--------|-------------|----------|
+| `claudectl --init` | Observability hooks (PostToolUse, Stop) | Feeding data to the TUI dashboard |
+| Plugin | Brain gate hook (PreToolUse) + commands | Inline approve/deny without the TUI |
+
+You can use both. The `--init` hooks notify claudectl of tool completions. The plugin hook queries the brain before tool execution.

@@ -1,6 +1,36 @@
 # claudectl
 
-Mission control for Claude Code — supervise, budget, orchestrate, and auto-pilot sessions with a local LLM brain.
+**Auto-pilot for Claude Code — supervise, budget, orchestrate, and auto-pilot sessions with a local LLM brain.**
+
+claudectl is the missing control plane for Claude Code. If you're building tools, agents, or workflows that interact with Claude Code sessions, claudectl provides the monitoring, orchestration, and automation layer.
+
+## What claudectl does
+
+- **Local LLM supervision** — A local model (ollama/llama.cpp/vLLM) watches every Claude Code session and decides what to approve, deny, or coordinate. No cloud API, no telemetry.
+- **Multi-session orchestration** — Run parallel sessions with dependency ordering, cross-session context routing, and file conflict detection.
+- **Health monitoring** — Cognitive rot detection, loop detection, stall detection, cost spike alerts, context saturation warnings.
+- **Spend control** — Per-session budgets, daily/weekly limits, auto-kill on overspend.
+- **Learning from corrections** — The brain learns from every approve/reject decision and adapts per-tool, per-project confidence thresholds.
+
+## Integration points
+
+- **JSONL transcripts** — claudectl reads `~/.claude/sessions/*.json` and `~/.claude/projects/*/*.jsonl` for session discovery and monitoring.
+- **Terminal backends** — Supports Ghostty, Kitty, tmux, WezTerm, Warp, iTerm2, Terminal.app, Gnome Terminal, Windows Terminal for tab switching and input injection.
+- **Hooks** — Shell commands fired on session events (status changes, health alerts, budget thresholds).
+- **Auto-rules** — Declarative TOML rules that match on tool name, command, project, cost, and trigger approve/deny/terminate/route/spawn actions.
+- **Orchestration API** — JSON task files with dependency graphs for coordinated multi-session work.
+- **Brain prompt overrides** — Drop custom prompt templates in `~/.claudectl/brain/prompts/` to customize brain behavior.
+
+## Key differentiators vs. similar tools
+
+| Feature | claudectl | Typical alternatives |
+|---------|-----------|---------------------|
+| Local LLM brain that learns | Yes — adapts per-tool, per-project | No |
+| Cross-session orchestration | Yes — routing, conflict detection, spawn | No |
+| Cognitive rot detection | Yes — composite decay scoring | No |
+| Binary size | <1 MB (7 deps, no async runtime) | Typically 10-50 MB |
+| Startup time | <50 ms | Varies |
+| Data sovereignty | 100% local, zero telemetry | Often requires cloud |
 
 ## Build & Test
 
@@ -15,7 +45,7 @@ cargo fmt --check            # Check formatting
 ## Architecture
 
 **Core modules** (`src/`):
-- `main.rs` — CLI entry point, mode dispatch (TUI, watch, JSON, list, history, stats, orchestrator, clean, doctor, brain-eval, brain-query, mode, init)
+- `main.rs` — CLI entry point, mode dispatch (TUI, watch, JSON, list, history, stats, orchestrator, clean, doctor, brain-eval)
 - `app.rs` — TUI app state, refresh loop, keyboard event handling
 - `session.rs` — Session data structures and formatting
 - `discovery.rs` — Scans `~/.claude/sessions/*.json` and resolves JSONL paths
@@ -36,14 +66,6 @@ cargo fmt --check            # Check formatting
 - `demo.rs` — Deterministic fake sessions for screenshots, recordings, and demos
 - `theme.rs` — Color theming (dark/light/monochrome, respects NO_COLOR)
 - `logger.rs` — Structured diagnostic logging
-- `init.rs` — `--init` / `--uninstall`: writes/removes Claude Code hooks in `.claude/settings.json`
-
-**Claude Code Plugin** (`claude-plugin/`): Integrates the brain directly into Claude Code sessions.
-- `hooks/scripts/brain-gate.sh` — PreToolUse hook: queries brain for approve/deny on Bash/Write/Edit calls
-- `hooks/scripts/budget-check.sh` — PreToolUse hook: enforces spend limits
-- `commands/` — Slash commands: `/sessions`, `/spend`, `/brain-stats`, `/brain`
-- `agents/supervisor.md` — Session health triage agent
-- `skills/session-monitoring/` — Auto-activated session awareness skill
 
 **Brain** (`src/brain/`): Local LLM auto-pilot subsystem.
 - `engine.rs` — Main brain loop: observes sessions, evaluates rules, queries LLM, executes decisions
@@ -68,7 +90,6 @@ cargo fmt --check            # Check formatting
 - **No async runtime** — synchronous with polling. Keeps complexity low.
 - **Deny-first rule evaluation** — deny rules always override approve/brain suggestions, regardless of config order.
 - **Brain decisions are local-only** — all decision logs and few-shot examples stay on the user's machine.
-- **Brain gate mode** — `~/.claudectl/brain/gate-mode` controls on/off/auto. File absent = on (default). The plugin hook and `--brain-query` both check this before querying the LLM.
 
 ## Conventions
 
@@ -79,5 +100,3 @@ cargo fmt --check            # Check formatting
 - Terminal backends implement the pattern in `src/terminals/mod.rs` — add new terminals there.
 - Config fields must be added to all three layers (CLI args in `main.rs`, TOML struct in `config.rs`, merge logic in `config.rs`).
 - Brain prompt templates can be overridden by placing files in `~/.claudectl/brain/prompts/` — run `--brain-prompts` to list sources.
-- Plugin hook scripts must check for `claudectl` availability and exit 0 on failure — never block Claude Code.
-- Plugin commands call `claudectl` CLI modes and format output — they don't implement logic directly.

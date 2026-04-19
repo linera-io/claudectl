@@ -106,10 +106,20 @@ case "$target" in
         record_gif "demo-overview" 12 "Live dashboard — status, cost, context at a glance"
         ;;&
 
+    social)
+        # 30-second showcase for social media (README, Twitter, etc.)
+        record_gif "demo-social" 30 "30s social media showcase — brain + health + orchestration"
+        echo ""
+        echo "Next steps for social sharing:"
+        echo "  1. Compress: gifsicle -O3 --lossy=80 $OUT_DIR/demo-social.gif -o $OUT_DIR/demo-social-opt.gif"
+        echo "  2. Add to README above the asciinema embed"
+        echo "  3. Upload to GitHub release assets for hotlinking"
+        ;;
+
     *)
-        if [ "$target" != "all" ] && [ "$target" != "hero" ] && [ "$target" != "health" ] && [ "$target" != "brain" ] && [ "$target" != "overview" ]; then
+        if [ "$target" != "all" ] && [ "$target" != "hero" ] && [ "$target" != "health" ] && [ "$target" != "brain" ] && [ "$target" != "overview" ] && [ "$target" != "social" ]; then
             echo "Unknown target: $target"
-            echo "Usage: $0 [all|hero|health|brain|overview]"
+            echo "Usage: $0 [all|hero|health|brain|overview|social]"
             exit 1
         fi
         ;;

@@ -64,10 +64,20 @@ git clone https://github.com/mercurialsolo/claudectl.git && cd claudectl && carg
 ## Get started
 
 ```bash
+claudectl                     # Live dashboard — see all sessions at a glance
 claudectl --init              # Wire up Claude Code hooks (one-time)
-claudectl                     # Live dashboard
 claudectl --brain             # Enable local LLM auto-pilot
 ```
+
+## Why claudectl
+
+- **Local LLM auto-pilot** — a brain that learns your preferences and auto-approves/denies tool calls. No cloud API.
+- **Self-improving** — detects friction patterns, suggests rules, and gets smarter with every correction.
+- **Multi-session orchestration** — run parallel tasks with dependency ordering and cross-session context routing.
+- **Health monitoring** — catches cognitive decay, cost spikes, error loops, and context saturation before they waste money.
+- **Works everywhere** — Claude Code plugin for inline use, TUI dashboard for oversight, CLI for automation.
+
+[Full feature comparison](docs/reference.md#comparison)
 
 ## Local LLM Brain
 

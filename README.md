@@ -147,10 +147,40 @@ Adaptive confidence thresholds track accuracy per tool — if the brain is 90%+ 
 **Measure brain effectiveness:**
 
 ```bash
+claudectl --brain-stats impact           # Impact scorecard — your headline numbers
 claudectl --brain-stats learning-curve   # Is correction rate declining? (= learning)
 claudectl --brain-stats accuracy         # Per-tool, per-risk, per-project breakdown
 claudectl --brain-stats baseline         # Brain vs. dumb rules classifier
 claudectl --brain-stats false-approve    # Safety: how often does brain approve risky actions?
+```
+
+The impact scorecard shows what claudectl is doing for you:
+
+```
+Impact Scorecard
+=================
+
+  Interruptions avoided
+    847/1200 tool calls handled without interruption (71%)
+    353 required manual review (29%)
+
+  Decision coverage
+    Brain: 100% of tool calls (1200/1200)
+    Static rules: 34% of tool calls (408/1200)
+    Brain covers 2.9x more decisions than rules alone
+
+  Safety
+    12 dangerous operations blocked
+      2 critical (rm -rf, force push, etc.)
+      10 high-risk (git push, sudo, etc.)
+    False-approve rate on risky actions: 0.0% (0/38)
+
+  Brain accuracy
+    96.2% correct (1154/1200 decisions)
+    Correction rate: 8.4% -> 2.1% (+6.3pp improvement)
+
+  Estimated time saved
+    ~42.4 minutes (847 auto-handled tool calls x 3s each)
 ```
 
 **Auto-insights — self-improving sessions:**

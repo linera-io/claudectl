@@ -2,6 +2,28 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.31.0] - 2026-04-19
+
+### Added
+- **Claude Code plugin** — integrates the brain directly into Claude Code sessions, no TUI required (#169)
+  - PreToolUse hooks: `brain-gate.sh` (auto-approve/deny) and `budget-check.sh` (spend limits)
+  - Slash commands: `/sessions`, `/spend`, `/brain-stats`, `/brain`, `/auto-insights`
+  - Supervisor agent for session health triage
+  - Session monitoring skill (auto-activated)
+- **`--init` / `--uninstall`** — one-command setup to wire up Claude Code hooks in `.claude/settings.json` (#169)
+- **`--brain-query`** — standalone brain query for single tool-call decisions (JSON output), used by plugin hooks (#169)
+- **`--mode on|off|auto|status`** — toggle brain gate mode mid-session without restarting (#169)
+- **`-s / --scope`** — configure hooks at user or project level (#169)
+- **Auto-insights** — self-improving session analysis that detects friction patterns from brain decision history (#170)
+  - 7 detectors: friction patterns, error loops, context blowouts, missing rules, accuracy gaps, temporal friction, cost trends
+  - Differential tracking: only new insights are surfaced (fingerprint-based dedup)
+  - `--insights [on|off|status]` — view insights or enable auto-generation every 10 decisions
+  - `/auto-insights` plugin command
+- **Impact scorecard** — `--brain-stats impact` with visual card layout, bar charts, and headline metrics (#171)
+  - Auto-approve rate, brain accuracy, coverage vs static rules, dangerous ops blocked, time saved, learning curve
+- Star prompt after first successful run (#168)
+- `--demo` mode for fake sessions without Claude Code (#168)
+
 ## [0.30.0] - 2026-04-18
 
 ### Added

@@ -50,31 +50,118 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `?` | Toggle help overlay |
 | `q`/`Esc` | Quit |
 
-## CLI Modes
+## CLI Reference
 
-```bash
-claudectl                                    # Interactive TUI dashboard
-claudectl --watch                            # Stream status changes (no TUI)
-claudectl --list                             # Print session table and exit
-claudectl --json                             # Machine-readable output
-claudectl --history --since 24h              # Past sessions with cost
-claudectl --stats --since 7d                 # Aggregated statistics
-claudectl --doctor                           # Diagnose terminal support
-claudectl --config                           # Show resolved configuration
-claudectl --hooks                            # List configured hooks
-claudectl --clean --older-than 7d --dry-run  # Preview cleanup
-```
+### Dashboard
+
+| Flag | Description |
+|------|-------------|
+| (no flags) | Interactive TUI dashboard |
+| `-i`, `--interval <ms>` | Refresh interval in milliseconds (default: 2000) |
+| `--theme <dark\|light\|none>` | Color theme. Respects `NO_COLOR` env var |
+| `--debug` | Show timing metrics in the footer |
+| `--demo` | Run with fake sessions for screenshots and demos |
+
+### Output Modes
+
+| Flag | Description |
+|------|-------------|
+| `-l`, `--list` | Print session table to stdout and exit |
+| `--json` | Print JSON array of sessions and exit |
+| `-w`, `--watch` | Stream status changes to stdout (no TUI) |
+| `--format <template>` | Custom format for `--watch`. Placeholders: `{pid}`, `{project}`, `{status}`, `{cost}`, `{context}` |
+| `--summary` | Show activity summary and exit |
+| `--since <duration>` | Time window for `--summary`, `--history`, `--stats` (e.g., "8h", "24h", "7d"). Default: 24h |
+
+### Filtering
+
+| Flag | Description |
+|------|-------------|
+| `--filter-status <status>` | Filter by status: NeedsInput, Processing, Waiting, Finished, etc. |
+| `--focus <filter>` | High-signal subset: `attention`, `over-budget`, `high-context`, `unknown-telemetry`, `conflict` |
+| `--search <text>` | Search project/model/session text |
+
+### Session Management
+
+| Flag | Description |
+|------|-------------|
+| `--new` | Launch a new Claude Code session |
+| `--cwd <path>` | Working directory for the new session (default: `.`) |
+| `--prompt <text>` | Prompt to send to the new session |
+| `--resume <session-id>` | Resume a previous session by ID |
+
+### Budget & Notifications
+
+| Flag | Description |
+|------|-------------|
+| `--budget <usd>` | Per-session budget in USD. Alert at 80%, optionally kill at 100% |
+| `--kill-on-budget` | Auto-kill sessions that exceed budget (requires `--budget`) |
+| `--notify` | Desktop notifications on NeedsInput transitions |
+| `--webhook <url>` | Webhook URL to POST JSON on status changes |
+| `--webhook-on <statuses>` | Only fire webhook on these transitions (comma-separated, e.g. "NeedsInput,Finished") |
+
+### Brain (Local LLM)
+
+| Flag | Description |
+|------|-------------|
+| `--brain` | Enable local LLM brain for session advisory |
+| `--auto-run` | Auto-execute brain suggestions without confirmation |
+| `--url <endpoint>` | LLM endpoint URL (maps to config `[brain] endpoint`) |
+| `--brain-model <name>` | Override brain model name (maps to config `[brain] model`) |
+| `--brain-eval` | Run brain eval scenarios against the LLM and report results |
+| `--brain-prompts` | List brain prompt templates and their source (built-in vs user override) |
+| `--brain-stats <metric>` | Brain statistics: `learning-curve`, `accuracy`, `baseline`, `false-approve` |
+| `--brain-query` | Query brain for a single tool-call decision (JSON output) |
+| `--tool <name>` | Tool name for `--brain-query` (e.g., "Bash", "Write") |
+| `--tool-input <input>` | Command or file path for `--brain-query` |
+| `--project <name>` | Project name for `--brain-query` (default: current directory name) |
+| `--mode <on\|off\|auto\|status>` | Set brain gate mode (see Brain Gate Mode below) |
+
+### Orchestration
+
+| Flag | Description |
+|------|-------------|
+| `--decompose <prompt>` | Analyze a prompt and suggest parallel sub-tasks (outputs JSON) |
+| `--run <file>` | Run tasks from a JSON file |
+| `--parallel` | Run independent tasks in parallel (used with `--run`) |
+
+### Recording
+
+| Flag | Description |
+|------|-------------|
+| `--record <path>` | Record the TUI as an asciicast v2 file (e.g., `--record demo.cast`) |
+| `--duration <secs>` | Auto-quit after N seconds (useful with `--demo --record`) |
+
+### Cleanup
+
+| Flag | Description |
+|------|-------------|
+| `--clean` | Clean up old session data (JSONL transcripts, session JSON files) |
+| `--older-than <duration>` | Only clean sessions older than this (e.g., "7d", "24h") |
+| `--finished` | Only clean sessions that have finished |
+| `--dry-run` | Show what would be removed without deleting |
+
+### History & Diagnostics
+
+| Flag | Description |
+|------|-------------|
+| `--history` | Show completed session history and exit |
+| `--stats` | Show aggregated session statistics and exit |
+| `--config` | Show resolved configuration and exit |
+| `--config-template` | Print annotated default config template to stdout |
+| `--hooks` | List configured event hooks and exit |
+| `--doctor` | Diagnose terminal integration and setup |
+| `--log <path>` | Write diagnostic logs to a file |
 
 ### Setup
 
-```bash
-claudectl --init                             # Wire up Claude Code hooks (global)
-claudectl --init --project-local             # Wire up hooks for this project only
-claudectl --uninstall                        # Remove claudectl hooks (global)
-claudectl --uninstall --project-local        # Remove hooks from project-local settings
-```
+| Flag | Description |
+|------|-------------|
+| `--init` | Wire up Claude Code hooks in `~/.claude/settings.json` |
+| `--uninstall` | Remove claudectl hooks from settings |
+| `--project-local` | Target `.claude/settings.local.json` instead of global |
 
-`--init` writes three hooks into Claude Code's `~/.claude/settings.json`:
+`--init` writes three hooks into Claude Code's settings:
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -84,9 +171,14 @@ claudectl --uninstall --project-local        # Remove hooks from project-local s
 
 The hooks call `claudectl --json` on each event. They are safe to run alongside any existing hooks — `--init` merges without overwriting.
 
-Use `--project-local` to write to `.claude/settings.local.json` (gitignored) instead of the global file. This is useful when you want claudectl hooks only in specific projects.
+Use `--project-local` to write to `.claude/settings.local.json` (gitignored) instead of the global file.
 
 `--uninstall` removes only claudectl hook entries, preserving all other settings and hooks. If the file becomes empty after removal, it is deleted.
+
+| Scope | Flag | File | Committed to git? |
+|-------|------|------|--------------------|
+| Global | `--init` | `~/.claude/settings.json` | No (user home) |
+| Project | `--init --project-local` | `.claude/settings.local.json` | No (gitignored) |
 
 ## Cost Tracking
 
@@ -187,4 +279,4 @@ claudectl runs entirely locally. It reads Claude Code's session files from disk 
 
 Webhook payloads contain session metadata (project name, cost, status). Review your webhook URL and event filters before enabling.
 
-The brain feature sends session context to a **local** LLM endpoint (default `localhost:11434`). No data leaves your machine unless you point `--brain-endpoint` at a remote server.
+The brain feature sends session context to a **local** LLM endpoint (default `localhost:11434`). No data leaves your machine unless you point `--url` at a remote server.

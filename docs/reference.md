@@ -280,3 +280,37 @@ claudectl runs entirely locally. It reads Claude Code's session files from disk 
 Webhook payloads contain session metadata (project name, cost, status). Review your webhook URL and event filters before enabling.
 
 The brain feature sends session context to a **local** LLM endpoint (default `localhost:11434`). No data leaves your machine unless you point `--url` at a remote server.
+
+## Comparison
+
+claudectl was the first tool to combine local LLM supervision with multi-session orchestration for Claude Code (shipped April 2026).
+
+| Capability | Claude Code alone | With claudectl |
+|-----------|:-:|:-:|
+| Local LLM auto-approve/deny | No | Brain with ollama |
+| Self-improving insights | No | Friction detection, rule suggestions |
+| Session health monitoring | No | Cognitive decay, cost spikes, loops, stalls, context |
+| Orchestrate multi-session workflows | No | Dependency-ordered tasks |
+| See status of all sessions at once | No | Live dashboard |
+| Track cost per session | Manually | Live $/hr burn rate |
+| Enforce spend budgets | No | Auto-kill at limit |
+| File conflict detection | No | Auto-detect + brain pre-check + auto-deny |
+| Idle mode / unattended work | No | Run tasks while you sleep |
+| Session auto-restart | No | Checkpoint + restart on context saturation |
+| Task decomposition | No | Splits prompts into parallel DAGs |
+| Auto-rule engine | No | Match by tool/command/project/cost |
+| Approve prompts without switching | No | Press `y` |
+| Record session highlight reels | No | Press `R` |
+| Claude Code plugin | No | `/brain`, `/sessions`, `/spend`, `/auto-insights` |
+
+| Feature | claudectl | Static auto-approve tools | Cloud-based supervisors |
+|---------|:---------:|:-------------------------:|:-----------------------:|
+| Local LLM brain that learns your preferences | Yes | No | No |
+| Cross-session orchestration + context routing | Yes | No | Varies |
+| Cognitive rot / health monitoring | Yes | No | No |
+| File conflict detection across sessions | Yes | No | No |
+| Per-tool adaptive confidence thresholds | Yes | No | No |
+| Task decomposition into parallel DAGs | Yes | No | No |
+| Binary size | <1 MB | Varies | N/A |
+| Startup time | <50 ms | Varies | N/A |
+| Data stays on your machine | 100% | Usually | No |

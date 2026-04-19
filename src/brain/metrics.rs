@@ -866,60 +866,50 @@ struct FalseApproveCase {
 // #170: Impact scorecard
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Print the impact scorecard — headline metrics quantifying claudectl's value.
+/// Render a horizontal bar using Unicode block characters.
+/// `value` is 0.0–1.0, `width` is the total bar width in characters.
+fn render_bar(value: f64, width: usize) -> String {
+    let filled = (value.clamp(0.0, 1.0) * width as f64) as usize;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty))
+}
+
+/// Format a time duration in human-friendly units.
+fn format_time_saved(secs: f64) -> String {
+    if secs >= 3600.0 {
+        format!("{:.1}h", secs / 3600.0)
+    } else if secs >= 60.0 {
+        format!("{:.0}m", secs / 60.0)
+    } else {
+        format!("{:.0}s", secs)
+    }
+}
+
+/// Print the impact scorecard — visual cards with headline metrics.
 pub fn print_impact() {
     let decisions = read_all_decisions();
     let total = decisions.len();
 
-    println!("Impact Scorecard");
-    println!("=================");
-    println!();
-
     if total < 5 {
-        println!("  Not enough decisions yet ({total}). Need at least 5.");
-        println!("  Use claudectl with --brain to build history.");
+        println!("Not enough decisions yet ({total}). Need at least 5.");
+        println!("Use claudectl with --brain to build history.");
         return;
     }
 
-    // ── 1. Auto-approve rate (interruptions avoided) ────────────────
+    // ── Compute all metrics ─────────────────────────────────────────
     let auto_count = decisions
         .iter()
         .filter(|d| d.user_action == "auto" || d.user_action == "rule_approve")
         .count();
-    let manual_count = decisions
-        .iter()
-        .filter(|d| d.user_action == "accept" || d.user_action == "reject")
-        .count();
-    let auto_rate = if total > 0 {
-        auto_count as f64 / total as f64
-    } else {
-        0.0
-    };
+    let auto_rate = auto_count as f64 / total as f64;
 
-    println!("  Interruptions avoided");
-    println!(
-        "    {auto_count}/{total} tool calls handled without interruption ({:.0}%)",
-        auto_rate * 100.0,
-    );
-    if manual_count > 0 {
-        println!(
-            "    {manual_count} required manual review ({:.0}%)",
-            manual_count as f64 / total as f64 * 100.0,
-        );
-    }
-    println!();
-
-    // ── 2. Coverage vs rules baseline ───────────────────────────────
     let mut rules_decided = 0u32;
     let mut brain_correct = 0u32;
     let mut brain_decided = 0u32;
-
     for d in &decisions {
-        let rules_said = rules_baseline_classify(d.tool.as_deref(), d.command.as_deref());
-        if rules_said != "abstain" {
+        if rules_baseline_classify(d.tool.as_deref(), d.command.as_deref()) != "abstain" {
             rules_decided += 1;
         }
-
         if d.is_positive() || d.is_negative() {
             brain_decided += 1;
             if d.is_positive() {
@@ -927,41 +917,19 @@ pub fn print_impact() {
             }
         }
     }
-
-    let rules_coverage = if total > 0 {
-        rules_decided as f64 / total as f64
+    let brain_accuracy = if brain_decided > 0 {
+        brain_correct as f64 / brain_decided as f64
     } else {
         0.0
     };
-    let brain_coverage = if total > 0 {
-        brain_decided as f64 / total as f64
+    let coverage_multiplier = if rules_decided > 0 {
+        brain_decided as f64 / rules_decided as f64
     } else {
         0.0
     };
 
-    println!("  Decision coverage");
-    println!(
-        "    Brain: {:.0}% of tool calls ({brain_decided}/{total})",
-        brain_coverage * 100.0,
-    );
-    println!(
-        "    Static rules: {:.0}% of tool calls ({rules_decided}/{total})",
-        rules_coverage * 100.0,
-    );
-    if brain_coverage > rules_coverage && rules_coverage > 0.0 {
-        println!(
-            "    Brain covers {:.1}x more decisions than rules alone",
-            brain_coverage / rules_coverage,
-        );
-    } else if rules_decided == 0 && brain_decided > 0 {
-        println!("    Static rules could not decide on any of these tool calls");
-    }
-    println!();
-
-    // ── 3. Dangerous operations blocked ─────────────────────────────
     let mut blocked_high = 0u32;
     let mut blocked_critical = 0u32;
-
     for d in &decisions {
         let risk = classify_risk(d.tool.as_deref(), d.command.as_deref());
         let was_denied = d.brain_action == "deny"
@@ -969,7 +937,6 @@ pub fn print_impact() {
             || d.user_action == "rule_deny"
             || d.user_action == "deny_rule_override"
             || d.user_action == "conflict_deny";
-
         if was_denied {
             match risk {
                 RiskTier::High => blocked_high += 1,
@@ -978,67 +945,112 @@ pub fn print_impact() {
             }
         }
     }
-
     let total_blocked = blocked_high + blocked_critical;
-    println!("  Safety");
-    if total_blocked > 0 {
-        println!("    {total_blocked} dangerous operations blocked");
-        if blocked_critical > 0 {
-            println!("      {blocked_critical} critical (rm -rf, force push, etc.)");
-        }
-        if blocked_high > 0 {
-            println!("      {blocked_high} high-risk (git push, sudo, etc.)");
-        }
-    } else {
-        println!("    No dangerous operations encountered yet");
-    }
 
-    // False-approve rate for high+critical
-    let high_crit_approved: u32 = decisions
-        .iter()
-        .filter(|d| {
-            d.brain_action == "approve"
-                && matches!(
-                    classify_risk(d.tool.as_deref(), d.command.as_deref()),
-                    RiskTier::High | RiskTier::Critical
-                )
-        })
-        .count() as u32;
-    let high_crit_false: u32 = decisions
-        .iter()
-        .filter(|d| {
-            d.brain_action == "approve"
-                && d.is_negative()
-                && matches!(
-                    classify_risk(d.tool.as_deref(), d.command.as_deref()),
-                    RiskTier::High | RiskTier::Critical
-                )
-        })
-        .count() as u32;
+    const SECS_PER_INTERRUPTION: f64 = 3.0;
+    let time_saved_secs = auto_count as f64 * SECS_PER_INTERRUPTION;
 
-    if high_crit_approved > 0 {
-        let fa_rate = high_crit_false as f64 / high_crit_approved as f64 * 100.0;
+    // ── Render cards ────────────────────────────────────────────────
+    let w = 48; // card width
+    let dbar = "\u{2550}".repeat(w);
+
+    println!();
+    println!("  \u{2554}{dbar}\u{2557}");
+    println!("  \u{2551}{:^w$}\u{2551}", "IMPACT SCORECARD", w = w);
+    println!(
+        "  \u{2551}{:^w$}\u{2551}",
+        format!("{total} decisions tracked"),
+        w = w
+    );
+    println!("  \u{2560}{dbar}\u{2563}");
+
+    // Card 1: Auto-approve
+    println!(
+        "  \u{2551}  {:<30} {:>13}  \u{2551}",
+        "Auto-handled",
+        format!("{:.0}%", auto_rate * 100.0),
+    );
+    println!(
+        "  \u{2551}  {}  {:>5}/{:<5}  \u{2551}",
+        render_bar(auto_rate, 28),
+        auto_count,
+        total,
+    );
+    println!("  \u{2551}{}\u{2551}", " ".repeat(w));
+
+    // Card 2: Brain accuracy
+    println!(
+        "  \u{2551}  {:<30} {:>13}  \u{2551}",
+        "Brain accuracy",
+        format!("{:.1}%", brain_accuracy * 100.0),
+    );
+    println!(
+        "  \u{2551}  {}  {:>5}/{:<5}  \u{2551}",
+        render_bar(brain_accuracy, 28),
+        brain_correct,
+        brain_decided,
+    );
+    println!("  \u{2551}{}\u{2551}", " ".repeat(w));
+
+    // Card 3: Coverage vs rules
+    if coverage_multiplier > 1.0 {
         println!(
-            "    False-approve rate on risky actions: {:.1}% ({high_crit_false}/{high_crit_approved})",
-            fa_rate,
+            "  \u{2551}  {:<30} {:>13}  \u{2551}",
+            "Coverage vs static rules",
+            format!("{:.1}x", coverage_multiplier),
+        );
+    } else {
+        println!(
+            "  \u{2551}  {:<30} {:>13}  \u{2551}",
+            "Coverage vs static rules", "n/a",
         );
     }
-    println!();
-
-    // ── 4. Brain accuracy ───────────────────────────────────────────
-    let brain_accuracy = if brain_decided > 0 {
-        brain_correct as f64 / brain_decided as f64 * 100.0
+    let rules_pct = if total > 0 {
+        rules_decided as f64 / total as f64
     } else {
         0.0
     };
-
-    println!("  Brain accuracy");
+    let brain_pct = if total > 0 {
+        brain_decided as f64 / total as f64
+    } else {
+        0.0
+    };
     println!(
-        "    {:.1}% correct ({brain_correct}/{brain_decided} decisions)",
-        brain_accuracy,
+        "  \u{2551}  brain {}  {:.0}%  \u{2551}",
+        render_bar(brain_pct, 28),
+        brain_pct * 100.0,
     );
+    println!(
+        "  \u{2551}  rules {}  {:.0}%  \u{2551}",
+        render_bar(rules_pct, 28),
+        rules_pct * 100.0,
+    );
+    println!("  \u{2551}{}\u{2551}", " ".repeat(w));
 
-    // Learning curve: compare first vs last half correction rate
+    // Card 4: Safety + Time saved (compact row)
+    println!(
+        "  \u{2551}  {:<22} {:>6}  {:<8} {:>4}  \u{2551}",
+        "Dangerous ops blocked",
+        total_blocked,
+        "Time saved",
+        format_time_saved(time_saved_secs),
+    );
+    if total_blocked > 0 || auto_count > 0 {
+        let mut detail_parts = Vec::new();
+        if blocked_critical > 0 {
+            detail_parts.push(format!("{blocked_critical} critical"));
+        }
+        if blocked_high > 0 {
+            detail_parts.push(format!("{blocked_high} high-risk"));
+        }
+        if auto_count > 0 {
+            detail_parts.push(format!("{auto_count} auto x 3s"));
+        }
+        let detail = detail_parts.join(" | ");
+        println!("  \u{2551}  {:<w2$}  \u{2551}", detail, w2 = w - 4);
+    }
+
+    // Learning curve (if enough data)
     if total >= 10 {
         let mid = total / 2;
         let early_corrections = decisions[..mid].iter().filter(|d| d.is_negative()).count();
@@ -1047,50 +1059,24 @@ pub fn print_impact() {
         let late_rate = late_corrections as f64 / (total - mid) as f64;
         let improvement = early_rate - late_rate;
 
-        if improvement > 0.05 {
+        if improvement.abs() > 0.05 {
+            println!("  \u{2551}{}\u{2551}", " ".repeat(w));
+            let arrow = if improvement > 0.0 {
+                "\u{2193}"
+            } else {
+                "\u{2191}"
+            };
             println!(
-                "    Correction rate: {:.1}% -> {:.1}% ({:+.1}pp improvement)",
+                "  \u{2551}  Learning: correction rate {:.1}% {arrow} {:.1}% ({:+.1}pp)  \u{2551}",
                 early_rate * 100.0,
                 late_rate * 100.0,
-                improvement * 100.0,
-            );
-        } else if improvement < -0.05 {
-            println!(
-                "    Correction rate: {:.1}% -> {:.1}% ({:+.1}pp)",
-                early_rate * 100.0,
-                late_rate * 100.0,
-                improvement * 100.0,
+                -improvement * 100.0,
             );
         }
     }
+
+    println!("  \u{255a}{dbar}\u{255d}");
     println!();
-
-    // ── 5. Time saved estimate ──────────────────────────────────────
-    // Conservative estimate: 3 seconds per manual approval (context switch cost)
-    const SECS_PER_INTERRUPTION: f64 = 3.0;
-    let time_saved_secs = auto_count as f64 * SECS_PER_INTERRUPTION;
-
-    println!("  Estimated time saved");
-    if auto_count > 0 {
-        if time_saved_secs >= 3600.0 {
-            println!(
-                "    ~{:.1} hours ({auto_count} auto-handled tool calls x {SECS_PER_INTERRUPTION:.0}s each)",
-                time_saved_secs / 3600.0,
-            );
-        } else if time_saved_secs >= 60.0 {
-            println!(
-                "    ~{:.0} minutes ({auto_count} auto-handled tool calls x {SECS_PER_INTERRUPTION:.0}s each)",
-                time_saved_secs / 60.0,
-            );
-        } else {
-            println!(
-                "    ~{:.0} seconds ({auto_count} auto-handled tool calls x {SECS_PER_INTERRUPTION:.0}s each)",
-                time_saved_secs,
-            );
-        }
-    } else {
-        println!("    No auto-handled tool calls yet. Enable --auto-run or --mode auto.");
-    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

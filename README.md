@@ -2,7 +2,7 @@
 
 **Auto-pilot for Claude Code.**
 
-Fully local on-device model that learns and decide what to approve - no cloud API, no telemetry. +orchestration, health monitoring, spend control, and highlight-reels.
+Fully local on-device model that learns and decides what to approve — no cloud API, no telemetry. Plus orchestration, health monitoring, spend control, and highlight-reels.
 
 [![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)
@@ -22,12 +22,6 @@ Fully local on-device model that learns and decide what to approve - no cloud AP
 ```bash
 brew install mercurialsolo/tap/claudectl     # Homebrew (macOS / Linux)
 cargo install claudectl                       # Cargo (any platform)
-```
-
-Then wire up the hooks:
-```bash
-claudectl --init                          # Adds hooks to ~/.claude/settings.json
-claudectl                                 # Start the dashboard
 ```
 
 <details>
@@ -406,12 +400,16 @@ claudectl --clean --older-than 7d          # Only sessions older than 7 days
 claudectl --clean --finished --dry-run     # Preview what would be removed
 ```
 
-### Uninstall hooks
+## Uninstall
+
+Remove claudectl hooks from Claude Code:
 
 ```bash
-claudectl --uninstall                      # Remove hooks from ~/.claude/settings.json
-claudectl --uninstall -s project      # Remove from project-local settings
+claudectl --uninstall                      # Remove from user settings
+claudectl --uninstall -s project           # Remove from project settings
 ```
+
+This surgically removes only claudectl entries — all other settings and hooks are preserved.
 
 ## Comparison
 

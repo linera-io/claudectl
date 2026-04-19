@@ -183,17 +183,28 @@
 
           <div class="install-grid">
             <article class="install-card">
-              <h3>First run</h3>
-              <pre><code>claudectl --demo
-claudectl --demo --record demo.gif</code></pre>
-              <p>Use demo mode for screenshots, evaluation, and zero-risk recording.</p>
+              <h3>1. Install</h3>
+              <pre><code>brew install mercurialsolo/tap/claudectl
+cargo install claudectl</code></pre>
+              <p>Single binary, no dependencies. Under 1 MB.</p>
             </article>
 
             <article class="install-card">
-              <h3>Install</h3>
-              <pre><code>brew install mercurialsolo/tap/claudectl
-cargo install claudectl</code></pre>
-              <p>Use plain <code>claudectl</code> once you already have a live Claude Code session running.</p>
+              <h3>2. Wire up hooks</h3>
+              <pre><code>claudectl --init</code></pre>
+              <p>One command adds hooks to <code>~/.claude/settings.json</code> so Claude Code notifies claudectl on every tool use. Run once.</p>
+            </article>
+
+            <article class="install-card">
+              <h3>3. Start the dashboard</h3>
+              <pre><code>claudectl</code></pre>
+              <p>See every session at a glance. Or try <code>claudectl --demo</code> first to explore with fake sessions.</p>
+            </article>
+
+            <article class="install-card">
+              <h3>Uninstall</h3>
+              <pre><code>claudectl --uninstall</code></pre>
+              <p>Removes only claudectl hooks. All other settings preserved. Then <code>brew uninstall claudectl</code>.</p>
             </article>
           </div>
         </section>

@@ -42,6 +42,7 @@ Not all contributions are code. Hooks, docs, config presets, terminal compatibil
 | `history.rs` | Session history persistence and analytics |
 | `orchestrator.rs` | Multi-session task runner |
 | `hooks.rs` | Event hooks system and execution |
+| `init.rs` | `--init` / `--uninstall` for Claude Code hooks integration |
 | `logger.rs` | Diagnostic file logging |
 | `demo.rs` | Deterministic fake sessions for demo mode |
 | `recorder.rs` | Asciicast recording with tee writer |

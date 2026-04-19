@@ -13,6 +13,7 @@ pub mod discovery;
 pub mod health;
 pub mod history;
 pub mod hooks;
+pub mod init;
 pub mod launch;
 pub mod logger;
 pub mod models;

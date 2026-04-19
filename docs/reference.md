@@ -65,6 +65,29 @@ claudectl --hooks                            # List configured hooks
 claudectl --clean --older-than 7d --dry-run  # Preview cleanup
 ```
 
+### Setup
+
+```bash
+claudectl --init                             # Wire up Claude Code hooks (global)
+claudectl --init --project-local             # Wire up hooks for this project only
+claudectl --uninstall                        # Remove claudectl hooks (global)
+claudectl --uninstall --project-local        # Remove hooks from project-local settings
+```
+
+`--init` writes three hooks into Claude Code's `~/.claude/settings.json`:
+
+| Hook | Matcher | Purpose |
+|------|---------|---------|
+| `PreToolUse` | `Bash` | Lets claudectl observe commands before execution |
+| `PostToolUse` | `*` | Notifies claudectl after every tool completion |
+| `Stop` | (all) | Notifies claudectl when a session ends |
+
+The hooks call `claudectl --json` on each event. They are safe to run alongside any existing hooks — `--init` merges without overwriting.
+
+Use `--project-local` to write to `.claude/settings.local.json` (gitignored) instead of the global file. This is useful when you want claudectl hooks only in specific projects.
+
+`--uninstall` removes only claudectl hook entries, preserving all other settings and hooks. If the file becomes empty after removal, it is deleted.
+
 ## Cost Tracking
 
 - Per-session USD estimates (Opus, Sonnet, Haiku model pricing)
@@ -87,6 +110,72 @@ claudectl reads Claude Code's local data — no API keys, no network access, no 
 - **`/tmp/claude-{uid}/{slug}/{sessionId}/tasks/`** — subagent task files
 
 Status inference combines multiple signals: `waiting_for_task` events, CPU usage thresholds, `stop_reason` fields, and message recency.
+
+### Brain Query
+
+Query the brain for a single tool-call decision without the TUI. Used by the Claude Code plugin hook, but also useful for scripting and testing:
+
+```bash
+claudectl --brain --brain-query --tool Bash --tool-input "rm -rf /tmp"
+claudectl --brain --brain-query --tool Write --tool-input "src/main.rs" --project myapp
+```
+
+Output is JSON:
+
+```json
+{"action":"deny","reasoning":"Destructive command","confidence":0.95,"source":"brain","below_threshold":false,"threshold":0.6}
+```
+
+The decision flow is: deny rules (instant) -> approve rules (instant) -> LLM query -> adaptive threshold check.
+
+If the brain is unreachable, returns `{"action":"abstain","source":"error"}` so callers are never blocked.
+
+### Brain Gate Mode
+
+Control whether the brain hook evaluates tool calls:
+
+```bash
+claudectl --mode on                    # Brain evaluates tool calls (default)
+claudectl --mode off                   # Disable brain — all calls pass through
+claudectl --mode auto                  # Brain auto-approves above threshold
+claudectl --mode status                # Show current mode
+```
+
+| Mode | Approves safe calls | Denies dangerous calls | Low-confidence calls |
+|------|:---:|:---:|:---:|
+| `on` | Yes | Yes | Fall through to user |
+| `auto` | Yes | Yes | Auto-approve |
+| `off` | No | No | Fall through to user |
+
+Mode is stored in `~/.claudectl/brain/gate-mode`. File absent = `on` (default).
+
+## Claude Code Plugin
+
+claudectl includes a Claude Code plugin in `claude-plugin/` that integrates the brain directly into sessions.
+
+### Plugin Components
+
+| Component | Type | What it does |
+|-----------|------|-------------|
+| `brain-gate.sh` | PreToolUse hook | Queries the brain before Bash/Write/Edit/NotebookEdit calls |
+| `budget-check.sh` | PreToolUse hook | Denies tool calls when session exceeds budget |
+| `/brain` | Command | Toggle brain mode: `/brain on`, `/brain off`, `/brain auto` |
+| `/sessions` | Command | Show all active sessions with status, cost, and health |
+| `/spend` | Command | Cost breakdown by project and time window |
+| `/brain-stats` | Command | Brain learning metrics and accuracy |
+| Supervisor | Agent | Proactive session health triage |
+| Session Monitoring | Skill | Auto-activated awareness of claudectl capabilities |
+
+### How the brain gate hook works
+
+1. Claude Code fires a PreToolUse event with the tool name and input
+2. The hook checks `~/.claudectl/brain/gate-mode` — if `off`, exits immediately
+3. Calls `claudectl --brain --brain-query --tool <name> --tool-input <input>`
+4. claudectl checks static deny/approve rules first (instant, no LLM)
+5. If no rule matches, queries the local LLM brain
+6. Returns `{"decision":"approve"}` or `{"decision":"deny","reason":"..."}` to Claude Code
+
+In `on` mode, low-confidence brain approvals fall through to normal permission prompts. In `auto` mode, all brain approvals execute.
 
 ## Security
 

@@ -96,6 +96,15 @@ claudectl --mode status                      # Show current mode
 
 If you use the Claude Code plugin, type `/brain off` or `/brain auto` directly in your session.
 
+### Auto-insights
+
+Enable the brain to automatically detect friction patterns and suggest workflow improvements:
+
+```bash
+claudectl --brain --insights on            # Enable auto-generation
+claudectl --brain --insights               # View current insights
+```
+
 ## Optional: install the Claude Code plugin
 
 The `claude-plugin/` directory in the claudectl repo is a Claude Code plugin that integrates the brain directly into your sessions, no TUI required:
@@ -103,6 +112,7 @@ The `claude-plugin/` directory in the claudectl repo is a Claude Code plugin tha
 - `/sessions` — see all active sessions
 - `/spend` — cost breakdown
 - `/brain on|off|auto` — toggle brain mid-session
+- `/auto-insights` — view or configure auto-generated workflow insights
 - **Automatic brain gate** — the plugin hook queries the brain before every Bash/Write/Edit call
 
 The plugin and `--init` hooks are complementary. Use `--init` for dashboard observability, the plugin for inline brain decisions.

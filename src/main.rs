@@ -204,6 +204,13 @@ struct Cli {
     #[arg(long, help_heading = "Brain (Local LLM)")]
     mode: Option<String>,
 
+    /// Show auto-generated insights, or set mode (on/off/status).
+    /// Requires --brain or brain.enabled in config.
+    /// Without argument: show current insights.
+    /// With argument: set insights mode (on = auto-generate, off = disable).
+    #[arg(long, help_heading = "Brain (Local LLM)", num_args = 0..=1, default_missing_value = "")]
+    insights: Option<String>,
+
     // ── Orchestration ──────────────────────────────────────────────────
     /// Analyze a prompt and suggest parallel sub-tasks (outputs TaskFile JSON)
     #[arg(long, help_heading = "Orchestration")]
@@ -448,6 +455,10 @@ fn run_main(cli: Cli) -> io::Result<()> {
 
     if let Some(ref mode) = cli.mode {
         return run_brain_mode(mode);
+    }
+
+    if let Some(ref insights_arg) = cli.insights {
+        return run_insights(&cfg, &cli, insights_arg);
     }
 
     if let Some(ref prompt) = cli.decompose {
@@ -1513,6 +1524,55 @@ fn run_brain_mode(mode: &str) -> io::Result<()> {
 
     println!("Brain gate mode set to: {mode}");
     println!("  {description}");
+    Ok(())
+}
+
+/// Handle --insights: show insights or set mode (on/off/status).
+/// Requires brain to be enabled.
+fn run_insights(cfg: &config::Config, cli: &Cli, arg: &str) -> io::Result<()> {
+    let brain_enabled = cfg.brain.as_ref().map(|b| b.enabled).unwrap_or(false) || cli.brain;
+
+    if !brain_enabled {
+        eprintln!(
+            "Insights requires the brain. Use --brain or set brain.enabled = true in config."
+        );
+        std::process::exit(1);
+    }
+
+    match arg {
+        "on" => {
+            let _ = brain::insights::write_insights_mode("on");
+            println!("Insights mode: on");
+            println!("  Auto-generating insights every 10 decisions during brain distillation.");
+            println!("  Run `claudectl --brain --insights` to view.");
+        }
+        "off" => {
+            let _ = brain::insights::write_insights_mode("off");
+            println!("Insights mode: off");
+            println!(
+                "  Auto-generation disabled. Run `claudectl --brain --insights` to generate on demand."
+            );
+        }
+        "status" => {
+            let mode = brain::insights::read_insights_mode();
+            println!("Insights mode: {mode}");
+            println!();
+            println!("Modes:");
+            println!("  on   — auto-generate insights every 10 decisions");
+            println!("  off  — disabled, generate on demand only (default)");
+        }
+        "" => {
+            // No argument: show insights
+            brain::insights::print_insights();
+        }
+        _ => {
+            eprintln!("Unknown insights argument: {arg}");
+            eprintln!("Usage: --insights [on|off|status]");
+            eprintln!("  No argument: show current insights");
+            std::process::exit(1);
+        }
+    }
+
     Ok(())
 }
 

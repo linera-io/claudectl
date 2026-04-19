@@ -69,6 +69,7 @@ claudectl --decompose "Add auth and update tests and docs"  # Split into paralle
 | Auto-rule engine | No | **Match by tool/command/project/cost** |
 | Approve prompts without switching | No | **Press `y`** |
 | Get notified on stalls/blocks | No | **Desktop + webhook** |
+| Auto-insights (friction, rules, cost trends) | No | **Self-improving brain** |
 | Claude Code plugin with `/brain`, `/sessions`, `/spend` | No | **Built-in plugin** |
 | Toggle brain on/off/auto mid-session | No | **`--mode off` or `/brain off`** |
 
@@ -152,6 +153,27 @@ claudectl --brain-stats baseline         # Brain vs. dumb rules classifier
 claudectl --brain-stats false-approve    # Safety: how often does brain approve risky actions?
 ```
 
+**Auto-insights — self-improving sessions:**
+
+The brain automatically detects friction patterns and suggests improvements to your workflow:
+
+```bash
+claudectl --brain --insights              # View current insights
+claudectl --brain --insights on           # Enable auto-generation (every 10 decisions)
+claudectl --brain --insights off          # Disable auto-generation
+claudectl --brain --insights status       # Show current mode
+```
+
+Insights are generated from your decision history — no LLM call needed. The system detects:
+- **Friction patterns** — tools/commands you keep rejecting (suggests deny rules)
+- **Error loops** — same tool failing repeatedly across sessions
+- **Context blowouts** — sessions frequently hitting high context usage
+- **Missing rules** — high-confidence patterns that should be AutoRules
+- **Accuracy gaps** — tools where the brain needs more training data
+- **Cost trends** — burn rate increases and cost outlier sessions
+
+Only new insights are surfaced — the system tracks what you've already seen. When auto-generation is on, insights are produced alongside preference distillation in the background. Use the `/auto-insights` plugin command to access this inside Claude Code sessions.
+
 **Diagnostics and customization:**
 
 ```bash
@@ -199,7 +221,7 @@ claudectl ships with a Claude Code plugin that integrates the brain directly int
 ```
 claude-plugin/
 ├── hooks/        # PreToolUse hook that queries the brain on every tool call
-├── commands/     # /sessions, /spend, /brain-stats, /brain
+├── commands/     # /sessions, /spend, /brain-stats, /brain, /auto-insights
 ├── agents/       # Session supervisor agent for health triage
 └── skills/       # Auto-activated session monitoring awareness
 ```
@@ -213,6 +235,7 @@ claude-plugin/
 | `/sessions` | Show all active sessions with status, cost, health |
 | `/spend` | Cost breakdown by project and time window |
 | `/brain-stats` | Brain learning metrics and accuracy |
+| `/auto-insights` | Show or configure auto-generated workflow insights |
 | **Supervisor agent** | Proactive health triage across all sessions |
 
 **Install:** Copy or symlink the `claude-plugin/` directory to your Claude Code plugins path, or point Claude Code at the directory.

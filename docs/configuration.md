@@ -170,12 +170,27 @@ The `/brain` command in the Claude Code plugin does the same thing:
 /brain auto    # Full auto-approve
 ```
 
+### Auto-Insights
+
+The brain can automatically detect friction patterns and suggest workflow improvements:
+
+```bash
+claudectl --brain --insights              # View current insights
+claudectl --brain --insights on           # Auto-generate every 10 decisions
+claudectl --brain --insights off          # Disable auto-generation (default)
+claudectl --brain --insights status       # Show current mode
+```
+
+The insights mode is stored in `~/.claudectl/brain/insights-mode`. If the file is absent, the default is `off` (opt-in). When enabled, insights are generated alongside preference distillation and tracked differentially — only new patterns are surfaced.
+
+Detected insight types: friction patterns, error loops, context blowouts, missing rules, accuracy gaps, temporal friction, cost trends.
+
 ## Claude Code Plugin
 
 claudectl ships with a Claude Code plugin in `claude-plugin/` at the repository root. The plugin provides:
 
 - **PreToolUse hooks** that query the brain before Bash/Write/Edit calls
-- **Slash commands** (`/sessions`, `/spend`, `/brain-stats`, `/brain`)
+- **Slash commands** (`/sessions`, `/spend`, `/brain-stats`, `/brain`, `/auto-insights`)
 - **A supervisor agent** for proactive health triage
 - **A session monitoring skill** that auto-activates when relevant
 

@@ -4,6 +4,7 @@ pub mod context;
 pub mod decisions;
 pub mod engine;
 pub mod evals;
+pub mod insights;
 pub mod mailbox;
 pub mod metrics;
 pub mod prompts;

@@ -499,6 +499,7 @@ mod tests {
             session_id: "test".into(),
             cwd: "/tmp/my-project".into(),
             started_at: 0,
+            name: None,
         };
         let mut s = ClaudeSession::from_raw(raw);
         s.status = SessionStatus::NeedsInput;

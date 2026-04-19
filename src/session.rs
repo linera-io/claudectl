@@ -84,6 +84,11 @@ pub struct RawSession {
     pub cwd: String,
     #[serde(rename = "startedAt")]
     pub started_at: u64,
+    /// Session display name set by Claude Code (via the `/rename` slash
+    /// command or topic-based auto-naming). When present, it is preferred
+    /// over the cwd-derived `project_name` in `display_name()`.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,7 +319,7 @@ impl ClaudeSession {
             total_output_tokens: 0,
             model: String::new(),
             command_args: String::new(),
-            session_name: String::new(),
+            session_name: raw.name.unwrap_or_default(),
             jsonl_path: None,
             jsonl_offset: 0,
             last_message_ts: 0,
@@ -782,6 +787,7 @@ mod tests {
             session_id: "session-1".into(),
             cwd: "/tmp/project".into(),
             started_at: 0,
+            name: None,
         })
     }
 

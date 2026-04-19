@@ -888,6 +888,7 @@ pub(crate) fn run_brain_query(cfg: &config::Config, cli: &Cli) -> io::Result<()>
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| ".".into()),
         started_at: 0,
+        name: None,
     });
     synthetic.project_name = project.clone();
     synthetic.status = session::SessionStatus::NeedsInput;

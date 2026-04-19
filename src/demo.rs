@@ -138,6 +138,7 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                 session_id: format!("demo-{:04x}-{:04x}-{:04x}", i, i * 7, i * 13),
                 cwd: cwd.to_string(),
                 started_at: 0, // Will be overridden
+                name: None,
             };
             let mut s = ClaudeSession::from_raw(raw);
             s.project_name = name.to_string();

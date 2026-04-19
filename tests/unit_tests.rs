@@ -30,6 +30,7 @@ fn test_session_from_raw() {
         session_id: "abc-123".to_string(),
         cwd: "/Users/test/projects/my-app".to_string(),
         started_at: 0,
+        name: None,
     };
     let session = ClaudeSession::from_raw(raw);
     assert_eq!(session.pid, 12345);
@@ -45,6 +46,7 @@ fn test_session_display_name_prefers_session_name() {
         session_id: "x".to_string(),
         cwd: "/tmp/foo".to_string(),
         started_at: 0,
+        name: None,
     };
     let mut session = ClaudeSession::from_raw(raw);
     session.session_name = "my-custom-name".to_string();
@@ -59,6 +61,7 @@ fn test_format_elapsed() {
         session_id: "x".to_string(),
         cwd: "/tmp".to_string(),
         started_at: 0,
+        name: None,
     };
     let mut session = ClaudeSession::from_raw(raw);
     session.elapsed = Duration::from_secs(3661);
@@ -76,6 +79,7 @@ fn test_format_tokens() {
         session_id: "x".to_string(),
         cwd: "/tmp".to_string(),
         started_at: 0,
+        name: None,
     };
     let mut session = ClaudeSession::from_raw(raw);
 
@@ -96,6 +100,7 @@ fn test_format_cost() {
         session_id: "x".to_string(),
         cwd: "/tmp".to_string(),
         started_at: 0,
+        name: None,
     };
     let mut session = ClaudeSession::from_raw(raw);
 
@@ -124,8 +129,44 @@ fn test_cwd_to_project_name() {
             session_id: "x".to_string(),
             cwd: cwd.to_string(),
             started_at: 0,
+            name: None,
         };
         let session = ClaudeSession::from_raw(raw);
         assert_eq!(session.project_name, expected, "cwd={cwd}");
     }
+}
+
+#[test]
+fn test_session_name_from_raw_name_field() {
+    use claudectl::session::{ClaudeSession, RawSession};
+    // When the session JSON has a `name` field (e.g. from Claude Code's
+    // `/rename` slash command or topic auto-naming), it should become the
+    // session's display name.
+    let raw = RawSession {
+        pid: 1,
+        session_id: "abcd-efgh".into(),
+        cwd: "/Users/jane/linera-protocol".into(),
+        started_at: 0,
+        name: Some("fix-validator-oom".into()),
+    };
+    let s = ClaudeSession::from_raw(raw);
+    assert_eq!(s.session_name, "fix-validator-oom");
+    assert_eq!(s.display_name(), "fix-validator-oom");
+    // Cwd-derived project_name still computed as a fallback.
+    assert_eq!(s.project_name, "linera-protocol");
+}
+
+#[test]
+fn test_display_name_falls_back_to_cwd_when_name_absent() {
+    use claudectl::session::{ClaudeSession, RawSession};
+    let raw = RawSession {
+        pid: 1,
+        session_id: "abcd-efgh".into(),
+        cwd: "/Users/jane/linera-protocol".into(),
+        started_at: 0,
+        name: None,
+    };
+    let s = ClaudeSession::from_raw(raw);
+    assert_eq!(s.session_name, "");
+    assert_eq!(s.display_name(), "linera-protocol");
 }

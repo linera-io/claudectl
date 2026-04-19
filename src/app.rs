@@ -2148,6 +2148,7 @@ mod tests {
             session_id: format!("session-{pid}"),
             cwd: format!("/tmp/{project}"),
             started_at: 0,
+            name: None,
         };
         let mut session = ClaudeSession::from_raw(raw);
         session.project_name = project.to_string();

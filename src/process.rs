@@ -96,17 +96,22 @@ pub fn fetch_and_enrich(sessions: &mut [ClaudeSession]) {
 }
 
 fn extract_session_meta(cmd: &[&str], session: &mut ClaudeSession) {
+    // If the session JSON already provided a name (via /rename or auto-name),
+    // don't overwrite it from the process command line.
+    let name_already_set = !session.session_name.is_empty();
     let mut i = 0;
     while i < cmd.len() {
         match cmd[i] {
             "--name" | "-n" if i + 1 < cmd.len() => {
-                session.session_name = cmd[i + 1].to_string();
+                if !name_already_set {
+                    session.session_name = cmd[i + 1].to_string();
+                }
                 i += 2;
                 continue;
             }
             "--resume" | "-r" if i + 1 < cmd.len() => {
                 let val = cmd[i + 1];
-                if !looks_like_uuid(val) {
+                if !name_already_set && !looks_like_uuid(val) {
                     session.session_name = val.to_string();
                 }
                 i += 2;

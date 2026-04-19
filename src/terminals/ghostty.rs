@@ -112,6 +112,7 @@ mod tests {
             session_id: "test".into(),
             cwd: cwd.into(),
             started_at: 0,
+            name: None,
         };
         let mut s = ClaudeSession::from_raw(raw);
         s.session_name = name.into();

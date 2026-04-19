@@ -174,6 +174,7 @@ mod tests {
             session_id: "abc-def-123".into(),
             cwd: "/Users/test/projects/my-app".into(),
             started_at: 0,
+            name: None,
         };
         let mut s = ClaudeSession::from_raw(raw);
         s.model = "opus-4.6".into();

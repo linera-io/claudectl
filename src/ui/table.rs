@@ -482,14 +482,19 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
     let file_conflict = app.file_conflict_pids.contains(&s.pid);
     let wt_conflict = app.conflict_pids.contains(&s.pid);
     let recording = app.session_recordings.contains_key(&s.pid);
-    let prefix = match (file_conflict, wt_conflict, recording) {
-        (true, _, true) => "!F REC ",
-        (true, _, false) => "!F ",
-        (false, true, true) => "!! REC ",
-        (false, true, false) => "!! ",
-        (false, false, true) => "REC ",
-        (false, false, false) => "",
+    // Conflict markers describe the session's working directory — shared
+    // project state — so they belong on the Project cell.
+    let conflict_prefix = if file_conflict {
+        "!F "
+    } else if wt_conflict {
+        "!! "
+    } else {
+        ""
     };
+    // Recording, subagent count, and health icon are per-session facts and
+    // ride with the session's primary identifier: the Name cell when named,
+    // falling back to the Project cell when unnamed.
+    let rec_prefix = if recording { "REC " } else { "" };
     let health_icon = crate::health::status_icon(s, &app.health_thresholds);
     let health_suffix = if health_icon.is_empty() {
         String::new()
@@ -501,18 +506,23 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
     } else {
         String::new()
     };
-    // Decorations (conflict prefix, subagent count, health icon) attach to
-    // whichever column carries the session's primary identifier: the Name
-    // column if the session has been renamed, otherwise Project.
     let (name_text, project_text) = if s.session_name.is_empty() {
+        // Unnamed: all decorations fall onto the Project cell — matches
+        // pre-split behavior.
         (
             String::new(),
-            format!("{prefix}{}{subagent_suffix}{health_suffix}", s.project_name),
+            format!(
+                "{conflict_prefix}{rec_prefix}{}{subagent_suffix}{health_suffix}",
+                s.project_name
+            ),
         )
     } else {
         (
-            format!("{prefix}{}{subagent_suffix}{health_suffix}", s.session_name),
-            s.project_name.clone(),
+            format!(
+                "{rec_prefix}{}{subagent_suffix}{health_suffix}",
+                s.session_name
+            ),
+            format!("{conflict_prefix}{}", s.project_name),
         )
     };
 

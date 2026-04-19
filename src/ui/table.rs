@@ -132,18 +132,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     // Build header with sort indicator
     let header_names = [
-        "PID", "Project", "Status", "Context", "Cost", "$/hr", "Elapsed", "CPU%", "MEM", "In/Out",
-        "Activity",
+        "PID", "Name", "Project", "Status", "Context", "Cost", "$/hr", "Elapsed", "CPU%", "MEM",
+        "In/Out", "Activity",
     ];
 
     // Map sort_column index to header index:
-    // 0=Status->2, 1=Context->3, 2=Cost->4, 3=$/hr->5, 4=Elapsed->6
+    // 0=Status->3, 1=Context->4, 2=Cost->5, 3=$/hr->6, 4=Elapsed->7
     let sort_header_idx = match app.sort_column {
-        0 => 2, // Status
-        1 => 3, // Context
-        2 => 4, // Cost
-        3 => 5, // $/hr
-        4 => 6, // Elapsed
+        0 => 3, // Status
+        1 => 4, // Context
+        2 => 5, // Cost
+        3 => 6, // $/hr
+        4 => 7, // Elapsed
         _ => usize::MAX,
     };
 
@@ -181,10 +181,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             );
             let mut cells: Vec<Cell> = vec![
                 Cell::from(""),
+                Cell::from(""),
                 Cell::from(header_text)
                     .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
             ];
-            for _ in 2..11 {
+            for _ in 3..12 {
                 cells.push(Cell::from(""));
             }
             rows.push(Row::new(cells));
@@ -221,6 +222,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let widths = [
         Constraint::Length(7),  // PID
+        Constraint::Min(14),    // Name (flex)
         Constraint::Min(10),    // Project (flex)
         Constraint::Length(14), // Status (wider for * indicator)
         Constraint::Length(13), // Context bar
@@ -429,7 +431,7 @@ fn render_rows_for_session(s: &ClaudeSession, app: &App) -> Vec<Row<'static>> {
     let breakdown = s.subagent_breakdown();
     let total = breakdown.len();
     for (index, row) in breakdown.iter().enumerate() {
-        rows.push(subagent_row(row, app, index, total));
+        rows.push(subagent_row(s, row, app, index, total));
     }
     rows
 }
@@ -494,14 +496,24 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
     } else {
         format!(" {health_icon}")
     };
-    let project_text = if s.subagent_count > 0 {
-        format!(
-            "{prefix}{} +{}{health_suffix}",
-            s.display_name(),
-            s.subagent_count
+    let subagent_suffix = if s.subagent_count > 0 {
+        format!(" +{}", s.subagent_count)
+    } else {
+        String::new()
+    };
+    // Decorations (conflict prefix, subagent count, health icon) attach to
+    // whichever column carries the session's primary identifier: the Name
+    // column if the session has been renamed, otherwise Project.
+    let (name_text, project_text) = if s.session_name.is_empty() {
+        (
+            String::new(),
+            format!("{prefix}{}{subagent_suffix}{health_suffix}", s.project_name),
         )
     } else {
-        format!("{prefix}{}{health_suffix}", s.display_name())
+        (
+            format!("{prefix}{}{subagent_suffix}{health_suffix}", s.session_name),
+            s.project_name.clone(),
+        )
     };
 
     let ctx_pct = s.context_percent();
@@ -545,6 +557,7 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
 
     Row::new(vec![
         Cell::from(s.pid.to_string()),
+        Cell::from(name_text),
         Cell::from(project_text),
         Cell::from(status_text).style(status_style),
         Cell::from(s.format_context_bar(6)).style(Style::default().fg(ctx_color)),
@@ -558,14 +571,20 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
     ])
 }
 
-fn subagent_row(row: &SubagentBreakdown, app: &App, index: usize, total: usize) -> Row<'static> {
+fn subagent_row(
+    parent: &ClaudeSession,
+    row: &SubagentBreakdown,
+    app: &App,
+    index: usize,
+    total: usize,
+) -> Row<'static> {
     let t = &app.theme;
     let branch = if index + 1 == total {
         "\u{2514}\u{2500} "
     } else {
         "\u{251c}\u{2500} "
     };
-    let project_text = format!("{branch}{}", row.display_label());
+    let branch_text = format!("{branch}{}", row.display_label());
     let status_text = row.state_label();
     let status_style = match row.state {
         SubagentState::Active => Style::default().fg(t.status_processing),
@@ -573,9 +592,24 @@ fn subagent_row(row: &SubagentBreakdown, app: &App, index: usize, total: usize) 
     };
     let row_style = Style::default().fg(t.text_muted);
 
+    // Place the tree branch under whichever column holds the parent's
+    // primary identifier, so the visual hierarchy reads cleanly.
+    let (name_cell, project_cell) = if parent.session_name.is_empty() {
+        (
+            Cell::from("").style(row_style),
+            Cell::from(branch_text).style(row_style),
+        )
+    } else {
+        (
+            Cell::from(branch_text).style(row_style),
+            Cell::from("").style(row_style),
+        )
+    };
+
     Row::new(vec![
         Cell::from(""),
-        Cell::from(project_text).style(row_style),
+        name_cell,
+        project_cell,
         Cell::from(status_text).style(status_style),
         Cell::from("-").style(row_style),
         Cell::from(row.format_cost()).style(Style::default().fg(t.cost)),

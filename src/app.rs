@@ -469,6 +469,10 @@ impl App {
                     // Preserve accumulated state, update ephemeral fields
                     prev.elapsed = new.elapsed;
                     prev.started_at = new.started_at;
+                    // session_name can change mid-run (Claude Code's /rename
+                    // rewrites the session JSON); pick up the latest value so
+                    // the TUI reflects renames without a restart.
+                    prev.session_name = new.session_name;
                     // cwd/project_name/session_id don't change
                     prev
                 } else {

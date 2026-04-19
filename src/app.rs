@@ -15,7 +15,7 @@ use crate::session::{ClaudeSession, SessionStatus};
 use crate::terminals;
 use crate::theme::Theme;
 
-pub const SORT_COLUMNS: &[&str] = &["Status", "Context", "Cost", "$/hr", "Elapsed"];
+pub const SORT_COLUMNS: &[&str] = &["Status", "Context", "Cost", "$/hr", "Elapsed", "Name"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusFilter {
@@ -898,6 +898,19 @@ impl App {
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
             4 => sessions.sort_by_key(|s| std::cmp::Reverse(s.elapsed)),
+            5 => sessions.sort_by(|a, b| {
+                // Sort key: unnamed sessions last, then ascending
+                // case-insensitive session_name, then project_name as tiebreak
+                // so two sessions with the same name group by project.
+                let key = |s: &ClaudeSession| {
+                    (
+                        s.session_name.is_empty(),
+                        s.session_name.to_lowercase(),
+                        s.project_name.to_lowercase(),
+                    )
+                };
+                key(a).cmp(&key(b))
+            }),
             _ => {}
         }
     }

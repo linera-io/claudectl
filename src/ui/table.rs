@@ -137,13 +137,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     ];
 
     // Map sort_column index to header index:
-    // 0=Status->3, 1=Context->4, 2=Cost->5, 3=$/hr->6, 4=Elapsed->7
+    // 0=Status->3, 1=Context->4, 2=Cost->5, 3=$/hr->6, 4=Elapsed->7, 5=Name->1
     let sort_header_idx = match app.sort_column {
         0 => 3, // Status
         1 => 4, // Context
         2 => 5, // Cost
         3 => 6, // $/hr
         4 => 7, // Elapsed
+        5 => 1, // Name
         _ => usize::MAX,
     };
 

@@ -536,7 +536,7 @@ impl Config {
 # Group sessions by project in the table view
 # grouped = false
 
-# Default sort column: "Status", "Context", "Cost", "$/hr", "Elapsed"
+# Default sort column: "Status", "Context", "Cost", "$/hr", "Elapsed", "Name"
 # sort = "Status"
 
 # Per-session budget in USD (alert at 80%, optionally kill at 100%)

@@ -110,7 +110,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `--brain-model <name>` | Override brain model name (maps to config `[brain] model`) |
 | `--brain-eval` | Run brain eval scenarios against the LLM and report results |
 | `--brain-prompts` | List brain prompt templates and their source (built-in vs user override) |
-| `--brain-stats <metric>` | Brain statistics: `learning-curve`, `accuracy`, `baseline`, `false-approve` |
+| `--brain-stats <metric>` | Brain statistics: `impact`, `learning-curve`, `accuracy`, `baseline`, `false-approve` |
 | `--brain-query` | Query brain for a single tool-call decision (JSON output) |
 | `--tool <name>` | Tool name for `--brain-query` (e.g., "Bash", "Write") |
 | `--tool-input <input>` | Command or file path for `--brain-query` |

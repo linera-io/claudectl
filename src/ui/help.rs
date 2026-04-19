@@ -107,8 +107,12 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Toggle this help"),
         ]),
         Line::from(vec![
-            Span::styled("  q/Esc          ", Style::default().fg(t.highlight_key)),
-            Span::raw("  Quit"),
+            Span::styled("  q              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Quit (or Ctrl+C)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc            ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Unwind: cancel pending / close panel / clear search / clear filters"),
         ]),
         Line::from(""),
         Line::from(Span::styled(

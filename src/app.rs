@@ -1590,11 +1590,37 @@ impl App {
 
     fn handle_normal_key(&mut self, key: KeyEvent) {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
+            (KeyCode::Char('q'), _) => {
                 self.should_quit = true;
             }
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.should_quit = true;
+            }
+            (KeyCode::Esc, _) => {
+                // Stepwise unwind: cancel pending actions / close panels /
+                // clear filters, one layer per press. Use `z` to clear
+                // everything at once.
+                if self.pending_kill.is_some() {
+                    self.cancel_pending_kill();
+                    self.status_msg = "Kill cancelled".into();
+                } else if self.pending_auto_approve.is_some() {
+                    self.cancel_pending_auto_approve();
+                    self.status_msg = "Auto-approve cancelled".into();
+                } else if self.detail_panel {
+                    self.detail_panel = false;
+                } else if !self.search_query.trim().is_empty() {
+                    self.search_query.clear();
+                    self.search_buffer.clear();
+                    self.normalize_selection();
+                    self.status_msg = "Search cleared".into();
+                } else if self.status_filter != StatusFilter::All
+                    || self.focus_filter != FocusFilter::All
+                {
+                    self.status_filter = StatusFilter::All;
+                    self.focus_filter = FocusFilter::All;
+                    self.normalize_selection();
+                    self.status_msg = "Filters cleared".into();
+                }
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                 self.cancel_pending_kill();

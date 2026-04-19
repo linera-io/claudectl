@@ -884,6 +884,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make_decision_with_context(
         tool: &str,
         command: &str,

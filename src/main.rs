@@ -281,9 +281,9 @@ struct Cli {
     #[arg(long, help_heading = "Setup", conflicts_with = "init")]
     uninstall: bool,
 
-    /// Target .claude/settings.local.json (project-local) instead of ~/.claude/settings.json (global)
-    #[arg(long = "project-local", help_heading = "Setup")]
-    project_local: bool,
+    /// Configuration scope: user (global ~/.claude/settings.json) or project (.claude/settings.local.json)
+    #[arg(short, long, default_value = "user", help_heading = "Setup")]
+    scope: String,
 }
 
 fn main() -> io::Result<()> {
@@ -402,11 +402,13 @@ fn run_main(cli: Cli) -> io::Result<()> {
     }
 
     if cli.init {
-        return init::run_init(cli.project_local);
+        let project = cli.scope == "project";
+        return init::run_init(project);
     }
 
     if cli.uninstall {
-        return init::run_uninit(cli.project_local);
+        let project = cli.scope == "project";
+        return init::run_uninit(project);
     }
 
     if cli.brain_prompts {

@@ -66,15 +66,15 @@ Runs with fake sessions so you can explore the dashboard, keybindings, and featu
 | `n` | Launch a new session |
 | `?` | Show all keybindings |
 
-## Optional: project-local hooks
+## Optional: project-scoped hooks
 
 If you only want claudectl hooks in specific projects (not globally):
 
 ```bash
-claudectl --init --project-local
+claudectl --init -s project
 ```
 
-This writes to `.claude/settings.local.json` (gitignored) instead of the global file.
+This writes to `.claude/settings.local.json` (gitignored) instead of the global file. The `-s project` flag matches Claude Code's own `--scope` convention.
 
 ## Optional: add the local LLM brain
 
@@ -112,8 +112,8 @@ The plugin and `--init` hooks are complementary. Use `--init` for dashboard obse
 Remove claudectl hooks from Claude Code:
 
 ```bash
-claudectl --uninstall                        # Remove from global settings
-claudectl --uninstall --project-local        # Remove from project-local settings
+claudectl --uninstall                        # Remove from user settings
+claudectl --uninstall -s project             # Remove from project settings
 ```
 
 This surgically removes only claudectl entries. All other settings and hooks are preserved.

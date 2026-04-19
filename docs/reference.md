@@ -157,9 +157,9 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 
 | Flag | Description |
 |------|-------------|
-| `--init` | Wire up Claude Code hooks in `~/.claude/settings.json` |
-| `--uninstall` | Remove claudectl hooks from settings |
-| `--project-local` | Target `.claude/settings.local.json` instead of global |
+| `--init` | Wire up Claude Code hooks in settings and exit |
+| `--uninstall` | Remove claudectl hooks from settings and exit |
+| `-s`, `--scope <user\|project>` | Configuration scope (default: `user`). Matches Claude Code's `--scope` convention |
 
 `--init` writes three hooks into Claude Code's settings:
 
@@ -171,14 +171,12 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 
 The hooks call `claudectl --json` on each event. They are safe to run alongside any existing hooks — `--init` merges without overwriting.
 
-Use `--project-local` to write to `.claude/settings.local.json` (gitignored) instead of the global file.
-
 `--uninstall` removes only claudectl hook entries, preserving all other settings and hooks. If the file becomes empty after removal, it is deleted.
 
 | Scope | Flag | File | Committed to git? |
 |-------|------|------|--------------------|
-| Global | `--init` | `~/.claude/settings.json` | No (user home) |
-| Project | `--init --project-local` | `.claude/settings.local.json` | No (gitignored) |
+| `user` (default) | `--init` | `~/.claude/settings.json` | No (user home) |
+| `project` | `--init -s project` | `.claude/settings.local.json` | No (gitignored) |
 
 ## Cost Tracking
 

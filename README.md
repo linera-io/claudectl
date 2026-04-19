@@ -410,7 +410,7 @@ claudectl --clean --finished --dry-run     # Preview what would be removed
 
 ```bash
 claudectl --uninstall                      # Remove hooks from ~/.claude/settings.json
-claudectl --uninstall --project-local      # Remove from project-local settings
+claudectl --uninstall -s project      # Remove from project-local settings
 ```
 
 ## Comparison

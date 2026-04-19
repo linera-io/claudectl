@@ -100,8 +100,8 @@ We maintain a curated set at [mercurialsolo/claudectl-hooks](https://github.com/
 claudectl can install hooks directly into Claude Code's settings so sessions automatically notify claudectl on tool use:
 
 ```bash
-claudectl --init                    # Write hooks to ~/.claude/settings.json
-claudectl --init --project-local    # Write to .claude/settings.local.json instead
+claudectl --init                    # Write hooks to ~/.claude/settings.json (user scope)
+claudectl --init -s project         # Write to .claude/settings.local.json instead
 ```
 
 This adds `PreToolUse`, `PostToolUse`, and `Stop` hooks that call `claudectl --json` on each event. Existing settings and hooks are preserved.
@@ -109,8 +109,8 @@ This adds `PreToolUse`, `PostToolUse`, and `Stop` hooks that call `claudectl --j
 To remove:
 
 ```bash
-claudectl --uninstall               # Remove claudectl hooks from global settings
-claudectl --uninstall --project-local
+claudectl --uninstall               # Remove claudectl hooks from user settings
+claudectl --uninstall -s project    # Remove from project-local settings
 ```
 
 ### How it works
@@ -138,14 +138,16 @@ The hooks are standard Claude Code command hooks:
 
 The `2>/dev/null || true` suffix ensures Claude Code is never blocked if claudectl is not installed or fails.
 
-### Global vs project-local
+### Scope
 
-| Flag | File | Scope | Committed to git? |
-|------|------|-------|--------------------|
-| `--init` | `~/.claude/settings.json` | All projects | No (user home) |
-| `--init --project-local` | `.claude/settings.local.json` | Current project | No (gitignored) |
+The `--scope` / `-s` flag controls where hooks are written, matching Claude Code's own scope convention (`claude mcp add -s project`):
 
-Use global when you want claudectl active everywhere. Use project-local when you only want it for specific projects, or when working in a shared repo where not everyone uses claudectl.
+| Scope | Flag | File | Committed to git? |
+|-------|------|------|--------------------|
+| `user` (default) | `--init` | `~/.claude/settings.json` | No (user home) |
+| `project` | `--init -s project` | `.claude/settings.local.json` | No (gitignored) |
+
+Use `user` scope when you want claudectl active everywhere. Use `project` scope when you only want it for specific projects, or when working in a shared repo where not everyone uses claudectl.
 
 ## Brain Gate Mode
 

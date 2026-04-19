@@ -19,7 +19,7 @@ You have access to claudectl, a local session supervisor for Claude Code. Use it
 ```bash
 # Setup
 claudectl --init                   # Wire up Claude Code hooks (one-time)
-claudectl --init --project-local   # Wire up hooks for this project only
+claudectl --init -s project        # Wire up hooks for this project only
 claudectl --uninstall              # Remove claudectl hooks
 
 # Session status

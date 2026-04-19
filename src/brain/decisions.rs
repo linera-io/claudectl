@@ -118,7 +118,7 @@ impl DecisionRecord {
     }
 }
 
-fn decisions_dir() -> PathBuf {
+pub(super) fn decisions_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home).join(".claudectl").join("brain")
 }
@@ -348,6 +348,14 @@ fn maybe_distill_background() {
                     let proj_prefs = distill_preferences(decisions);
                     let _ = save_project_preferences(project, &proj_prefs);
                 }
+            }
+
+            // Generate insights if insights mode is on
+            if super::insights::read_insights_mode() == "on" {
+                let insights = super::insights::generate_insights(&all, &prefs);
+                let mut state = super::insights::load_state();
+                let _ = super::insights::merge_insights(insights, &mut state);
+                let _ = super::insights::save_state(&state);
             }
         }
         DISTILLING.store(false, Ordering::Release);

@@ -15,7 +15,7 @@ cargo fmt --check            # Check formatting
 ## Architecture
 
 **Core modules** (`src/`):
-- `main.rs` — CLI entry point, mode dispatch (TUI, watch, JSON, list, history, stats, orchestrator, clean, doctor, brain-eval, brain-query, mode, init)
+- `main.rs` — CLI entry point, mode dispatch (TUI, watch, JSON, list, history, stats, orchestrator, clean, doctor, brain-eval, brain-query, mode, insights, init)
 - `app.rs` — TUI app state, refresh loop, keyboard event handling
 - `session.rs` — Session data structures and formatting
 - `discovery.rs` — Scans `~/.claude/sessions/*.json` and resolves JSONL paths
@@ -41,7 +41,7 @@ cargo fmt --check            # Check formatting
 **Claude Code Plugin** (`claude-plugin/`): Integrates the brain directly into Claude Code sessions.
 - `hooks/scripts/brain-gate.sh` — PreToolUse hook: queries brain for approve/deny on Bash/Write/Edit calls
 - `hooks/scripts/budget-check.sh` — PreToolUse hook: enforces spend limits
-- `commands/` — Slash commands: `/sessions`, `/spend`, `/brain-stats`, `/brain`
+- `commands/` — Slash commands: `/sessions`, `/spend`, `/brain-stats`, `/brain`, `/auto-insights`
 - `agents/supervisor.md` — Session health triage agent
 - `skills/session-monitoring/` — Auto-activated session awareness skill
 
@@ -54,6 +54,7 @@ cargo fmt --check            # Check formatting
 - `mailbox.rs` — Message passing between brain and TUI
 - `prompts.rs` — Prompt templates (built-in + user overrides via `~/.claudectl/brain/prompts/`)
 - `evals.rs` — Eval harness for testing brain decision quality against scenarios
+- `insights.rs` — Auto-insights: friction pattern detection, rule suggestions, differential tracking
 
 **TUI** (`src/ui/`): `table.rs` (session list), `detail.rs` (expanded panel), `help.rs` (overlay), `status_bar.rs` (footer)
 
@@ -69,6 +70,7 @@ cargo fmt --check            # Check formatting
 - **Deny-first rule evaluation** — deny rules always override approve/brain suggestions, regardless of config order.
 - **Brain decisions are local-only** — all decision logs and few-shot examples stay on the user's machine.
 - **Brain gate mode** — `~/.claudectl/brain/gate-mode` controls on/off/auto. File absent = on (default). The plugin hook and `--brain-query` both check this before querying the LLM.
+- **Insights mode** — `~/.claudectl/brain/insights-mode` controls auto-generation of insights. File absent = off (opt-in). When on, insights are generated alongside preference distillation every 10 decisions.
 
 ## Conventions
 

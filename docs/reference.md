@@ -116,6 +116,7 @@ Multi-signal inference from CPU usage, JSONL events, and timestamps:
 | `--tool-input <input>` | Command or file path for `--brain-query` |
 | `--project <name>` | Project name for `--brain-query` (default: current directory name) |
 | `--mode <on\|off\|auto\|status>` | Set brain gate mode (see Brain Gate Mode below) |
+| `--insights [on\|off\|status]` | Show auto-generated insights, or set insights mode. Requires `--brain`. |
 
 ### Orchestration
 
@@ -253,6 +254,7 @@ claudectl includes a Claude Code plugin in `claude-plugin/` that integrates the 
 | `/sessions` | Command | Show all active sessions with status, cost, and health |
 | `/spend` | Command | Cost breakdown by project and time window |
 | `/brain-stats` | Command | Brain learning metrics and accuracy |
+| `/auto-insights` | Command | Show or configure auto-generated workflow insights |
 | Supervisor | Agent | Proactive session health triage |
 | Session Monitoring | Skill | Auto-activated awareness of claudectl capabilities |
 

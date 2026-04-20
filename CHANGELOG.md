@@ -2,6 +2,22 @@
 
 All notable changes to claudectl are documented here.
 
+## [0.32.0] - 2026-04-20
+
+### Added
+- **6 new `--brain-stats` subcommands** completing all metrics issues (#174, #175)
+  - `distribution` — decision volume by tool, risk, project, action with inline bar charts
+  - `novel-rate` — how quickly the frontier of novel situations shrinks
+  - `false-deny` — false-deny rate and friction cost with 30% warning threshold
+  - `calibration` — confidence vs actual accuracy, ECE score, per-tool calibration gap
+  - `incidents` — post-mortem of every false approval with root cause classification
+  - `time-to-correct` — user reaction latency to brain suggestions (protege effect)
+- **`suggested_at` timestamp** on brain suggestions for reaction latency measurement (#175)
+- **Demo mode** now shows cognitive decay icons and more brain activity (#173)
+
+### Changed
+- **Refactored `decisions.rs`** (3074 lines) into 3 focused modules: `decisions.rs` (992), `preferences.rs` (1950), `retrieval.rs` (302) (#176)
+
 ## [0.31.0] - 2026-04-19
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "claudectl",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "Local LLM brain that auto-approves/denies Claude Code tool calls, with session monitoring and spend control",
   "author": {
     "name": "mercurialsolo",

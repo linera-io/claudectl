@@ -149,9 +149,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         _ => usize::MAX,
     };
 
+    let sort_arrow = if app.sort_reversed {
+        '\u{25b2}' // ▲ reversed (arrow points "up" = top is the end)
+    } else {
+        '\u{25bc}' // ▼ natural direction
+    };
     let header_cells = header_names.iter().enumerate().map(|(i, h)| {
         let label = if i == sort_header_idx {
-            format!("{h} \u{25bc}") // ▼ sort indicator
+            format!("{h} {sort_arrow}")
         } else {
             (*h).to_string()
         };

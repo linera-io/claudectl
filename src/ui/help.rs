@@ -53,6 +53,10 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Cycle sort column"),
         ]),
         Line::from(vec![
+            Span::styled("  S              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Reverse sort direction (resets on column cycle)"),
+        ]),
+        Line::from(vec![
             Span::styled("  f              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Cycle status filter"),
         ]),

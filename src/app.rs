@@ -294,6 +294,10 @@ pub struct App {
     pub prev_statuses: HashMap<u32, SessionStatus>,
     pub show_help: bool,
     pub sort_column: usize,
+    /// When true, the final sort result is reversed relative to the column's
+    /// natural direction. Toggled by capital `S`; reset to false whenever
+    /// the user cycles to a different column with lowercase `s`.
+    pub sort_reversed: bool,
     pub auto_approve: HashSet<u32>,
     pub pending_auto_approve: Option<u32>,
     pub finished_at: HashMap<u32, std::time::Instant>, // When PIDs were first seen as Finished
@@ -410,6 +414,7 @@ impl App {
             prev_statuses: HashMap::new(),
             show_help: false,
             sort_column: 0,
+            sort_reversed: false,
             auto_approve: HashSet::new(),
             pending_auto_approve: None,
             finished_at: HashMap::new(),
@@ -936,11 +941,33 @@ impl App {
             }),
             _ => {}
         }
+        // User-toggled direction override flips whatever the column's natural
+        // sort produced. Stable sort + `reverse()` preserves tiebreak order
+        // from the original sort (mirrored).
+        if self.sort_reversed {
+            sessions.reverse();
+        }
     }
 
     pub fn cycle_sort(&mut self) {
         self.sort_column = (self.sort_column + 1) % SORT_COLUMNS.len();
+        // Each new column starts in its natural direction — avoids surprise
+        // ordering carried over from a prior column's `S` toggle.
+        self.sort_reversed = false;
         self.status_msg = format!("Sort: {}", SORT_COLUMNS[self.sort_column]);
+        let mut sessions = std::mem::take(&mut self.sessions);
+        self.apply_sort(&mut sessions);
+        self.sessions = sessions;
+    }
+
+    pub fn toggle_sort_direction(&mut self) {
+        self.sort_reversed = !self.sort_reversed;
+        let label = SORT_COLUMNS[self.sort_column];
+        self.status_msg = if self.sort_reversed {
+            format!("Sort: {label} (reversed)")
+        } else {
+            format!("Sort: {label}")
+        };
         let mut sessions = std::mem::take(&mut self.sessions);
         self.apply_sort(&mut sessions);
         self.sessions = sessions;
@@ -1700,6 +1727,11 @@ impl App {
                 self.cancel_pending_auto_approve();
                 self.cycle_sort();
             }
+            (KeyCode::Char('S'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.toggle_sort_direction();
+            }
             (KeyCode::Char('f'), _) => {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
@@ -2443,6 +2475,76 @@ mod tests {
         app.apply_sort(&mut sessions);
         let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
         assert_eq!(order, vec![2, 3, 1]);
+    }
+
+    // ------------------------------------------------------------------
+    // Sort direction toggle coverage (S key)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn sort_reversed_defaults_to_false() {
+        let app = App::new();
+        assert!(!app.sort_reversed);
+    }
+
+    #[test]
+    fn apply_sort_honors_sort_reversed_flag() {
+        let mut app = App::new();
+        app.sort_column = 5; // Last: default = most recent first
+        let mut sessions = vec![
+            named_session(1, "a", "p", 1_000),
+            named_session(2, "b", "p", 5_000),
+            named_session(3, "c", "p", 3_000),
+        ];
+        app.apply_sort(&mut sessions);
+        let natural: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        assert_eq!(natural, vec![2, 3, 1]);
+
+        app.sort_reversed = true;
+        let mut sessions = vec![
+            named_session(1, "a", "p", 1_000),
+            named_session(2, "b", "p", 5_000),
+            named_session(3, "c", "p", 3_000),
+        ];
+        app.apply_sort(&mut sessions);
+        let reversed: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        assert_eq!(reversed, vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn toggle_sort_direction_flips_flag_and_sets_status() {
+        let mut app = make_test_app();
+        app.sort_column = 2; // Cost
+        assert!(!app.sort_reversed);
+        app.toggle_sort_direction();
+        assert!(app.sort_reversed);
+        assert!(
+            app.status_msg.contains("Cost") && app.status_msg.contains("reversed"),
+            "status should mention column and direction, got: {}",
+            app.status_msg
+        );
+        app.toggle_sort_direction();
+        assert!(!app.sort_reversed);
+        assert!(!app.status_msg.contains("reversed"));
+    }
+
+    #[test]
+    fn cycle_sort_resets_sort_reversed() {
+        let mut app = make_test_app();
+        app.sort_reversed = true;
+        app.cycle_sort();
+        assert!(
+            !app.sort_reversed,
+            "cycling to a new column should reset direction to natural"
+        );
+    }
+
+    #[test]
+    fn capital_s_toggles_sort_direction() {
+        let mut app = make_test_app();
+        assert!(!app.sort_reversed);
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert!(app.sort_reversed);
     }
 
     // ------------------------------------------------------------------

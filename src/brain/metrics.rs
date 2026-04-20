@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::decisions::{DecisionRecord, read_all_decisions};
 
@@ -863,6 +863,591 @@ struct FalseApproveCase {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// #128: Decision distribution analysis
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Print decision distribution analysis.
+pub fn print_distribution() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    println!("Decision Distribution");
+    println!("======================");
+    println!();
+
+    if total < 5 {
+        println!("  Not enough decisions yet ({total}). Need at least 5.");
+        return;
+    }
+
+    // By tool
+    let mut by_tool: HashMap<String, u32> = HashMap::new();
+    // By risk
+    let mut by_risk: HashMap<String, u32> = HashMap::new();
+    // By brain action
+    let mut by_brain: HashMap<String, u32> = HashMap::new();
+    // By user action
+    let mut by_user: HashMap<String, u32> = HashMap::new();
+    // By project
+    let mut by_project: HashMap<String, u32> = HashMap::new();
+
+    for d in &decisions {
+        let tool = d.tool.clone().unwrap_or_else(|| "unknown".into());
+        *by_tool.entry(tool).or_insert(0) += 1;
+
+        let risk = classify_risk(d.tool.as_deref(), d.command.as_deref());
+        *by_risk.entry(risk.label().to_string()).or_insert(0) += 1;
+
+        *by_brain.entry(d.brain_action.clone()).or_insert(0) += 1;
+        *by_user.entry(d.user_action.clone()).or_insert(0) += 1;
+        *by_project.entry(d.project.clone()).or_insert(0) += 1;
+    }
+
+    print_distribution_table("By tool", &by_tool, total);
+    print_distribution_table("By risk tier", &by_risk, total);
+    print_distribution_table("By brain action", &by_brain, total);
+    print_distribution_table("By user action", &by_user, total);
+    print_distribution_table("By project", &by_project, total);
+}
+
+fn print_distribution_table(label: &str, data: &HashMap<String, u32>, total: usize) {
+    let mut entries: Vec<(&String, &u32)> = data.iter().collect();
+    entries.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+
+    println!("  {label}:");
+    println!("    {:<25} {:>6} {:>7}", "Category", "Count", "Share");
+    println!("    {}", "-".repeat(40));
+    for (name, count) in entries.iter().take(15) {
+        let pct = **count as f64 / total as f64 * 100.0;
+        let bar_len = (pct / 100.0 * 20.0) as usize;
+        println!(
+            "    {:<25} {:>6} {:>6.1}% {}",
+            name,
+            count,
+            pct,
+            "\u{2588}".repeat(bar_len),
+        );
+    }
+    println!();
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// #130: Novel situation rate tracking
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Print novel situation rate analysis.
+pub fn print_novel_rate() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    println!("Novel Situation Rate");
+    println!("=====================");
+    println!();
+
+    if total < 10 {
+        println!("  Not enough decisions yet ({total}). Need at least 10.");
+        return;
+    }
+
+    // A decision is "novel" if no prior decision has the same (tool, command_keyword)
+    let mut seen_patterns: HashSet<(String, String)> = HashSet::new();
+    let mut batch_size = (total / 10).clamp(10, 50);
+    if batch_size > total {
+        batch_size = total;
+    }
+
+    let mut batch_novel = 0u32;
+    let mut batch_total = 0u32;
+    let mut points: Vec<(usize, f64)> = Vec::new();
+
+    for (idx, d) in decisions.iter().enumerate() {
+        let tool = d.tool.clone().unwrap_or_else(|| "*".into());
+        let cmd = d
+            .command
+            .as_deref()
+            .and_then(|c| {
+                let tokens: Vec<&str> = c.split_whitespace().take(2).collect();
+                if tokens.is_empty() {
+                    None
+                } else {
+                    Some(tokens.join(" "))
+                }
+            })
+            .unwrap_or_else(|| "*".into());
+
+        let key = (tool, cmd);
+        let is_novel = !seen_patterns.contains(&key);
+        seen_patterns.insert(key);
+
+        batch_total += 1;
+        if is_novel {
+            batch_novel += 1;
+        }
+
+        if batch_total >= batch_size as u32 || idx == total - 1 {
+            let rate = batch_novel as f64 / batch_total as f64;
+            points.push((idx + 1, rate));
+            batch_novel = 0;
+            batch_total = 0;
+        }
+    }
+
+    // Print chart
+    println!("  Novel rate per batch of ~{batch_size} decisions (lower = more patterns learned):");
+    println!();
+
+    for (idx, rate) in &points {
+        let bar_len = (*rate * 40.0) as usize;
+        println!(
+            "  {:>5} | {:<40} {:.0}%",
+            idx,
+            "\u{2588}".repeat(bar_len),
+            rate * 100.0,
+        );
+    }
+    println!();
+
+    let first_rate = points.first().map(|(_, r)| *r).unwrap_or(0.0);
+    let last_rate = points.last().map(|(_, r)| *r).unwrap_or(0.0);
+    let unique = seen_patterns.len();
+
+    println!("  Unique patterns seen: {unique}");
+    println!("  Early novel rate:    {:.1}%", first_rate * 100.0);
+    println!("  Current novel rate:  {:.1}%", last_rate * 100.0);
+
+    if first_rate > last_rate + 0.05 {
+        println!(
+            "  Brain is learning: novel rate dropped {:.1}pp",
+            (first_rate - last_rate) * 100.0
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// #134: False-deny rate and friction cost
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Print false-deny rate (brain denied, user overrode with approve).
+pub fn print_false_deny() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    println!("False-Deny Rate (Friction Cost)");
+    println!("================================");
+    println!();
+
+    if total < 5 {
+        println!("  Not enough decisions yet ({total}). Need at least 5.");
+        return;
+    }
+
+    let mut by_tool: HashMap<String, (u32, u32)> = HashMap::new(); // (denials, overrides)
+    let mut total_denials = 0u32;
+    let mut total_overrides = 0u32;
+
+    for d in &decisions {
+        if d.brain_action == "deny" {
+            let tool = d.tool.clone().unwrap_or_else(|| "unknown".into());
+            let entry = by_tool.entry(tool).or_insert((0, 0));
+            entry.0 += 1;
+            total_denials += 1;
+
+            if d.is_positive() {
+                // User overrode the deny (approved anyway)
+                entry.1 += 1;
+                total_overrides += 1;
+            }
+        }
+    }
+
+    if total_denials == 0 {
+        println!("  No brain denials recorded yet.");
+        return;
+    }
+
+    println!(
+        "  {:<20} {:>8} {:>10} {:>12}",
+        "Tool", "Denials", "Overridden", "Override rate"
+    );
+    println!("  {}", "-".repeat(54));
+
+    let mut entries: Vec<(String, u32, u32)> =
+        by_tool.into_iter().map(|(t, (d, o))| (t, d, o)).collect();
+    entries.sort_by_key(|(_, d, _)| std::cmp::Reverse(*d));
+
+    for (tool, denials, overrides) in &entries {
+        let rate = if *denials > 0 {
+            *overrides as f64 / *denials as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "  {:<20} {:>8} {:>10} {:>11.1}%",
+            tool, denials, overrides, rate,
+        );
+    }
+
+    println!("  {}", "-".repeat(54));
+    let overall_rate = total_overrides as f64 / total_denials as f64 * 100.0;
+    println!(
+        "  {:<20} {:>8} {:>10} {:>11.1}%",
+        "TOTAL", total_denials, total_overrides, overall_rate,
+    );
+
+    println!();
+    if overall_rate > 30.0 {
+        println!(
+            "  WARNING: override rate {overall_rate:.1}% exceeds 30% — brain may be too aggressive"
+        );
+        println!("  Consider lowering confidence thresholds for high-override tools.");
+    } else if overall_rate < 5.0 {
+        println!("  GOOD: low override rate — brain denials are well-calibrated.");
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// #135: Confidence calibration
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Print confidence calibration analysis.
+pub fn print_calibration() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    println!("Confidence Calibration");
+    println!("=======================");
+    println!();
+
+    if total < 10 {
+        println!("  Not enough decisions yet ({total}). Need at least 10.");
+        return;
+    }
+
+    // Bin decisions by confidence level
+    let bins: &[(f64, f64, &str)] = &[
+        (0.0, 0.3, "0.0-0.3"),
+        (0.3, 0.5, "0.3-0.5"),
+        (0.5, 0.7, "0.5-0.7"),
+        (0.7, 0.9, "0.7-0.9"),
+        (0.9, 1.01, "0.9-1.0"),
+    ];
+
+    println!(
+        "  {:<10} {:>8} {:>10} {:>12} {:>8}",
+        "Confidence", "Count", "Correct", "Accuracy", "Delta"
+    );
+    println!("  {}", "-".repeat(52));
+
+    let mut ece_sum = 0.0f64; // Expected Calibration Error
+    let mut ece_total = 0u32;
+
+    for &(lo, hi, label) in bins {
+        let in_bin: Vec<&DecisionRecord> = decisions
+            .iter()
+            .filter(|d| d.brain_confidence >= lo && d.brain_confidence < hi)
+            .filter(|d| d.is_positive() || d.is_negative())
+            .collect();
+
+        let count = in_bin.len() as u32;
+        if count == 0 {
+            println!(
+                "  {:<10} {:>8} {:>10} {:>12} {:>8}",
+                label, 0, "-", "-", "-"
+            );
+            continue;
+        }
+
+        let correct = in_bin.iter().filter(|d| d.is_positive()).count() as u32;
+        let accuracy = correct as f64 / count as f64;
+        let mid_confidence = (lo + hi) / 2.0;
+        let delta = accuracy - mid_confidence;
+
+        // ECE contribution
+        ece_sum += (accuracy - mid_confidence).abs() * count as f64;
+        ece_total += count;
+
+        let delta_str = if delta.abs() < 0.05 {
+            format!("{delta:+.1}pp")
+        } else if delta > 0.0 {
+            format!("{:+.1}pp \u{2191}", delta * 100.0) // underconfident
+        } else {
+            format!("{:+.1}pp \u{2193}", delta * 100.0) // overconfident
+        };
+
+        println!(
+            "  {:<10} {:>8} {:>10} {:>11.1}% {:>8}",
+            label,
+            count,
+            correct,
+            accuracy * 100.0,
+            delta_str,
+        );
+    }
+
+    println!();
+
+    if ece_total > 0 {
+        let ece = ece_sum / ece_total as f64;
+        println!("  Expected Calibration Error (ECE): {:.3}", ece);
+        if ece < 0.05 {
+            println!("  GOOD: well-calibrated (ECE < 0.05)");
+        } else if ece < 0.15 {
+            println!("  MODERATE: some miscalibration (ECE 0.05-0.15)");
+        } else {
+            println!(
+                "  WARNING: poorly calibrated (ECE > 0.15) — confidence scores need adjustment"
+            );
+        }
+    }
+
+    // Per-tool calibration summary
+    println!();
+    println!("  Per-tool calibration:");
+    let mut tool_bins: HashMap<String, (u32, u32, f64)> = HashMap::new(); // (total, correct, avg_confidence)
+    for d in &decisions {
+        if d.is_positive() || d.is_negative() {
+            let tool = d.tool.clone().unwrap_or_else(|| "unknown".into());
+            let entry = tool_bins.entry(tool).or_insert((0, 0, 0.0));
+            entry.0 += 1;
+            if d.is_positive() {
+                entry.1 += 1;
+            }
+            entry.2 += d.brain_confidence;
+        }
+    }
+
+    let mut tool_list: Vec<(String, u32, u32, f64)> = tool_bins
+        .into_iter()
+        .map(|(t, (total, correct, sum_conf))| (t, total, correct, sum_conf / total as f64))
+        .collect();
+    tool_list.sort_by_key(|(_, total, _, _)| std::cmp::Reverse(*total));
+
+    println!(
+        "    {:<15} {:>8} {:>10} {:>12} {:>12}",
+        "Tool", "Count", "Accuracy", "Avg Conf", "Gap"
+    );
+    println!("    {}", "-".repeat(60));
+
+    for (tool, total, correct, avg_conf) in tool_list.iter().take(10) {
+        let accuracy = *correct as f64 / *total as f64;
+        let gap = accuracy - avg_conf;
+        let gap_str = if gap.abs() < 0.05 {
+            "aligned".to_string()
+        } else if gap > 0.0 {
+            format!("{:+.0}pp under", gap * 100.0)
+        } else {
+            format!("{:+.0}pp over", gap * 100.0)
+        };
+        println!(
+            "    {:<15} {:>8} {:>11.1}% {:>11.2} {:>12}",
+            tool,
+            total,
+            accuracy * 100.0,
+            avg_conf,
+            gap_str,
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// #140: Incident post-mortem framework for false approvals
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Classify the root cause of a false approval.
+fn classify_incident_cause(
+    decision: &DecisionRecord,
+    prior_decisions: &[DecisionRecord],
+) -> &'static str {
+    let tool = decision.tool.as_deref().unwrap_or("");
+    let cmd = decision.command.as_deref().unwrap_or("");
+
+    // Check if this pattern was ever seen before
+    let seen_before = prior_decisions.iter().any(|d| {
+        d.tool.as_deref() == Some(tool)
+            && d.command
+                .as_deref()
+                .map(|c| c.split_whitespace().take(2).collect::<Vec<_>>())
+                == Some(cmd.split_whitespace().take(2).collect::<Vec<_>>())
+    });
+
+    if !seen_before {
+        return "novel_pattern";
+    }
+
+    // Check if confidence was high (>0.8) — miscalibration
+    if decision.brain_confidence > 0.8 {
+        return "confidence_miscalibration";
+    }
+
+    // Check if a similar-looking safe command exists — overgeneralization
+    let similar_safe = prior_decisions
+        .iter()
+        .any(|d| d.tool.as_deref() == Some(tool) && d.is_positive() && d.brain_confidence > 0.7);
+
+    if similar_safe {
+        return "overgeneralization";
+    }
+
+    "context_blindness"
+}
+
+/// Print incident analysis for all false approvals.
+pub fn print_incidents() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    println!("Incident Post-Mortems (False Approvals)");
+    println!("========================================");
+    println!();
+
+    if total < 5 {
+        println!("  Not enough decisions yet ({total}). Need at least 5.");
+        return;
+    }
+
+    // Find all false approvals: brain approved, user rejected
+    let mut incidents: Vec<(usize, &DecisionRecord, &'static str)> = Vec::new();
+    for (idx, d) in decisions.iter().enumerate() {
+        if d.brain_action == "approve" && d.is_negative() {
+            let cause = classify_incident_cause(d, &decisions[..idx]);
+            incidents.push((idx, d, cause));
+        }
+    }
+
+    if incidents.is_empty() {
+        println!(
+            "  No false approvals found. The brain hasn't approved anything the user rejected."
+        );
+        return;
+    }
+
+    println!("  {} incident(s) found", incidents.len());
+    println!();
+
+    // Root cause distribution
+    let mut causes: HashMap<&str, u32> = HashMap::new();
+    for (_, _, cause) in &incidents {
+        *causes.entry(cause).or_insert(0) += 1;
+    }
+
+    println!("  Root cause distribution:");
+    let cause_labels: &[(&str, &str)] = &[
+        ("novel_pattern", "Novel pattern (never seen before)"),
+        (
+            "confidence_miscalibration",
+            "Confidence miscalibration (high confidence, wrong answer)",
+        ),
+        (
+            "overgeneralization",
+            "Overgeneralization (similar safe case fooled it)",
+        ),
+        (
+            "context_blindness",
+            "Context blindness (missed relevant state)",
+        ),
+    ];
+
+    for (key, label) in cause_labels {
+        let count = causes.get(key).copied().unwrap_or(0);
+        if count > 0 {
+            println!("    {count:>3}  {label}");
+        }
+    }
+    println!();
+
+    // By risk tier
+    let mut risk_counts: HashMap<RiskTier, u32> = HashMap::new();
+    for (_, d, _) in &incidents {
+        let risk = classify_risk(d.tool.as_deref(), d.command.as_deref());
+        *risk_counts.entry(risk).or_insert(0) += 1;
+    }
+
+    println!("  By risk tier:");
+    for risk in &[
+        RiskTier::Critical,
+        RiskTier::High,
+        RiskTier::Medium,
+        RiskTier::Low,
+    ] {
+        let count = risk_counts.get(risk).copied().unwrap_or(0);
+        if count > 0 {
+            println!("    {count:>3}  {}", risk.label());
+        }
+    }
+    println!();
+
+    // Detail: show worst incidents (high/critical risk first)
+    let mut sorted_incidents = incidents.clone();
+    sorted_incidents.sort_by_key(|(_, d, _)| {
+        let risk = classify_risk(d.tool.as_deref(), d.command.as_deref());
+        match risk {
+            RiskTier::Critical => 0,
+            RiskTier::High => 1,
+            RiskTier::Medium => 2,
+            RiskTier::Low => 3,
+        }
+    });
+
+    println!("  Incidents (worst first):");
+    println!();
+    for (i, (idx, d, cause)) in sorted_incidents.iter().take(10).enumerate() {
+        let risk = classify_risk(d.tool.as_deref(), d.command.as_deref());
+        let cmd_preview = d
+            .command
+            .as_deref()
+            .map(|c| {
+                if c.len() > 60 {
+                    format!("{}...", &c[..60])
+                } else {
+                    c.to_string()
+                }
+            })
+            .unwrap_or_default();
+        let tool = d.tool.as_deref().unwrap_or("?");
+
+        println!(
+            "    {}. [{}] {}(\"{}\")",
+            i + 1,
+            risk.label(),
+            tool,
+            cmd_preview
+        );
+        println!(
+            "       Confidence: {:.0}% | Cause: {} | Decision #{}",
+            d.brain_confidence * 100.0,
+            cause,
+            idx,
+        );
+        if !d.brain_reasoning.is_empty() {
+            let reason = if d.brain_reasoning.len() > 80 {
+                format!("{}...", &d.brain_reasoning[..80])
+            } else {
+                d.brain_reasoning.clone()
+            };
+            println!("       Reasoning: \"{reason}\"");
+        }
+
+        // Check if correction was learned
+        let corrected = decisions.iter().skip(idx + 1).any(|later| {
+            later.tool.as_deref() == d.tool.as_deref()
+                && later.brain_action == "deny"
+                && later
+                    .command
+                    .as_deref()
+                    .map(|c| c.split_whitespace().take(2).collect::<Vec<_>>())
+                    == d.command
+                        .as_deref()
+                        .map(|c| c.split_whitespace().take(2).collect::<Vec<_>>())
+        });
+
+        if corrected {
+            println!("       Correction learned: yes (brain now denies this pattern)");
+        }
+        println!();
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // #170: Impact scorecard
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1086,11 +1671,16 @@ pub fn print_impact() {
 /// Dispatch a brain-stats subcommand.
 pub fn dispatch(subcommand: &str) {
     match subcommand {
+        "impact" => print_impact(),
         "learning-curve" | "curve" => print_learning_curve(),
         "accuracy" | "acc" => print_accuracy(),
         "baseline" | "rules" => print_baseline(),
         "false-approve" | "fa" => print_false_approve(),
-        "impact" => print_impact(),
+        "false-deny" | "fd" => print_false_deny(),
+        "distribution" | "dist" => print_distribution(),
+        "novel-rate" | "novel" => print_novel_rate(),
+        "calibration" | "cal" => print_calibration(),
+        "incidents" | "postmortem" => print_incidents(),
         "help" | "" => print_help(),
         _ => {
             eprintln!("Unknown brain-stats subcommand: '{subcommand}'");
@@ -1107,14 +1697,19 @@ fn print_help() {
     println!("Usage: claudectl --brain-stats <subcommand>");
     println!();
     println!("Subcommands:");
-    println!("  impact          Impact scorecard — headline metrics for claudectl's value");
+    println!("  impact          Impact scorecard — headline metrics");
     println!("  learning-curve  Correction rate over time (is the brain learning?)");
     println!("  accuracy        Per-tool, per-risk, per-project accuracy breakdown");
+    println!("  distribution    Decision volume by tool, risk, project, action");
+    println!("  novel-rate      How quickly the frontier of novel situations shrinks");
+    println!("  calibration     Are confidence scores well-calibrated?");
     println!("  baseline        Compare brain vs. rules-only classifier");
-    println!("  false-approve   False-approve rate on risky actions (safety metric)");
+    println!("  false-approve   False-approve rate on risky actions (safety)");
+    println!("  false-deny      False-deny rate and friction cost");
+    println!("  incidents       Post-mortem analysis of every false approval");
     println!("  help            Show this help");
     println!();
-    println!("Aliases: curve, acc, rules, fa");
+    println!("Aliases: curve, acc, rules, fa, fd, dist, novel, cal, postmortem");
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -909,7 +909,7 @@ impl App {
 
     fn refresh_demo(&mut self) {
         self.demo_tick += 1;
-        let sessions = crate::demo::generate_sessions(self.demo_tick);
+        let mut sessions = crate::demo::generate_sessions(self.demo_tick);
 
         // Track NeedsInput wait times (same as real mode)
         let now_instant = std::time::Instant::now();
@@ -992,6 +992,12 @@ impl App {
                     );
                 }
             }
+        }
+
+        // Compute decay scores for demo sessions (same as real refresh path)
+        for session in &mut sessions {
+            session.decay_score =
+                crate::health::compute_decay_score(session, &self.health_thresholds);
         }
 
         self.sessions = sessions;

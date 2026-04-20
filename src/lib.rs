@@ -11,6 +11,7 @@ pub mod config;
 pub mod demo;
 pub mod discovery;
 pub mod health;
+pub mod helpers;
 pub mod history;
 pub mod hooks;
 pub mod init;

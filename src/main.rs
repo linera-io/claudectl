@@ -12,6 +12,7 @@ mod config;
 mod demo;
 mod discovery;
 mod health;
+mod helpers;
 mod history;
 mod hooks;
 mod init;

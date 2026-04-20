@@ -1,9 +1,9 @@
 # claudectl
 
-**Mission control for Claude Code** — supervise, budget, orchestrate, and auto-pilot sessions with a local LLM brain.
+**Mission control for Claude Code** - supervise, budget, orchestrate, and auto-pilot sessions with a local LLM brain.
 
 <p class="hero-tagline">
-Know which agent is blocked, burning budget, waiting for approval, or stalled — and intervene without tab hunting.
+Know which agent is blocked, burning budget, waiting for approval, or stalled - and intervene without tab hunting.
 </p>
 
 <div class="proof-strip">
@@ -58,7 +58,7 @@ See every session's status, burn rate, context usage, activity sparkline, CPU, m
 
 ### Intervene Fast
 
-Approve prompts, send input, jump to the right terminal tab, or kill a runaway session — without leaving the dashboard.
+Approve prompts, send input, jump to the right terminal tab, or kill a runaway session - without leaving the dashboard.
 
 </div>
 <div class="feature-item" markdown>
@@ -86,7 +86,7 @@ TOML rules to approve, deny, send, terminate, route, or spawn based on tool name
 
 ### Health Monitoring
 
-Detects stalled sessions, context saturation, cache issues, cost spikes, retry loops, and cognitive decay — no config needed.
+Detects stalled sessions, context saturation, cache issues, cost spikes, retry loops, and cognitive decay - no config needed.
 
 </div>
 <div class="feature-item" markdown>
@@ -107,7 +107,7 @@ Trigger desktop notifications, shell commands, and webhooks when sessions need a
 
 ### Session Recording
 
-Press `R` to record a session highlight reel as a GIF. Extracts edits, commands, errors — strips idle time.
+Press `R` to record a session highlight reel as a GIF. Extracts edits, commands, errors - strips idle time.
 
 </div>
 </div>
@@ -147,11 +147,11 @@ Run `claudectl --doctor` to verify support in your terminal. See [Terminal Suppo
 
 ## How It Works
 
-claudectl reads Claude Code's local data — no API keys, no network access, no modifications to Claude Code:
+claudectl reads Claude Code's local data - no API keys, no network access, no modifications to Claude Code:
 
-- **`~/.claude/sessions/*.json`** — session metadata
-- **`~/.claude/projects/{slug}/*.jsonl`** — conversation logs with token usage
-- **`ps`** — CPU%, memory, TTY for each process
+- **`~/.claude/sessions/*.json`** - session metadata
+- **`~/.claude/projects/{slug}/*.jsonl`** - conversation logs with token usage
+- **`ps`** - CPU%, memory, TTY for each process
 
 Status inference combines multiple signals: `waiting_for_task` events, CPU usage thresholds, `stop_reason` fields, and message recency.
 
@@ -166,10 +166,10 @@ claudectl runs entirely locally. It does not:
 
 ## Built With
 
-- [Rust](https://www.rust-lang.org/) — systems language
-- [ratatui](https://github.com/ratatui/ratatui) — TUI framework
-- [crossterm](https://github.com/crossterm-rs/crossterm) — terminal manipulation
-- [Ollama](https://ollama.com/) — local LLM inference (for brain mode)
+- [Rust](https://www.rust-lang.org/) - systems language
+- [ratatui](https://github.com/ratatui/ratatui) - TUI framework
+- [crossterm](https://github.com/crossterm-rs/crossterm) - terminal manipulation
+- [Ollama](https://ollama.com/) - local LLM inference (for brain mode)
 
 ## License
 

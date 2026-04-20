@@ -1,8 +1,8 @@
-# claudectl
-
-**Auto-pilot for Claude Code.**
-
-A local on-device model that learns what to approve, deny, and improve — no cloud API, no telemetry.
+<p align="center">
+  <img src="assets/logo.png" alt="claudectl" width="372">
+</p>
+<p align="center"><strong>Auto-pilot for Claude Code.</strong></p>
+<p align="center">A local on-device model that learns what to approve, deny, and improve — no cloud API, no telemetry.</p>
 
 [![CI](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml/badge.svg)](https://github.com/mercurialsolo/claudectl/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/claudectl)](https://crates.io/crates/claudectl)

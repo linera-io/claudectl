@@ -28,6 +28,10 @@ pub struct TranscriptMessage {
     pub stop_reason: Option<String>,
     pub usage: Option<TranscriptUsage>,
     pub content: Vec<TranscriptBlock>,
+    /// Entry timestamp in unix epoch milliseconds, if the JSONL line carried
+    /// a recognizable RFC-3339 `timestamp` field. Used to track when a user
+    /// last interacted with the session.
+    pub timestamp_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,11 +50,14 @@ pub fn parse_line(line: &str) -> Option<TranscriptEvent> {
     let msg = entry.get("message")?;
     let role = message_role(&entry, msg)?;
 
-    let content = msg
-        .get("content")
-        .and_then(|v| v.as_array())
-        .map(|blocks| blocks.iter().filter_map(parse_block).collect())
-        .unwrap_or_default();
+    // Claude Code writes user prompts with `content` as a raw string, while
+    // tool_result / text-block messages use an array of typed blocks. Handle
+    // both shapes so a plain-string prompt is still visible as a Text block.
+    let content: Vec<TranscriptBlock> = match msg.get("content") {
+        Some(Value::String(s)) => vec![TranscriptBlock::Text(s.clone())],
+        Some(Value::Array(blocks)) => blocks.iter().filter_map(parse_block).collect(),
+        _ => Vec::new(),
+    };
 
     Some(TranscriptEvent::Message(TranscriptMessage {
         role,
@@ -64,7 +71,71 @@ pub fn parse_line(line: &str) -> Option<TranscriptEvent> {
             .map(|s| s.to_string()),
         usage: msg.get("usage").and_then(parse_usage),
         content,
+        timestamp_ms: entry
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(parse_rfc3339_utc_ms),
     }))
+}
+
+/// Parse an RFC-3339 UTC timestamp like "2026-04-19T22:57:04.552Z" into unix
+/// epoch milliseconds. Accepts optional fractional seconds (0-9 digits) and
+/// requires the trailing `Z` (Claude Code writes UTC). Returns `None` for any
+/// format deviation — callers treat that as "no timestamp available".
+pub fn parse_rfc3339_utc_ms(s: &str) -> Option<u64> {
+    let s = s.strip_suffix('Z')?;
+    let (date, time) = s.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: u32 = date_parts.next()?.parse().ok()?;
+    let day: u32 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+    let (hms, frac) = time.split_once('.').unwrap_or((time, ""));
+    let mut hms_parts = hms.split(':');
+    let hour: u32 = hms_parts.next()?.parse().ok()?;
+    let minute: u32 = hms_parts.next()?.parse().ok()?;
+    let second: u32 = hms_parts.next()?.parse().ok()?;
+    if hms_parts.next().is_some() {
+        return None;
+    }
+    let millis: u64 = if frac.is_empty() {
+        0
+    } else {
+        // Pad/truncate the fractional part to exactly 3 digits (milliseconds).
+        let mut buf = [b'0'; 3];
+        for (i, b) in frac.bytes().take(3).enumerate() {
+            buf[i] = b;
+        }
+        std::str::from_utf8(&buf).ok()?.parse().ok()?
+    };
+    if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    let secs = days.checked_mul(86_400)?.checked_add(
+        (hour as i64)
+            .checked_mul(3600)?
+            .checked_add((minute as i64).checked_mul(60)?)?
+            .checked_add(second as i64)?,
+    )?;
+    if secs < 0 {
+        return None;
+    }
+    (secs as u64).checked_mul(1000)?.checked_add(millis)
+}
+
+/// Days from 1970-01-01 for a proleptic Gregorian date. Howard Hinnant's
+/// days_from_civil algorithm (https://howardhinnant.github.io/date_algorithms.html).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // 0..=399
+    let m = m as i64;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 fn is_waiting_for_task(entry: &Value) -> bool {
@@ -195,5 +266,100 @@ mod tests {
             parse_line(line),
             Some(TranscriptEvent::WaitingForTask)
         ));
+    }
+
+    #[test]
+    fn parse_rfc3339_with_millis() {
+        // 2026-04-19T22:57:04.552Z — computed offline with:
+        //   python -c 'import datetime as d; print(int(d.datetime(2026,4,19,22,57,4,552000,d.timezone.utc).timestamp()*1000))'
+        assert_eq!(
+            parse_rfc3339_utc_ms("2026-04-19T22:57:04.552Z"),
+            Some(1_776_639_424_552)
+        );
+    }
+
+    #[test]
+    fn parse_rfc3339_epoch() {
+        assert_eq!(parse_rfc3339_utc_ms("1970-01-01T00:00:00.000Z"), Some(0));
+    }
+
+    #[test]
+    fn parse_rfc3339_without_fraction() {
+        assert_eq!(
+            parse_rfc3339_utc_ms("2026-04-19T22:57:04Z"),
+            Some(1_776_639_424_000)
+        );
+    }
+
+    #[test]
+    fn parse_rfc3339_rejects_non_utc() {
+        assert!(parse_rfc3339_utc_ms("2026-04-19T22:57:04+02:00").is_none());
+    }
+
+    #[test]
+    fn parse_rfc3339_rejects_garbage() {
+        assert!(parse_rfc3339_utc_ms("").is_none());
+        assert!(parse_rfc3339_utc_ms("not-a-date").is_none());
+        assert!(parse_rfc3339_utc_ms("2026-13-01T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn parse_line_includes_timestamp_ms() {
+        let line = r#"{"type":"user","timestamp":"2026-04-19T22:57:04.552Z","message":{"role":"user","content":"hello"}}"#;
+        let Some(TranscriptEvent::Message(msg)) = parse_line(line) else {
+            panic!("expected message event");
+        };
+        assert_eq!(msg.role, TranscriptRole::User);
+        assert_eq!(msg.timestamp_ms, Some(1_776_639_424_552));
+    }
+
+    #[test]
+    fn parse_line_user_with_string_content_is_text() {
+        // Typical user prompts: `content` is a raw string, not a block array.
+        let line = r#"{"type":"user","timestamp":"2026-04-19T22:57:04.000Z","message":{"role":"user","content":"hello there"}}"#;
+        let Some(TranscriptEvent::Message(msg)) = parse_line(line) else {
+            panic!("expected message event");
+        };
+        assert_eq!(msg.role, TranscriptRole::User);
+        let texts: Vec<&str> = msg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                TranscriptBlock::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["hello there"]);
+    }
+
+    #[test]
+    fn parse_line_distinguishes_user_text_from_tool_result() {
+        // Real user prompt: content is an array with a Text block.
+        let prompt = r#"{"type":"user","timestamp":"2026-04-19T22:57:04.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
+        let Some(TranscriptEvent::Message(prompt_msg)) = parse_line(prompt) else {
+            panic!("expected message event");
+        };
+        assert_eq!(prompt_msg.role, TranscriptRole::User);
+        assert!(
+            prompt_msg
+                .content
+                .iter()
+                .any(|b| matches!(b, TranscriptBlock::Text(_))),
+            "prompt should contain a Text block"
+        );
+
+        // Tool result: content is an array with a ToolResult block and no text.
+        let tool_result = r#"{"type":"user","timestamp":"2026-04-19T22:58:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#;
+        let Some(TranscriptEvent::Message(tr_msg)) = parse_line(tool_result) else {
+            panic!("expected message event");
+        };
+        assert_eq!(tr_msg.role, TranscriptRole::User);
+        assert!(
+            !tr_msg
+                .content
+                .iter()
+                .any(|b| matches!(b, TranscriptBlock::Text(_))),
+            "tool_result should not contain a Text block"
+        );
     }
 }

@@ -112,6 +112,24 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                     TranscriptRole::User => "user".to_string(),
                                 };
 
+                                // Track the most recent user-originated text
+                                // message. Tool results also arrive with the
+                                // `user` role, so we require at least one Text
+                                // block to distinguish a genuine prompt from
+                                // Claude's tool-result injection.
+                                if matches!(message.role, TranscriptRole::User) {
+                                    let has_text = message
+                                        .content
+                                        .iter()
+                                        .any(|b| matches!(b, TranscriptBlock::Text(_)));
+                                    if has_text {
+                                        if let Some(ts) = message.timestamp_ms {
+                                            session.last_user_message_ts =
+                                                session.last_user_message_ts.max(ts);
+                                        }
+                                    }
+                                }
+
                                 if let Some(reason) = message.stop_reason {
                                     last_stop_reason = reason;
                                 } else {

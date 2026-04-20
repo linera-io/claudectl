@@ -820,6 +820,7 @@ mod tests {
             jsonl_path: None,
             jsonl_offset: 0,
             last_message_ts: 0,
+            last_user_message_ts: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             cost_usd: 3.50,

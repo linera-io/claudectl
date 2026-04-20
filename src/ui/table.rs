@@ -132,19 +132,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     // Build header with sort indicator
     let header_names = [
-        "PID", "Name", "Project", "Status", "Context", "Cost", "$/hr", "Elapsed", "CPU%", "MEM",
-        "In/Out", "Activity",
+        "PID", "Name", "Project", "Status", "Context", "Cost", "$/hr", "Elapsed", "Last", "CPU%",
+        "MEM", "In/Out", "Activity",
     ];
 
     // Map sort_column index to header index:
-    // 0=Status->3, 1=Context->4, 2=Cost->5, 3=$/hr->6, 4=Elapsed->7, 5=Name->1
+    // 0=Status->3, 1=Context->4, 2=Cost->5, 3=$/hr->6, 4=Elapsed->7, 5=Last->8, 6=Name->1
     let sort_header_idx = match app.sort_column {
         0 => 3, // Status
         1 => 4, // Context
         2 => 5, // Cost
         3 => 6, // $/hr
         4 => 7, // Elapsed
-        5 => 1, // Name
+        5 => 8, // Last
+        6 => 1, // Name
         _ => usize::MAX,
     };
 
@@ -186,7 +187,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(header_text)
                     .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
             ];
-            for _ in 3..12 {
+            for _ in 3..13 {
                 cells.push(Cell::from(""));
             }
             rows.push(Row::new(cells));
@@ -230,6 +231,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(8),  // Cost
         Constraint::Length(9),  // $/hr
         Constraint::Length(10), // Elapsed
+        Constraint::Length(6),  // Last (relative age)
         Constraint::Length(6),  // CPU%
         Constraint::Length(5),  // MEM
         Constraint::Length(14), // Tokens
@@ -575,6 +577,8 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
         Cell::from(cost_text).style(Style::default().fg(cost_color)),
         Cell::from(s.format_burn_rate()).style(Style::default().fg(burn_color)),
         Cell::from(s.format_elapsed()),
+        Cell::from(format_last_user_age(s.last_user_message_ts))
+            .style(Style::default().fg(t.text_muted)),
         Cell::from(format!("{:.1}", s.cpu_percent)),
         Cell::from(s.format_mem()),
         Cell::from(s.format_tokens()),
@@ -628,9 +632,37 @@ fn subagent_row(
         Cell::from("-").style(row_style),
         Cell::from("-").style(row_style),
         Cell::from("-").style(row_style),
+        Cell::from("-").style(row_style),
         Cell::from(row.format_tokens()).style(row_style),
         Cell::from("-").style(row_style),
     ])
+}
+
+/// Format the age of a "last user message" timestamp (unix epoch millis)
+/// relative to wall-clock now. Returns a compact 1-5 char representation:
+/// `—` for never, `Ns`/`Nm`/`Nh`/`Nd` otherwise. A future timestamp (clock
+/// skew or invalid data) also renders as `—` rather than a negative age.
+fn format_last_user_age(ts_ms: u64) -> String {
+    if ts_ms == 0 {
+        return "—".into();
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    if ts_ms > now_ms {
+        return "—".into();
+    }
+    let secs = (now_ms - ts_ms) / 1000;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
 }
 
 fn format_token_count(n: u64) -> String {

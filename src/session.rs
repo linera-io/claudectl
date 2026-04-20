@@ -121,6 +121,10 @@ pub struct ClaudeSession {
     pub jsonl_path: Option<PathBuf>,
     pub jsonl_offset: u64,
     pub last_message_ts: u64,
+    /// Unix epoch millis of the most recent user-originated text message in
+    /// the transcript (fresh prompt or text reply; excludes tool results).
+    /// 0 means never seen.
+    pub last_user_message_ts: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
     pub cost_usd: f64,
@@ -323,6 +327,7 @@ impl ClaudeSession {
             jsonl_path: None,
             jsonl_offset: 0,
             last_message_ts: 0,
+            last_user_message_ts: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             cost_usd: 0.0,

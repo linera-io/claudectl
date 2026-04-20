@@ -19,6 +19,37 @@ pub const SORT_COLUMNS: &[&str] = &[
     "Status", "Context", "Cost", "$/hr", "Elapsed", "Last", "Name",
 ];
 
+/// Merge the latest `discovered` sessions with the previous set, preserving
+/// accumulated per-session state (jsonl_offset, tokens, cost, cpu_history,
+/// …) across ticks. Ephemeral fields (`elapsed`, `started_at`) and the
+/// user-visible `session_name` (rewritten by Claude Code's `/rename`) are
+/// refreshed from the discovered copy.
+///
+/// Returns the merged list and the PIDs that are brand new this tick.
+pub fn merge_discovered_sessions(
+    existing: Vec<ClaudeSession>,
+    discovered: Vec<ClaudeSession>,
+) -> (Vec<ClaudeSession>, Vec<u32>) {
+    let mut existing: HashMap<u32, ClaudeSession> =
+        existing.into_iter().map(|s| (s.pid, s)).collect();
+    let mut new_pids = Vec::new();
+    let merged = discovered
+        .into_iter()
+        .map(|new| {
+            if let Some(mut prev) = existing.remove(&new.pid) {
+                prev.elapsed = new.elapsed;
+                prev.started_at = new.started_at;
+                prev.session_name = new.session_name;
+                prev
+            } else {
+                new_pids.push(new.pid);
+                new
+            }
+        })
+        .collect();
+    (merged, new_pids)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusFilter {
     All,
@@ -457,33 +488,8 @@ impl App {
         let discovered = discovery::scan_sessions();
         let scan_elapsed = scan_start.elapsed();
 
-        // Build a map of existing sessions by PID for state preservation
-        let mut existing: HashMap<u32, ClaudeSession> =
-            self.sessions.drain(..).map(|s| (s.pid, s)).collect();
-
-        // Merge: reuse existing session state (jsonl_offset, tokens, cost, cpu_history)
-        // or create new from discovered
-        let mut new_pids: Vec<u32> = Vec::new();
-        let mut sessions: Vec<ClaudeSession> = discovered
-            .into_iter()
-            .map(|new| {
-                if let Some(mut prev) = existing.remove(&new.pid) {
-                    // Preserve accumulated state, update ephemeral fields
-                    prev.elapsed = new.elapsed;
-                    prev.started_at = new.started_at;
-                    // session_name can change mid-run (Claude Code's /rename
-                    // rewrites the session JSON); pick up the latest value so
-                    // the TUI reflects renames without a restart.
-                    prev.session_name = new.session_name;
-                    // cwd/project_name/session_id don't change
-                    prev
-                } else {
-                    // Brand new session
-                    new_pids.push(new.pid);
-                    new
-                }
-            })
-            .collect();
+        let existing = std::mem::take(&mut self.sessions);
+        let (mut sessions, new_pids) = merge_discovered_sessions(existing, discovered);
 
         // Enrich with ps data (CPU, MEM, TTY, command args) + filter dead PIDs
         let ps_start = std::time::Instant::now();
@@ -2349,5 +2355,267 @@ mod tests {
             app.status_msg
                 .starts_with("Launch failed: Directory not found:")
         );
+    }
+
+    // ------------------------------------------------------------------
+    // apply_sort coverage
+    // ------------------------------------------------------------------
+
+    fn named_session(pid: u32, name: &str, project: &str, last_user_ms: u64) -> ClaudeSession {
+        let raw = RawSession {
+            pid,
+            session_id: format!("s-{pid}"),
+            cwd: format!("/tmp/{project}"),
+            started_at: 0,
+            name: None,
+        };
+        let mut s = ClaudeSession::from_raw(raw);
+        s.project_name = project.into();
+        s.session_name = name.into();
+        s.last_user_message_ts = last_user_ms;
+        s
+    }
+
+    #[test]
+    fn apply_sort_by_name_puts_unnamed_last_then_alpha_tiebreak_by_project() {
+        let mut app = App::new();
+        app.sort_column = 6; // Name
+        let mut sessions = vec![
+            named_session(1, "", "zeta", 0),
+            named_session(2, "Beta-feature", "alpha", 0),
+            named_session(3, "alpha-feature", "gamma", 0),
+            named_session(4, "", "alpha", 0),
+            named_session(5, "alpha-feature", "beta", 0),
+        ];
+        app.apply_sort(&mut sessions);
+        let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        // Sort key is (is_empty, lowercased session_name, lowercased project_name):
+        //   pid 5: (false, "alpha-feature", "beta")
+        //   pid 3: (false, "alpha-feature", "gamma")
+        //   pid 2: (false, "beta-feature",  "alpha")
+        //   pid 4: (true,  "",              "alpha")  — unnamed, project tiebreak
+        //   pid 1: (true,  "",              "zeta")
+        assert_eq!(order, vec![5, 3, 2, 4, 1]);
+    }
+
+    #[test]
+    fn apply_sort_by_last_puts_most_recent_first_with_never_at_bottom() {
+        let mut app = App::new();
+        app.sort_column = 5; // Last
+        let mut sessions = vec![
+            named_session(1, "a", "p", 1_000),
+            named_session(2, "b", "p", 5_000),
+            named_session(3, "c", "p", 0), // never
+            named_session(4, "d", "p", 3_000),
+        ];
+        app.apply_sort(&mut sessions);
+        let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        assert_eq!(order, vec![2, 4, 1, 3]);
+    }
+
+    #[test]
+    fn apply_sort_by_cost_descending() {
+        let mut app = App::new();
+        app.sort_column = 2; // Cost
+        let mut sessions = vec![
+            make_session(1, "a", "m", SessionStatus::Processing, 0.5, 0.0, true),
+            make_session(2, "b", "m", SessionStatus::Processing, 10.0, 0.0, true),
+            make_session(3, "c", "m", SessionStatus::Processing, 3.0, 0.0, true),
+        ];
+        app.apply_sort(&mut sessions);
+        let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        assert_eq!(order, vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn apply_sort_by_elapsed_longest_first() {
+        use std::time::Duration;
+        let mut app = App::new();
+        app.sort_column = 4; // Elapsed
+        let mut sessions = vec![
+            make_session(1, "a", "m", SessionStatus::Processing, 0.0, 0.0, true),
+            make_session(2, "b", "m", SessionStatus::Processing, 0.0, 0.0, true),
+            make_session(3, "c", "m", SessionStatus::Processing, 0.0, 0.0, true),
+        ];
+        sessions[0].elapsed = Duration::from_secs(30);
+        sessions[1].elapsed = Duration::from_secs(300);
+        sessions[2].elapsed = Duration::from_secs(90);
+        app.apply_sort(&mut sessions);
+        let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        assert_eq!(order, vec![2, 3, 1]);
+    }
+
+    // ------------------------------------------------------------------
+    // handle_normal_key Esc unwind coverage
+    // ------------------------------------------------------------------
+
+    fn press_esc(app: &mut App) {
+        app.handle_normal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn esc_with_no_state_is_noop_not_quit() {
+        let mut app = make_test_app();
+        press_esc(&mut app);
+        assert!(!app.should_quit, "Esc must not quit the TUI in normal mode");
+    }
+
+    #[test]
+    fn esc_cancels_pending_kill() {
+        let mut app = make_test_app();
+        app.pending_kill = Some(11);
+        press_esc(&mut app);
+        assert!(app.pending_kill.is_none());
+        assert_eq!(app.status_msg, "Kill cancelled");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn esc_cancels_pending_auto_approve() {
+        let mut app = make_test_app();
+        app.pending_auto_approve = Some(11);
+        press_esc(&mut app);
+        assert!(app.pending_auto_approve.is_none());
+        assert_eq!(app.status_msg, "Auto-approve cancelled");
+    }
+
+    #[test]
+    fn esc_closes_open_detail_panel() {
+        let mut app = make_test_app();
+        app.detail_panel = true;
+        press_esc(&mut app);
+        assert!(!app.detail_panel);
+    }
+
+    #[test]
+    fn esc_clears_committed_search_query() {
+        let mut app = make_test_app();
+        app.search_query = "needle".into();
+        press_esc(&mut app);
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.status_msg, "Search cleared");
+    }
+
+    #[test]
+    fn esc_clears_active_filters() {
+        let mut app = make_test_app();
+        app.status_filter = StatusFilter::NeedsInput;
+        app.focus_filter = FocusFilter::Attention;
+        press_esc(&mut app);
+        assert!(matches!(app.status_filter, StatusFilter::All));
+        assert!(matches!(app.focus_filter, FocusFilter::All));
+        assert_eq!(app.status_msg, "Filters cleared");
+    }
+
+    #[test]
+    fn esc_unwinds_one_layer_per_press() {
+        // Set up three layers: search query, filter, detail panel.
+        // Priority order: detail panel > search > filters.
+        let mut app = make_test_app();
+        app.detail_panel = true;
+        app.search_query = "x".into();
+        app.status_filter = StatusFilter::NeedsInput;
+
+        press_esc(&mut app);
+        assert!(!app.detail_panel, "first Esc closes detail panel");
+        assert_eq!(app.search_query, "x");
+        assert!(matches!(app.status_filter, StatusFilter::NeedsInput));
+
+        press_esc(&mut app);
+        assert_eq!(app.search_query, "", "second Esc clears search");
+        assert!(matches!(app.status_filter, StatusFilter::NeedsInput));
+
+        press_esc(&mut app);
+        assert!(
+            matches!(app.status_filter, StatusFilter::All),
+            "third Esc clears filters"
+        );
+
+        press_esc(&mut app);
+        assert!(!app.should_quit, "fourth Esc on empty state is no-op");
+    }
+
+    #[test]
+    fn q_still_quits_in_normal_mode() {
+        let mut app = make_test_app();
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_still_quits_in_normal_mode() {
+        let mut app = make_test_app();
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    // ------------------------------------------------------------------
+    // merge_discovered_sessions coverage
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn merge_inserts_brand_new_pids() {
+        let (merged, new_pids) = merge_discovered_sessions(
+            vec![],
+            vec![
+                named_session(100, "a", "proj", 0),
+                named_session(101, "b", "proj", 0),
+            ],
+        );
+        let pids: Vec<u32> = merged.iter().map(|s| s.pid).collect();
+        assert_eq!(pids, vec![100, 101]);
+        assert_eq!(new_pids, vec![100, 101]);
+    }
+
+    #[test]
+    fn merge_preserves_accumulated_state_for_existing_pid() {
+        // The existing session carries accumulated cost and tokens; the
+        // newly-discovered copy has zero values (fresh parse). After merge,
+        // the accumulated state must survive.
+        let mut existing = named_session(42, "old-name", "proj", 10_000);
+        existing.cost_usd = 3.50;
+        existing.own_input_tokens = 1_000;
+        existing.jsonl_offset = 4096;
+
+        let fresh = named_session(42, "old-name", "proj", 0); // discovery scan has no accumulated state
+        let (merged, new_pids) = merge_discovered_sessions(vec![existing], vec![fresh]);
+        assert_eq!(new_pids, vec![] as Vec<u32>);
+        assert_eq!(merged.len(), 1);
+        let s = &merged[0];
+        assert_eq!(s.cost_usd, 3.50, "cost must be preserved across merge");
+        assert_eq!(s.own_input_tokens, 1_000, "tokens preserved");
+        assert_eq!(s.jsonl_offset, 4096, "JSONL offset preserved");
+        assert_eq!(
+            s.last_user_message_ts, 10_000,
+            "transcript-derived timestamps preserved"
+        );
+    }
+
+    #[test]
+    fn merge_picks_up_renamed_session_name_from_discovery() {
+        // Core regression test for commit 4: Claude Code's /rename rewrites
+        // the session JSON mid-run. `scan_sessions` produces a fresh copy
+        // with the new name; the merge must overwrite the previous name so
+        // the TUI reflects the rename without a restart.
+        let existing = named_session(42, "original-name", "proj", 0);
+        let mut fresh = named_session(42, "renamed-session", "proj", 0);
+        // Simulate discovery: only ephemeral fields differ.
+        fresh.cost_usd = 0.0;
+
+        let (merged, _) = merge_discovered_sessions(vec![existing], vec![fresh]);
+        assert_eq!(merged[0].session_name, "renamed-session");
+    }
+
+    #[test]
+    fn merge_drops_existing_when_pid_no_longer_in_discovery() {
+        let existing_a = named_session(1, "a", "proj", 0);
+        let existing_b = named_session(2, "b", "proj", 0);
+        let (merged, new_pids) = merge_discovered_sessions(
+            vec![existing_a, existing_b],
+            vec![named_session(1, "a", "proj", 0)],
+        );
+        let pids: Vec<u32> = merged.iter().map(|s| s.pid).collect();
+        assert_eq!(pids, vec![1], "PID 2 is gone, so it must drop from output");
+        assert_eq!(new_pids, vec![] as Vec<u32>);
     }
 }

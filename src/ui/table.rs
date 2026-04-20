@@ -482,52 +482,13 @@ fn session_row(s: &ClaudeSession, app: &App) -> Row<'static> {
         s.status.to_string()
     };
 
-    let file_conflict = app.file_conflict_pids.contains(&s.pid);
-    let wt_conflict = app.conflict_pids.contains(&s.pid);
-    let recording = app.session_recordings.contains_key(&s.pid);
-    // Conflict markers describe the session's working directory — shared
-    // project state — so they belong on the Project cell.
-    let conflict_prefix = if file_conflict {
-        "!F "
-    } else if wt_conflict {
-        "!! "
-    } else {
-        ""
+    let decorations = CellDecorations {
+        file_conflict: app.file_conflict_pids.contains(&s.pid),
+        worktree_conflict: app.conflict_pids.contains(&s.pid),
+        recording: app.session_recordings.contains_key(&s.pid),
+        health_icon: crate::health::status_icon(s, &app.health_thresholds),
     };
-    // Recording, subagent count, and health icon are per-session facts and
-    // ride with the session's primary identifier: the Name cell when named,
-    // falling back to the Project cell when unnamed.
-    let rec_prefix = if recording { "REC " } else { "" };
-    let health_icon = crate::health::status_icon(s, &app.health_thresholds);
-    let health_suffix = if health_icon.is_empty() {
-        String::new()
-    } else {
-        format!(" {health_icon}")
-    };
-    let subagent_suffix = if s.subagent_count > 0 {
-        format!(" +{}", s.subagent_count)
-    } else {
-        String::new()
-    };
-    let (name_text, project_text) = if s.session_name.is_empty() {
-        // Unnamed: all decorations fall onto the Project cell — matches
-        // pre-split behavior.
-        (
-            String::new(),
-            format!(
-                "{conflict_prefix}{rec_prefix}{}{subagent_suffix}{health_suffix}",
-                s.project_name
-            ),
-        )
-    } else {
-        (
-            format!(
-                "{rec_prefix}{}{subagent_suffix}{health_suffix}",
-                s.session_name
-            ),
-            format!("{conflict_prefix}{}", s.project_name),
-        )
-    };
+    let (name_text, project_text) = build_name_and_project_text(s, &decorations);
 
     let ctx_pct = s.context_percent();
     let ctx_color = if !s.has_usage_metrics() {
@@ -638,6 +599,62 @@ fn subagent_row(
     ])
 }
 
+/// Per-row decoration flags that determine where indicator prefixes/suffixes
+/// attach in the Name/Project cell pair. Extracted as a struct so the text
+/// builder below can be unit-tested without depending on `App`.
+pub(crate) struct CellDecorations<'a> {
+    pub file_conflict: bool,
+    pub worktree_conflict: bool,
+    pub recording: bool,
+    pub health_icon: &'a str,
+}
+
+/// Produce the (Name, Project) cell text pair for a session row. Conflict
+/// markers (`!F`/`!!`) always attach to Project — they describe the working
+/// directory. Recording, subagent count, and health icon attach to Name when
+/// the session has been renamed, else fall back to Project. An unnamed
+/// session's Name cell is always empty.
+pub(crate) fn build_name_and_project_text(
+    s: &ClaudeSession,
+    dec: &CellDecorations<'_>,
+) -> (String, String) {
+    let conflict_prefix = if dec.file_conflict {
+        "!F "
+    } else if dec.worktree_conflict {
+        "!! "
+    } else {
+        ""
+    };
+    let rec_prefix = if dec.recording { "REC " } else { "" };
+    let health_suffix = if dec.health_icon.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", dec.health_icon)
+    };
+    let subagent_suffix = if s.subagent_count > 0 {
+        format!(" +{}", s.subagent_count)
+    } else {
+        String::new()
+    };
+    if s.session_name.is_empty() {
+        (
+            String::new(),
+            format!(
+                "{conflict_prefix}{rec_prefix}{}{subagent_suffix}{health_suffix}",
+                s.project_name
+            ),
+        )
+    } else {
+        (
+            format!(
+                "{rec_prefix}{}{subagent_suffix}{health_suffix}",
+                s.session_name
+            ),
+            format!("{conflict_prefix}{}", s.project_name),
+        )
+    }
+}
+
 /// Format the age of a "last user message" timestamp (unix epoch millis)
 /// relative to wall-clock now. Returns a compact 1-5 char representation:
 /// `—` for never, `Ns`/`Nm`/`Nh`/`Nd` otherwise. A future timestamp (clock
@@ -675,5 +692,153 @@ fn format_token_count(n: u64) -> String {
         format!("{:.0}k tok", n as f64 / 1_000.0)
     } else {
         format!("{n} tok")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{ClaudeSession, RawSession};
+
+    fn session_with(name: &str, project_cwd: &str, subagents: usize) -> ClaudeSession {
+        let raw = RawSession {
+            pid: 1,
+            session_id: "s".into(),
+            cwd: project_cwd.into(),
+            started_at: 0,
+            name: None,
+        };
+        let mut s = ClaudeSession::from_raw(raw);
+        s.session_name = name.into();
+        s.subagent_count = subagents;
+        s
+    }
+
+    fn flags(
+        file_conflict: bool,
+        worktree_conflict: bool,
+        recording: bool,
+        health_icon: &str,
+    ) -> CellDecorations<'_> {
+        CellDecorations {
+            file_conflict,
+            worktree_conflict,
+            recording,
+            health_icon,
+        }
+    }
+
+    #[test]
+    fn named_session_plain() {
+        let s = session_with("feat/foo", "/tmp/proj", 0);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, false, false, ""));
+        assert_eq!(name, "feat/foo");
+        assert_eq!(project, "proj");
+    }
+
+    #[test]
+    fn unnamed_session_plain() {
+        let s = session_with("", "/tmp/proj", 0);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, false, false, ""));
+        assert_eq!(name, "");
+        assert_eq!(project, "proj");
+    }
+
+    #[test]
+    fn named_with_worktree_conflict_puts_marker_on_project() {
+        let s = session_with("feat/foo", "/tmp/proj", 0);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, true, false, ""));
+        assert_eq!(
+            name, "feat/foo",
+            "Name cell must not carry the conflict marker"
+        );
+        assert_eq!(project, "!! proj");
+    }
+
+    #[test]
+    fn named_with_file_conflict_puts_fmarker_on_project() {
+        let s = session_with("feat/foo", "/tmp/proj", 0);
+        let (name, project) = build_name_and_project_text(&s, &flags(true, false, false, ""));
+        assert_eq!(name, "feat/foo");
+        assert_eq!(project, "!F proj");
+    }
+
+    #[test]
+    fn named_with_recording_and_subagents_decorates_name() {
+        let s = session_with("feat/foo", "/tmp/proj", 2);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, false, true, ""));
+        assert_eq!(name, "REC feat/foo +2");
+        assert_eq!(
+            project, "proj",
+            "Project cell stays plain when session-level decorations ride with Name"
+        );
+    }
+
+    #[test]
+    fn named_with_health_icon_on_name_only() {
+        let s = session_with("feat/foo", "/tmp/proj", 0);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, false, false, "⚠"));
+        assert_eq!(name, "feat/foo ⚠");
+        assert_eq!(project, "proj");
+    }
+
+    #[test]
+    fn unnamed_collects_every_decoration_on_project() {
+        // Unnamed sessions have an empty Name cell, so every indicator falls
+        // back onto the Project cell — matches pre-split behavior.
+        let s = session_with("", "/tmp/proj", 3);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, true, true, "⚠"));
+        assert_eq!(name, "");
+        assert_eq!(project, "!! REC proj +3 ⚠");
+    }
+
+    #[test]
+    fn named_with_conflict_and_session_decorations_splits_cleanly() {
+        // Named + worktree conflict + recording + subagents + health should
+        // split into conflict-on-Project and everything-else-on-Name.
+        let s = session_with("feat/foo", "/tmp/proj", 1);
+        let (name, project) = build_name_and_project_text(&s, &flags(false, true, true, "⚠"));
+        assert_eq!(name, "REC feat/foo +1 ⚠");
+        assert_eq!(project, "!! proj");
+    }
+
+    #[test]
+    fn file_conflict_takes_precedence_over_worktree_conflict() {
+        let s = session_with("feat/foo", "/tmp/proj", 0);
+        let (_, project) = build_name_and_project_text(&s, &flags(true, true, false, ""));
+        assert_eq!(project, "!F proj");
+    }
+
+    #[test]
+    fn format_last_user_age_never() {
+        assert_eq!(format_last_user_age(0), "—");
+    }
+
+    #[test]
+    fn format_last_user_age_future_ts_is_never() {
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+            + 60_000;
+        assert_eq!(format_last_user_age(future), "—");
+    }
+
+    #[test]
+    fn format_last_user_age_buckets() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        assert_eq!(format_last_user_age(now_ms.saturating_sub(10_000)), "10s");
+        assert_eq!(format_last_user_age(now_ms.saturating_sub(120_000)), "2m");
+        assert_eq!(
+            format_last_user_age(now_ms.saturating_sub(3 * 3_600_000)),
+            "3h"
+        );
+        assert_eq!(
+            format_last_user_age(now_ms.saturating_sub(2 * 86_400_000)),
+            "2d"
+        );
     }
 }

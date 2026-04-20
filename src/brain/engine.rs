@@ -821,6 +821,7 @@ mod tests {
             message: None,
             reasoning: "safe".into(),
             confidence: 0.95,
+            suggested_at: 0,
         };
         let rm = suggestion_to_rule_match(&suggestion);
         assert_eq!(rm.action, RuleAction::Approve);
@@ -837,6 +838,7 @@ mod tests {
                 message: None,
                 reasoning: "test".into(),
                 confidence: 0.9,
+                suggested_at: 0,
             },
         );
 
@@ -856,6 +858,7 @@ mod tests {
                 message: None,
                 reasoning: "test".into(),
                 confidence: 0.9,
+                suggested_at: 0,
             },
         );
 
@@ -1024,6 +1027,7 @@ mod tests {
                 message: None,
                 reasoning: "test".into(),
                 confidence: 0.9,
+                suggested_at: 0,
             },
         );
 

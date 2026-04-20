@@ -19,6 +19,52 @@ pub const SORT_COLUMNS: &[&str] = &[
     "Status", "Context", "Cost", "$/hr", "Elapsed", "Last", "Name",
 ];
 
+/// Default path for the persisted park list.
+pub fn parked_path() -> std::path::PathBuf {
+    dirs_home().join(".claudectl").join("parked.json")
+}
+
+/// Load the parked-session set from `path`. Returns an empty set on any
+/// failure (missing file, malformed JSON, I/O error) — parking is best-effort
+/// convenience, not critical state.
+pub fn load_parked_from(path: &std::path::Path) -> HashSet<String> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashSet::new();
+    };
+    // Accept either {"parked": [...]} or a bare ["..."] array.
+    if let Ok(obj) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        if let Some(arr) = obj.get("parked").and_then(|v| v.as_array()) {
+            return arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+        }
+        if let Some(arr) = obj.as_array() {
+            return arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+        }
+    }
+    HashSet::new()
+}
+
+/// Persist the parked-session set to `path`. Best-effort: creates parent
+/// directories if needed and writes atomically (temp + rename). Failures
+/// are silent — the in-memory set still works for the current session.
+pub fn save_parked_to(path: &std::path::Path, parked: &HashSet<String>) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut ids: Vec<&String> = parked.iter().collect();
+    ids.sort(); // deterministic file output
+    let payload = serde_json::json!({ "parked": ids });
+    let tmp_path = path.with_extension("json.tmp");
+    if std::fs::write(&tmp_path, payload.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp_path, path);
+    }
+}
+
 /// Merge the latest `discovered` sessions with the previous set, preserving
 /// accumulated per-session state (jsonl_offset, tokens, cost, cpu_history,
 /// …) across ticks. Ephemeral fields (`elapsed`, `started_at`) and the
@@ -298,6 +344,11 @@ pub struct App {
     /// natural direction. Toggled by capital `S`; reset to false whenever
     /// the user cycles to a different column with lowercase `s`.
     pub sort_reversed: bool,
+    /// Session IDs the user has parked. Parked sessions stay visible but
+    /// sort to a separate section below all non-parked rows, regardless of
+    /// the active sort column or direction. Persisted to
+    /// `~/.claudectl/parked.json` so parking survives claudectl restarts.
+    pub parked: HashSet<String>,
     pub auto_approve: HashSet<u32>,
     pub pending_auto_approve: Option<u32>,
     pub finished_at: HashMap<u32, std::time::Instant>, // When PIDs were first seen as Finished
@@ -415,6 +466,7 @@ impl App {
             show_help: false,
             sort_column: 0,
             sort_reversed: false,
+            parked: load_parked_from(&parked_path()),
             auto_approve: HashSet::new(),
             pending_auto_approve: None,
             finished_at: HashMap::new(),
@@ -947,6 +999,14 @@ impl App {
         if self.sort_reversed {
             sessions.reverse();
         }
+        // Parked sessions always drop to the bottom, regardless of column or
+        // direction. Stable partition preserves their relative sort order
+        // among themselves.
+        if !self.parked.is_empty() {
+            // `sort_by_key` is stable, so this partitions into
+            // (non-parked, parked) without disturbing order within each half.
+            sessions.sort_by_key(|s| self.is_parked(&s.session_id));
+        }
     }
 
     pub fn cycle_sort(&mut self) {
@@ -958,6 +1018,49 @@ impl App {
         let mut sessions = std::mem::take(&mut self.sessions);
         self.apply_sort(&mut sessions);
         self.sessions = sessions;
+    }
+
+    pub fn is_parked(&self, session_id: &str) -> bool {
+        self.parked.contains(session_id)
+    }
+
+    /// Add or remove a session_id from the parked set. Used by tests and by
+    /// the key handler via `toggle_park_selected`.
+    pub fn toggle_park(&mut self, session_id: &str) {
+        if self.parked.contains(session_id) {
+            self.parked.remove(session_id);
+        } else {
+            self.parked.insert(session_id.to_string());
+        }
+    }
+
+    /// Toggle park state on whichever session is currently selected, then
+    /// re-apply the sort so the row moves between sections. Does NOT write
+    /// to disk — callers that want persistence pair this with `save_parked`
+    /// (the `p` key handler does).
+    pub fn toggle_park_selected(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+        let session_id = session.session_id.clone();
+        let display_name = session.display_name().to_string();
+        let was_parked = self.is_parked(&session_id);
+        self.toggle_park(&session_id);
+        self.status_msg = if was_parked {
+            format!("Unparked {display_name}")
+        } else {
+            format!("Parked {display_name}")
+        };
+        let mut sessions = std::mem::take(&mut self.sessions);
+        self.apply_sort(&mut sessions);
+        self.sessions = sessions;
+        self.normalize_selection();
+    }
+
+    /// Persist the current parked set to the default disk location
+    /// (`~/.claudectl/parked.json`). Best-effort — failures are silent.
+    pub fn save_parked(&self) {
+        save_parked_to(&parked_path(), &self.parked);
     }
 
     pub fn toggle_sort_direction(&mut self) {
@@ -1732,6 +1835,12 @@ impl App {
                 self.cancel_pending_auto_approve();
                 self.toggle_sort_direction();
             }
+            (KeyCode::Char('p'), _) => {
+                self.cancel_pending_kill();
+                self.cancel_pending_auto_approve();
+                self.toggle_park_selected();
+                self.save_parked();
+            }
             (KeyCode::Char('f'), _) => {
                 self.cancel_pending_kill();
                 self.cancel_pending_auto_approve();
@@ -2475,6 +2584,129 @@ mod tests {
         app.apply_sort(&mut sessions);
         let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
         assert_eq!(order, vec![2, 3, 1]);
+    }
+
+    // ------------------------------------------------------------------
+    // Parking coverage
+    // ------------------------------------------------------------------
+
+    // Note: there's no "parked_set_defaults_to_empty" test because
+    // `App::new()` loads from `~/.claudectl/parked.json`, so the "default"
+    // depends on the user's environment. The empty-case contract is covered
+    // by `load_parked_from_missing_file_returns_empty` below.
+
+    #[test]
+    fn toggle_park_adds_session_id() {
+        let mut app = App::new();
+        app.toggle_park("abc-123");
+        assert!(app.is_parked("abc-123"));
+    }
+
+    #[test]
+    fn toggle_park_removes_already_parked_session() {
+        let mut app = App::new();
+        app.toggle_park("abc-123");
+        app.toggle_park("abc-123");
+        assert!(!app.is_parked("abc-123"));
+    }
+
+    #[test]
+    fn save_and_load_parked_roundtrip() {
+        use std::collections::HashSet;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.path().to_path_buf();
+        let to_save: HashSet<String> = ["s1".into(), "s2".into(), "s3".into()]
+            .into_iter()
+            .collect();
+        save_parked_to(&path, &to_save);
+        let loaded = load_parked_from(&path);
+        assert_eq!(loaded, to_save);
+    }
+
+    #[test]
+    fn load_parked_from_missing_file_returns_empty() {
+        let loaded = load_parked_from(std::path::Path::new("/nonexistent/parked.json"));
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn load_parked_from_malformed_file_returns_empty() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        use std::io::Write;
+        writeln!(tmp, "this is not json").unwrap();
+        let loaded = load_parked_from(tmp.path());
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn apply_sort_puts_parked_at_end_regardless_of_column() {
+        let mut app = App::new();
+        app.sort_column = 2; // Cost
+        app.parked.insert("s-99".into());
+        let mut sessions = vec![
+            make_session(1, "a", "m", SessionStatus::Processing, 0.5, 0.0, true),
+            make_session(99, "b", "m", SessionStatus::Processing, 10.0, 0.0, true), // highest cost
+            make_session(3, "c", "m", SessionStatus::Processing, 3.0, 0.0, true),
+        ];
+        // override session_ids (make_session uses format!("session-{pid}"))
+        sessions[1].session_id = "s-99".into();
+        app.apply_sort(&mut sessions);
+        let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        assert_eq!(
+            order,
+            vec![3, 1, 99],
+            "Highest-cost session 99 is parked, so it drops below non-parked sessions"
+        );
+    }
+
+    #[test]
+    fn apply_sort_parked_at_end_even_when_reversed() {
+        let mut app = App::new();
+        app.sort_column = 2; // Cost
+        app.sort_reversed = true;
+        app.parked.insert("s-99".into());
+        let mut sessions = vec![
+            make_session(1, "a", "m", SessionStatus::Processing, 0.5, 0.0, true),
+            make_session(99, "b", "m", SessionStatus::Processing, 10.0, 0.0, true),
+            make_session(3, "c", "m", SessionStatus::Processing, 3.0, 0.0, true),
+        ];
+        sessions[1].session_id = "s-99".into();
+        app.apply_sort(&mut sessions);
+        let order: Vec<u32> = sessions.iter().map(|s| s.pid).collect();
+        // Non-parked reverse-cost: 1 (0.5), 3 (3.0). Parked 99 still at end.
+        assert_eq!(order, vec![1, 3, 99]);
+    }
+
+    #[test]
+    fn toggle_park_selected_parks_the_highlighted_session() {
+        // Use toggle_park_selected directly to avoid the disk side-effect
+        // of the key handler's save_parked() call. The pure-logic toggle
+        // is what we care about here.
+        let mut app = make_test_app();
+        app.parked.clear(); // isolate from any disk-loaded state
+        app.toggle_park_selected();
+        assert!(app.is_parked("session-11"));
+    }
+
+    #[test]
+    fn toggle_park_selected_unparks_when_re_selected() {
+        // After parking, the row moves to the parked section at the bottom.
+        // Re-select that row, toggle again, and it should unpark.
+        let mut app = make_test_app();
+        app.parked.clear();
+        app.toggle_park_selected();
+        assert!(app.is_parked("session-11"));
+
+        // Find PID 11's new index (it's now in the parked section).
+        let idx = app
+            .sessions
+            .iter()
+            .position(|s| s.pid == 11)
+            .expect("PID 11 must still be present after parking");
+        app.table_state.select(Some(idx));
+
+        app.toggle_park_selected();
+        assert!(!app.is_parked("session-11"));
     }
 
     // ------------------------------------------------------------------

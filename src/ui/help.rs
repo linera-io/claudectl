@@ -73,6 +73,10 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Clear all active filters"),
         ]),
         Line::from(vec![
+            Span::styled("  p              ", Style::default().fg(t.highlight_key)),
+            Span::raw("  Park / unpark selected session (always at bottom; persists)"),
+        ]),
+        Line::from(vec![
             Span::styled("  a              ", Style::default().fg(t.highlight_key)),
             Span::raw("  Toggle auto-approve (double-tap)"),
         ]),

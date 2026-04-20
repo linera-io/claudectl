@@ -216,7 +216,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         let mut rows = Vec::new();
         let mut row_idx = 0usize;
+        let parked_count = visible_sessions
+            .iter()
+            .filter(|s| app.is_parked(&s.session_id))
+            .count();
+        let mut separator_inserted = false;
         for s in visible_sessions.iter().copied() {
+            let is_parked = app.is_parked(&s.session_id);
+            // When we see the first parked session, insert a visual separator
+            // so the section is obviously distinct from the working set above.
+            if is_parked && !separator_inserted {
+                rows.push(parked_separator_row(app, parked_count));
+                row_idx += 1;
+                separator_inserted = true;
+            }
             if Some(s.pid) == selected_pid {
                 selected_row_idx = Some(row_idx);
             }
@@ -434,12 +447,40 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// A visual separator inserted between the working set and the parked
+/// section in non-grouped view. Not selectable (navigation uses
+/// `visible_session_indices`, which doesn't include this row).
+fn parked_separator_row(app: &App, parked_count: usize) -> Row<'static> {
+    let t = &app.theme;
+    let label = format!("── parked ({parked_count}) ──");
+    let mut cells: Vec<Cell> = vec![
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(label).style(
+            Style::default()
+                .fg(t.text_muted)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    for _ in 3..13 {
+        cells.push(Cell::from(""));
+    }
+    Row::new(cells)
+}
+
 fn render_rows_for_session(s: &ClaudeSession, app: &App) -> Vec<Row<'static>> {
     let mut rows = vec![session_row(s, app)];
     let breakdown = s.subagent_breakdown();
     let total = breakdown.len();
     for (index, row) in breakdown.iter().enumerate() {
         rows.push(subagent_row(s, row, app, index, total));
+    }
+    // Parked sessions render in muted color at the row level. Cell-level
+    // styles (status color, cost color, etc.) still apply, so the signal
+    // isn't lost — just visually de-emphasized.
+    if app.is_parked(&s.session_id) {
+        let muted = Style::default().fg(app.theme.text_muted);
+        rows = rows.into_iter().map(|r| r.style(muted)).collect();
     }
     rows
 }

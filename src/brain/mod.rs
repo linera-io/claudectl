@@ -3,6 +3,7 @@ pub mod baseline;
 pub mod client;
 pub mod context;
 pub mod decisions;
+pub mod detectors;
 pub mod engine;
 pub mod evals;
 pub mod insights;

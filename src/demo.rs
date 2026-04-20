@@ -284,14 +284,29 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                 s.burn_rate_per_hr = avg_rate * 6.0;
             }
 
-            // Session 3 (ml-pipeline): Cognitive decay — high context + declining efficiency
-            if i == 3 && tick > 8 {
+            // Session 3 (ml-pipeline): Severe cognitive decay (⊘) — high context + all signals
+            if i == 3 && tick > 4 {
+                s.baseline_tokens_per_edit = Some(4000.0);
+                s.edit_event_count = 15;
+                s.total_tokens_at_edit_count = 15 * 12_000; // 12k/edit vs 4k baseline = 3x
+                s.error_counts_per_window = vec![0, 1, 1, 3, 5, 6, 8];
+                s.baseline_error_rate = Some(0.7);
+                s.file_reads_since_edit.insert("src/pipeline.rs".into(), 5);
+                s.file_reads_since_edit
+                    .insert("src/data_loader.rs".into(), 3);
+            }
+
+            // Session 0 (acme-api): Early cognitive decay (◐) — moderate context + some signals
+            if i == 0 && tick > 8 {
                 s.baseline_tokens_per_edit = Some(5000.0);
-                s.edit_event_count = 12;
-                s.total_tokens_at_edit_count = 12 * 12_000; // ~12k per edit vs 5k baseline
-                s.error_counts_per_window = vec![0, 1, 1, 2, 3, 4];
-                s.baseline_error_rate = Some(0.7); // average of first 3 windows
-                s.file_reads_since_edit.insert("src/pipeline.rs".into(), 4);
+                s.edit_event_count = 10;
+                s.total_tokens_at_edit_count = 10 * 7_500; // 7.5k/edit vs 5k baseline = 1.5x
+                s.error_counts_per_window = vec![1, 1, 2, 2, 3];
+                s.baseline_error_rate = Some(1.3);
+                s.file_reads_since_edit.insert("src/main.rs".into(), 3);
+                // Push context to ~65% for moderate decay
+                let ctx_pct = 0.60 + ((tick as f64 - 8.0) * 0.01).min(0.15);
+                s.context_tokens = (s.context_max as f64 * ctx_pct) as u64;
             }
 
             // Session 4 (ml-pipeline worktree): Loop detection → 🔄
@@ -325,54 +340,77 @@ pub fn demo_event(tick: u32) -> Option<DemoEvent> {
     let phase = tick % CYCLE_LEN;
 
     match phase {
-        // Rules firing
-        3 => Some(DemoEvent {
-            message: "Rule 'approve-cargo': approved acme-api (Bash: cargo test --workspace)"
+        // Brain auto-approve (show the brain working)
+        2 => Some(DemoEvent {
+            message: "Brain: auto-approved Bash(cargo test --workspace) for acme-api [92%]"
                 .into(),
-            kind: EventKind::RuleAction,
+            kind: EventKind::BrainSuggestion,
         }),
-        5 => Some(DemoEvent {
+
+        // Rule firing
+        4 => Some(DemoEvent {
             message:
-                "Rule 'deny-rm-rf': denied ml-pipeline (Bash: rm -rf /tmp/cache && rm -rf node_modules)"
+                "Rule 'deny-rm-rf': denied ml-pipeline (Bash: rm -rf /tmp/cache)"
                     .into(),
             kind: EventKind::RuleAction,
         }),
-        8 => Some(DemoEvent {
-            message: "Rule 'approve-cargo': approved acme-api (Bash: cargo clippy -- -D warnings)"
-                .into(),
-            kind: EventKind::RuleAction,
+
+        // Brain deny
+        6 => Some(DemoEvent {
+            message: "Brain: denied Bash(terraform apply -auto-approve) for infra-terraform — destructive without plan review [87%]".into(),
+            kind: EventKind::BrainSuggestion,
         }),
 
-        // Brain suggestions (advisory mode)
+        // Cognitive decay alert
+        8 => Some(DemoEvent {
+            message: "Health: ml-pipeline cognitive decay at 82/100 — session degrading, consider restart".into(),
+            kind: EventKind::HealthAlert,
+        }),
+
+        // Brain auto-approve
         10 => Some(DemoEvent {
-            message: "Brain: approve Bash(npm run build) for web-frontend — safe build command"
+            message: "Brain: auto-approved Bash(npm run build && npm test) for web-frontend [95%]"
                 .into(),
             kind: EventKind::BrainSuggestion,
         }),
-        13 => Some(DemoEvent {
-            message: "Brain: deny Bash(terraform apply -auto-approve) — destructive without plan review".into(),
-            kind: EventKind::BrainSuggestion,
-        }),
-        15 => Some(DemoEvent {
+
+        // Brain override by deny rule
+        12 => Some(DemoEvent {
             message:
                 "Brain suggested approve, but deny rule 'deny-force-push' overrides (git push --force)"
                     .into(),
             kind: EventKind::BrainOverride,
         }),
 
+        // Brain learning signal
+        14 => Some(DemoEvent {
+            message: "Brain: auto-approved Edit(src/auth.rs) for acme-api — learned from 8 prior approvals [88%]"
+                .into(),
+            kind: EventKind::BrainSuggestion,
+        }),
+
         // Inter-session routing
-        18 => Some(DemoEvent {
+        16 => Some(DemoEvent {
             message: "Routed summary from ml-pipeline → docs-site: \"Added training pipeline with checkpoint support\"".into(),
             kind: EventKind::Route,
         }),
 
-        // Health alerts surfaced as events
-        20 => Some(DemoEvent {
+        // Stall alert
+        18 => Some(DemoEvent {
             message: "Health: infra-terraform stalled — $8.40 spent, 16 min, no file edits".into(),
             kind: EventKind::HealthAlert,
         }),
+
+        // Brain approve with context
+        20 => Some(DemoEvent {
+            message: "Brain: auto-approved Bash(cargo clippy -- -D warnings) for acme-api [94%]"
+                .into(),
+            kind: EventKind::BrainSuggestion,
+        }),
+
+        // Context saturation alert
         22 => Some(DemoEvent {
-            message: "Health: ml-pipeline context at 94% — consider spawning fresh session".into(),
+            message: "Health: ml-pipeline context at 94% — auto-restart checkpoint saved".into(),
             kind: EventKind::HealthAlert,
         }),
 

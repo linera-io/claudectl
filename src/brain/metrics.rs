@@ -1448,6 +1448,160 @@ pub fn print_incidents() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// #132: Time-to-correct analysis
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Print time-to-correct analysis — how quickly users respond to brain suggestions.
+pub fn print_time_to_correct() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    println!("Time-to-Correct Analysis");
+    println!("=========================");
+    println!();
+
+    if total < 5 {
+        println!("  Not enough decisions yet ({total}). Need at least 5.");
+        return;
+    }
+
+    // Find decisions with both suggested_at and ts (parsed as epoch secs)
+    let mut reaction_times: Vec<(usize, f64, bool)> = Vec::new(); // (index, seconds, is_correction)
+
+    for (idx, d) in decisions.iter().enumerate() {
+        let Some(suggested_at) = d.suggested_at else {
+            continue;
+        };
+        if suggested_at == 0 {
+            continue;
+        }
+
+        // Parse the ts field (could be epoch seconds as string or number)
+        let responded_at: u64 = d.timestamp.trim_matches('"').parse::<u64>().unwrap_or(0);
+        if responded_at == 0 || responded_at < suggested_at {
+            continue;
+        }
+
+        let reaction_secs = (responded_at - suggested_at) as f64;
+        // Cap at 5 minutes — anything longer is likely the user was away
+        if reaction_secs > 300.0 {
+            continue;
+        }
+
+        let is_correction = d.is_negative();
+        reaction_times.push((idx, reaction_secs, is_correction));
+    }
+
+    if reaction_times.is_empty() {
+        println!("  No reaction time data available yet.");
+        println!("  This requires brain suggestions with the suggested_at timestamp");
+        println!("  (available in decisions logged after v0.31.1).");
+        return;
+    }
+
+    // Categorize: fast (<2s), moderate (2-5s), deliberate (>5s)
+    let fast = reaction_times.iter().filter(|(_, t, _)| *t < 2.0).count();
+    let moderate = reaction_times
+        .iter()
+        .filter(|(_, t, _)| *t >= 2.0 && *t < 5.0)
+        .count();
+    let deliberate = reaction_times.iter().filter(|(_, t, _)| *t >= 5.0).count();
+    let total_reactions = reaction_times.len();
+
+    let avg_time: f64 =
+        reaction_times.iter().map(|(_, t, _)| t).sum::<f64>() / total_reactions as f64;
+
+    println!("  {} decisions with reaction time data", total_reactions);
+    println!("  Average reaction time: {:.1}s", avg_time);
+    println!();
+
+    // Distribution
+    println!("  Reaction speed:");
+    println!(
+        "    Fast (<2s):      {:>4} ({:.0}%)  — gut reaction",
+        fast,
+        fast as f64 / total_reactions as f64 * 100.0,
+    );
+    println!(
+        "    Moderate (2-5s): {:>4} ({:.0}%)  — quick review",
+        moderate,
+        moderate as f64 / total_reactions as f64 * 100.0,
+    );
+    println!(
+        "    Deliberate (>5s):{:>4} ({:.0}%)  — careful consideration",
+        deliberate,
+        deliberate as f64 / total_reactions as f64 * 100.0,
+    );
+    println!();
+
+    // Corrections vs accepts
+    let corrections: Vec<&(usize, f64, bool)> =
+        reaction_times.iter().filter(|(_, _, c)| *c).collect();
+    let accepts: Vec<&(usize, f64, bool)> = reaction_times.iter().filter(|(_, _, c)| !*c).collect();
+
+    if !corrections.is_empty() {
+        let avg_correction =
+            corrections.iter().map(|(_, t, _)| t).sum::<f64>() / corrections.len() as f64;
+        let avg_accept = if accepts.is_empty() {
+            0.0
+        } else {
+            accepts.iter().map(|(_, t, _)| t).sum::<f64>() / accepts.len() as f64
+        };
+
+        println!("  Corrections vs accepts:");
+        println!(
+            "    Avg correction time: {:.1}s ({} corrections)",
+            avg_correction,
+            corrections.len()
+        );
+        println!(
+            "    Avg accept time:     {:.1}s ({} accepts)",
+            avg_accept,
+            accepts.len()
+        );
+
+        if avg_correction > avg_accept + 1.0 {
+            println!(
+                "    Corrections take longer — user deliberates before overriding (good signal)"
+            );
+        } else if avg_accept > avg_correction + 1.0 {
+            println!("    Accepts take longer than corrections — possible rubber-stamping risk");
+        }
+    }
+
+    // Trend: compare first vs last half reaction times
+    if total_reactions >= 10 {
+        let mid = total_reactions / 2;
+        let early_avg: f64 =
+            reaction_times[..mid].iter().map(|(_, t, _)| t).sum::<f64>() / mid as f64;
+        let late_avg: f64 = reaction_times[mid..].iter().map(|(_, t, _)| t).sum::<f64>()
+            / (total_reactions - mid) as f64;
+
+        println!();
+        println!("  Trend:");
+        println!("    Early avg: {:.1}s", early_avg);
+        println!("    Recent avg: {:.1}s", late_avg);
+
+        let delta = late_avg - early_avg;
+        if delta.abs() > 0.5 {
+            if delta > 0.0 {
+                println!(
+                    "    Slowing down ({:+.1}s) — may indicate decision fatigue or more nuanced calls",
+                    delta
+                );
+            } else {
+                println!(
+                    "    Speeding up ({:+.1}s) — user developing sharper judgment",
+                    delta
+                );
+            }
+        } else {
+            println!("    Stable (within 0.5s)");
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // #170: Impact scorecard
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1681,6 +1835,7 @@ pub fn dispatch(subcommand: &str) {
         "novel-rate" | "novel" => print_novel_rate(),
         "calibration" | "cal" => print_calibration(),
         "incidents" | "postmortem" => print_incidents(),
+        "time-to-correct" | "ttc" => print_time_to_correct(),
         "help" | "" => print_help(),
         _ => {
             eprintln!("Unknown brain-stats subcommand: '{subcommand}'");
@@ -1707,9 +1862,10 @@ fn print_help() {
     println!("  false-approve   False-approve rate on risky actions (safety)");
     println!("  false-deny      False-deny rate and friction cost");
     println!("  incidents       Post-mortem analysis of every false approval");
+    println!("  time-to-correct How quickly users respond to brain suggestions");
     println!("  help            Show this help");
     println!();
-    println!("Aliases: curve, acc, rules, fa, fd, dist, novel, cal, postmortem");
+    println!("Aliases: curve, acc, rules, fa, fd, dist, novel, cal, postmortem, ttc");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1938,6 +2094,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 

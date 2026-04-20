@@ -55,6 +55,9 @@ pub struct DecisionRecord {
     /// Whether this was a session or orchestration decision.
     /// Defaults to Session for backwards compatibility with old records.
     pub decision_type: DecisionType,
+    /// Epoch seconds when the brain suggestion was created.
+    /// None for old records or observations. Used by time-to-correct analysis.
+    pub suggested_at: Option<u64>,
 }
 
 /// Outcome of a decision, backfilled during distillation by looking at
@@ -234,6 +237,7 @@ pub fn log_decision(
         "brain_reasoning": suggestion.reasoning,
         "user_action": user_action,
         "decision_type": decision_type.label(),
+        "suggested_at": suggestion.suggested_at,
     });
     if let Some(s) = session {
         record["context"] = snapshot_context(s);
@@ -1686,6 +1690,8 @@ pub fn read_all_decisions() -> Vec<DecisionRecord> {
                 context,
                 outcome: None, // Backfilled during distillation
                 decision_type,
+                // Backwards-compatible: old records won't have "suggested_at"
+                suggested_at: json.get("suggested_at").and_then(|v| v.as_u64()),
             })
         })
         .collect()
@@ -1730,6 +1736,7 @@ mod tests {
             message: None,
             reasoning: "safe command".into(),
             confidence: 0.95,
+            suggested_at: 0,
         }
     }
 
@@ -1811,6 +1818,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 
@@ -1833,6 +1841,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 
@@ -1890,6 +1899,7 @@ mod tests {
             context: Some(ctx),
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 
@@ -1907,6 +1917,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Orchestration,
+            suggested_at: None,
         }
     }
 
@@ -2530,6 +2541,7 @@ mod tests {
                 context: Some(make_context(1.0, 50, false)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             },
             DecisionRecord {
                 timestamp: "2".into(),
@@ -2544,6 +2556,7 @@ mod tests {
                 context: Some(make_context(1.5, 55, true)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             },
         ];
 
@@ -2577,6 +2590,7 @@ mod tests {
                 context: Some(make_context(1.0, 50, true)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             });
         }
         // Then user denies
@@ -2593,6 +2607,7 @@ mod tests {
             context: Some(make_context(1.0, 50, false)),
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         });
         // Repeat the streak pattern to reach threshold of 2
         for _ in 0..4 {
@@ -2609,6 +2624,7 @@ mod tests {
                 context: Some(make_context(1.0, 50, true)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             });
         }
         decisions.push(DecisionRecord {
@@ -2624,6 +2640,7 @@ mod tests {
             context: Some(make_context(1.0, 50, false)),
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         });
 
         let patterns = detect_temporal_patterns(&decisions);

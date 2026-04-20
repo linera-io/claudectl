@@ -972,6 +972,7 @@ impl App {
                             message: s.pending_tool_input.clone(),
                             reasoning: "Safe build command, no side effects".into(),
                             confidence: 0.92,
+                            suggested_at: 0,
                         },
                     );
                 }
@@ -988,6 +989,7 @@ impl App {
                             message: s.pending_tool_input.clone(),
                             reasoning: "Destructive operation, needs manual review".into(),
                             confidence: 0.87,
+                            suggested_at: 0,
                         },
                     );
                 }

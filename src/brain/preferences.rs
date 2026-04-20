@@ -1130,6 +1130,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 
@@ -1152,6 +1153,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 
@@ -1209,6 +1211,7 @@ mod tests {
             context: Some(ctx),
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 
@@ -1491,6 +1494,7 @@ mod tests {
                 context: Some(make_context(1.0, 50, false)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             },
             DecisionRecord {
                 timestamp: "2".into(),
@@ -1505,6 +1509,7 @@ mod tests {
                 context: Some(make_context(1.5, 55, true)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             },
         ];
 
@@ -1538,6 +1543,7 @@ mod tests {
                 context: Some(make_context(1.0, 50, true)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             });
         }
         // Then user denies
@@ -1554,6 +1560,7 @@ mod tests {
             context: Some(make_context(1.0, 50, false)),
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         });
         // Repeat the streak pattern to reach threshold of 2
         for _ in 0..4 {
@@ -1570,6 +1577,7 @@ mod tests {
                 context: Some(make_context(1.0, 50, true)),
                 outcome: None,
                 decision_type: DecisionType::Session,
+                suggested_at: None,
             });
         }
         decisions.push(DecisionRecord {
@@ -1585,6 +1593,7 @@ mod tests {
             context: Some(make_context(1.0, 50, false)),
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         });
 
         let patterns = detect_temporal_patterns(&decisions);

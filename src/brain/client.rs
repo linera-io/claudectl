@@ -12,6 +12,9 @@ pub struct BrainSuggestion {
     pub message: Option<String>,
     pub reasoning: String,
     pub confidence: f64,
+    /// Epoch seconds when this suggestion was created.
+    /// Used by time-to-correct analysis to measure user reaction latency.
+    pub suggested_at: u64,
 }
 
 /// Call the local LLM endpoint via curl and parse the response.
@@ -352,7 +355,15 @@ pub fn parse_suggestion_json(text: &str) -> Result<BrainSuggestion, String> {
         message,
         reasoning,
         confidence: confidence.clamp(0.0, 1.0),
+        suggested_at: epoch_secs(),
     })
+}
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]

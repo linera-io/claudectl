@@ -881,6 +881,7 @@ mod tests {
             context: None,
             outcome: None,
             decision_type: DecisionType::Session,
+            suggested_at: None,
         }
     }
 

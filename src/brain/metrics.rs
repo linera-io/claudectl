@@ -1819,12 +1819,323 @@ pub fn print_impact() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Brain evolution visualization
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Render a sparkline from a slice of 0.0–1.0 values using Unicode braille-style blocks.
+fn sparkline(values: &[f64], width: usize) -> String {
+    if values.is_empty() {
+        return " ".repeat(width);
+    }
+    let blocks = [
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
+    let step = values.len() as f64 / width as f64;
+    let mut result = String::with_capacity(width);
+    for i in 0..width {
+        let idx = (i as f64 * step) as usize;
+        let val = values.get(idx).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+        let block_idx = (val * 8.0) as usize;
+        result.push(blocks[block_idx.min(8)]);
+    }
+    result
+}
+
+/// Compute a metric in batches, returning one value per batch.
+fn batch_metric(
+    decisions: &[DecisionRecord],
+    batch_size: usize,
+    mut metric_fn: impl FnMut(&[DecisionRecord]) -> f64,
+) -> Vec<f64> {
+    if decisions.is_empty() || batch_size == 0 {
+        return Vec::new();
+    }
+    decisions.chunks(batch_size).map(&mut metric_fn).collect()
+}
+
+/// Print the brain evolution dashboard — visual learning trajectory.
+pub fn print_evolution() {
+    let decisions = read_all_decisions();
+    let total = decisions.len();
+
+    if total < 10 {
+        println!("Not enough decisions yet ({total}). Need at least 10.");
+        println!("Use claudectl with --brain to build history.");
+        return;
+    }
+
+    let w = 52;
+    let spark_w = 30;
+    let dbar = "\u{2550}".repeat(w);
+
+    // Compute batch size for sparklines (aim for ~15-30 data points)
+    let batch = (total / 20).clamp(3, 50);
+
+    // ── Compute sparkline data ──────────────────────────────────────
+
+    // 1. Accuracy over time (rolling)
+    let accuracy_data = batch_metric(&decisions, batch, |chunk| {
+        let decided = chunk
+            .iter()
+            .filter(|d| d.is_positive() || d.is_negative())
+            .count();
+        let correct = chunk.iter().filter(|d| d.is_positive()).count();
+        if decided == 0 {
+            0.5
+        } else {
+            correct as f64 / decided as f64
+        }
+    });
+
+    // 2. Correction rate over time (lower = better, so invert for sparkline)
+    let correction_data = batch_metric(&decisions, batch, |chunk| {
+        let total_chunk = chunk.len() as f64;
+        let corrections = chunk.iter().filter(|d| d.is_negative()).count() as f64;
+        if total_chunk == 0.0 {
+            0.0
+        } else {
+            corrections / total_chunk
+        }
+    });
+    let correction_inverted: Vec<f64> = correction_data.iter().map(|r| 1.0 - r).collect();
+
+    // 3. Novel rate over time (lower = more learned)
+    let mut seen_patterns: HashSet<(String, String)> = HashSet::new();
+    let novel_data = batch_metric(&decisions, batch, |chunk| {
+        let mut novel = 0;
+        for d in chunk {
+            let tool = d.tool.clone().unwrap_or_else(|| "*".into());
+            let cmd = d
+                .command
+                .as_deref()
+                .and_then(|c| {
+                    let t: Vec<&str> = c.split_whitespace().take(2).collect();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t.join(" "))
+                    }
+                })
+                .unwrap_or_else(|| "*".into());
+            if seen_patterns.insert((tool, cmd)) {
+                novel += 1;
+            }
+        }
+        novel as f64 / chunk.len().max(1) as f64
+    });
+
+    // 4. Auto-handle rate over time
+    let auto_data = batch_metric(&decisions, batch, |chunk| {
+        let auto = chunk
+            .iter()
+            .filter(|d| d.user_action == "auto" || d.user_action == "rule_approve")
+            .count();
+        auto as f64 / chunk.len().max(1) as f64
+    });
+
+    // ── Summary stats ───────────────────────────────────────────────
+
+    let overall_accuracy = {
+        let decided = decisions
+            .iter()
+            .filter(|d| d.is_positive() || d.is_negative())
+            .count();
+        let correct = decisions.iter().filter(|d| d.is_positive()).count();
+        if decided == 0 {
+            0.0
+        } else {
+            correct as f64 / decided as f64
+        }
+    };
+
+    let early_correction = correction_data.first().copied().unwrap_or(0.0);
+    let late_correction = correction_data.last().copied().unwrap_or(0.0);
+    let correction_delta = early_correction - late_correction;
+
+    let early_novel = novel_data.first().copied().unwrap_or(0.0);
+    let late_novel = novel_data.last().copied().unwrap_or(0.0);
+
+    let unique_patterns = seen_patterns.len();
+
+    let auto_count = decisions
+        .iter()
+        .filter(|d| d.user_action == "auto" || d.user_action == "rule_approve")
+        .count();
+    let auto_rate = auto_count as f64 / total as f64;
+
+    // Phase detection
+    let phase = if total < 50 {
+        "Early Learning"
+    } else if correction_delta > 0.1 {
+        "Actively Improving"
+    } else if late_correction < 0.05 {
+        "Stable & Accurate"
+    } else {
+        "Steady State"
+    };
+
+    // ── Render ───────────────────────────────────────────────────────
+
+    println!();
+    println!("  \u{2554}{dbar}\u{2557}");
+    println!("  \u{2551}{:^w$}\u{2551}", "BRAIN EVOLUTION", w = w);
+    println!(
+        "  \u{2551}{:^w$}\u{2551}",
+        format!("{total} decisions \u{2502} {unique_patterns} patterns \u{2502} {phase}"),
+        w = w
+    );
+    println!("  \u{2560}{dbar}\u{2563}");
+
+    // Accuracy sparkline
+    let acc_first = accuracy_data.first().copied().unwrap_or(0.0) * 100.0;
+    let acc_last = accuracy_data.last().copied().unwrap_or(0.0) * 100.0;
+    println!("  \u{2551}                                                    \u{2551}");
+    println!(
+        "  \u{2551}  Accuracy          {:.0}% \u{2192} {:.0}%               {:>5.1}%  \u{2551}",
+        acc_first,
+        acc_last,
+        overall_accuracy * 100.0,
+    );
+    println!(
+        "  \u{2551}  {spark}                    \u{2551}",
+        spark = sparkline(&accuracy_data, spark_w),
+    );
+
+    // Correction rate sparkline (inverted: higher = better = fewer corrections)
+    println!("  \u{2551}                                                    \u{2551}");
+    let corr_label = if correction_delta > 0.05 {
+        format!("\u{2193}{:.0}pp", correction_delta * 100.0)
+    } else if correction_delta < -0.05 {
+        format!("\u{2191}{:.0}pp", correction_delta.abs() * 100.0)
+    } else {
+        "stable".to_string()
+    };
+    println!(
+        "  \u{2551}  Corrections       {:.0}% \u{2192} {:.0}%              {:>6}  \u{2551}",
+        early_correction * 100.0,
+        late_correction * 100.0,
+        corr_label,
+    );
+    println!(
+        "  \u{2551}  {spark}                    \u{2551}",
+        spark = sparkline(&correction_inverted, spark_w),
+    );
+
+    // Novel rate sparkline
+    println!("  \u{2551}                                                    \u{2551}");
+    println!(
+        "  \u{2551}  Novel situations  {:.0}% \u{2192} {:.0}%        {unique_patterns:>4} learned  \u{2551}",
+        early_novel * 100.0,
+        late_novel * 100.0,
+    );
+    let novel_inverted: Vec<f64> = novel_data.iter().map(|r| 1.0 - r).collect();
+    println!(
+        "  \u{2551}  {spark}                    \u{2551}",
+        spark = sparkline(&novel_inverted, spark_w),
+    );
+
+    // Auto-handle rate sparkline
+    if auto_count > 0 {
+        let auto_first = auto_data.first().copied().unwrap_or(0.0) * 100.0;
+        let auto_last = auto_data.last().copied().unwrap_or(0.0) * 100.0;
+        println!("  \u{2551}                                                    \u{2551}");
+        println!(
+            "  \u{2551}  Auto-handled      {:.0}% \u{2192} {:.0}%               {:>5.0}%  \u{2551}",
+            auto_first,
+            auto_last,
+            auto_rate * 100.0,
+        );
+        println!(
+            "  \u{2551}  {spark}                    \u{2551}",
+            spark = sparkline(&auto_data, spark_w),
+        );
+    }
+
+    // Safety summary row
+    let blocked: usize = decisions
+        .iter()
+        .filter(|d| {
+            let risk = classify_risk(d.tool.as_deref(), d.command.as_deref());
+            let denied = d.brain_action == "deny"
+                || d.user_action == "reject"
+                || d.user_action == "rule_deny"
+                || d.user_action == "deny_rule_override";
+            denied && matches!(risk, RiskTier::High | RiskTier::Critical)
+        })
+        .count();
+
+    let time_saved = format_time_saved(auto_count as f64 * 3.0);
+
+    println!("  \u{2551}                                                    \u{2551}");
+    println!("  \u{2560}{dbar}\u{2563}");
+    println!(
+        "  \u{2551}  Dangerous blocked {:>4}  \u{2502}  Time saved {:>8}       \u{2551}",
+        blocked, time_saved,
+    );
+
+    // Milestone markers
+    let milestones = compute_milestones(&decisions, total, unique_patterns, correction_delta);
+    if !milestones.is_empty() {
+        println!("  \u{2560}{dbar}\u{2563}");
+        for m in &milestones {
+            println!("  \u{2551}  {:<w2$}  \u{2551}", m, w2 = w - 4);
+        }
+    }
+
+    println!("  \u{255a}{dbar}\u{255d}");
+    println!();
+}
+
+fn compute_milestones(
+    decisions: &[DecisionRecord],
+    total: usize,
+    unique_patterns: usize,
+    correction_delta: f64,
+) -> Vec<String> {
+    let mut milestones = Vec::new();
+
+    if total >= 100 {
+        milestones
+            .push("\u{2713} 100+ decisions \u{2014} brain has baseline preferences".to_string());
+    }
+    if total >= 500 {
+        milestones.push("\u{2713} 500+ decisions \u{2014} deep preference model".to_string());
+    }
+    if total >= 1000 {
+        milestones.push("\u{2713} 1000+ decisions \u{2014} mature judgment".to_string());
+    }
+    if unique_patterns >= 20 {
+        milestones.push(format!(
+            "\u{2713} {unique_patterns} unique patterns recognized"
+        ));
+    }
+    if correction_delta > 0.1 {
+        milestones.push(format!(
+            "\u{2713} Correction rate dropped {:.0}pp — brain is learning",
+            correction_delta * 100.0,
+        ));
+    }
+
+    let zero_false_approve = !decisions
+        .iter()
+        .any(|d| d.brain_action == "approve" && d.is_negative());
+    if zero_false_approve && total >= 20 {
+        milestones.push("\u{2713} Zero false approvals on risky actions".to_string());
+    }
+
+    milestones.truncate(4); // Max 4 milestones to keep it compact
+    milestones
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Dispatch
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Dispatch a brain-stats subcommand.
 pub fn dispatch(subcommand: &str) {
     match subcommand {
+        "evolution" | "evo" => print_evolution(),
         "impact" => print_impact(),
         "learning-curve" | "curve" => print_learning_curve(),
         "accuracy" | "acc" => print_accuracy(),
@@ -1852,6 +2163,7 @@ fn print_help() {
     println!("Usage: claudectl --brain-stats <subcommand>");
     println!();
     println!("Subcommands:");
+    println!("  evolution        Learning trajectory with sparkline charts");
     println!("  impact          Impact scorecard — headline metrics");
     println!("  learning-curve  Correction rate over time (is the brain learning?)");
     println!("  accuracy        Per-tool, per-risk, per-project accuracy breakdown");
@@ -1865,7 +2177,7 @@ fn print_help() {
     println!("  time-to-correct How quickly users respond to brain suggestions");
     println!("  help            Show this help");
     println!();
-    println!("Aliases: curve, acc, rules, fa, fd, dist, novel, cal, postmortem, ttc");
+    println!("Aliases: evo, curve, acc, rules, fa, fd, dist, novel, cal, postmortem, ttc");
 }
 
 // ────────────────────────────────────────────────────────────────────────────

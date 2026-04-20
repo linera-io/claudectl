@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod baseline;
 pub mod client;
 pub mod context;
 pub mod decisions;
@@ -10,3 +11,4 @@ pub mod metrics;
 pub mod preferences;
 pub mod prompts;
 pub mod retrieval;
+pub mod risk;

@@ -689,19 +689,11 @@ impl App {
             }
             true
         });
-        // Clean up old finished_at entries + their session files
-        let expired: Vec<u32> = self
-            .finished_at
-            .iter()
-            .filter(|(_, t)| now.duration_since(**t).as_secs() >= 60)
-            .map(|(pid, _)| *pid)
-            .collect();
-        for pid in &expired {
-            let session_file = dirs_home()
-                .join(".claude/sessions")
-                .join(format!("{pid}.json"));
-            let _ = std::fs::remove_file(session_file);
-        }
+        // Expire in-memory finished_at tracking after 60s. The pointer file in
+        // ~/.claude/sessions/<pid>.json is NOT ours to delete — Claude Code owns
+        // those files, writes them on session start, and removes them on exit.
+        // Deleting them from claudectl wiped live sessions whenever a transient
+        // `ps` hiccup caused a live pid to be misread as finished.
         self.finished_at
             .retain(|_, t| now.duration_since(*t).as_secs() < 60);
 

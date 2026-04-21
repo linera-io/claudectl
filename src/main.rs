@@ -297,35 +297,7 @@ pub(crate) struct Cli {
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    let is_demo = cli.demo;
-    let result = run_main(cli);
-    if result.is_ok() {
-        maybe_print_star_prompt(is_demo);
-    }
-    result
-}
-
-fn maybe_print_star_prompt(is_demo: bool) {
-    let marker = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(".claudectl/.star-prompted");
-
-    let first_run = !marker.exists();
-
-    if is_demo || first_run {
-        eprintln!();
-        eprintln!(
-            "\u{2b50} If claudectl is useful, star it: https://github.com/mercurialsolo/claudectl"
-        );
-
-        if first_run {
-            if let Some(parent) = marker.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&marker, "");
-        }
-    }
+    run_main(cli)
 }
 
 fn run_main(cli: Cli) -> io::Result<()> {

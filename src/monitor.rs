@@ -392,9 +392,13 @@ pub fn infer_status(
         return;
     }
 
-    if last_msg_type == "assistant" && last_stop_reason == "end_turn" {
-        // Claude finished its turn — waiting for user input
-        // But if it's been a long time (>10 min), mark as Idle
+    // Claude finished its turn — waiting for user input. Covers both a clean
+    // `end_turn` AND `stop_sequence` (emitted when the user interrupts
+    // mid-response). Marked Idle instead of Waiting if the user has been
+    // away for a while.
+    if last_msg_type == "assistant"
+        && (last_stop_reason == "end_turn" || last_stop_reason == "stop_sequence")
+    {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -440,17 +444,23 @@ pub fn infer_status(
     }
 
     if last_msg_type == "user" {
-        // User-role messages are either a genuine prompt OR a tool_result (claude
-        // writes tool_results as role=user). After a tool_result, claude is
-        // expected to start processing its next assistant turn; if CPU is
-        // totally idle AND the session's tail has been quiet for a while, it's
-        // more likely blocked on something (next permission prompt whose
-        // tool_use is already tracked in `pending_tool_uses`, or API stall)
-        // than actively thinking.
-        if session.cpu_percent > 1.0 {
-            session.status = SessionStatus::Processing;
+        // User-role messages are either a genuine prompt OR a tool_result
+        // (claude writes tool_results as role=user). After either, claude is
+        // expected to respond; short-term that's Processing. But if the tail
+        // has been silent for a long stretch with no CPU, the session is
+        // effectively abandoned (claude crashed, API stall the user gave up
+        // on, or a resumed session that never got further input). Age out to
+        // Idle using the same 10-minute rule as the end_turn branch so the
+        // TUI surfaces it as low-priority.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let age_mins = (now_ms.saturating_sub(session.last_message_ts)) / 60_000;
+
+        if age_mins > 10 {
+            session.status = SessionStatus::Idle;
         } else {
-            // Low CPU + user message pending — might be waiting for API or stalled
             session.status = SessionStatus::Processing;
         }
         return;

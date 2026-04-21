@@ -18,14 +18,9 @@ pub fn projects_dir() -> PathBuf {
 }
 
 pub fn scan_sessions() -> Vec<ClaudeSession> {
-    // ~/.claude/sessions/<pid>.json is written by Claude Code at session start
-    // and removed by Claude Code at session exit. claudectl must only READ these
-    // files. Do not clean them up — previously-aggressive GC wiped live sessions.
-    scan_pointer_files(&sessions_dir())
-}
-
-fn scan_pointer_files(dir: &std::path::Path) -> Vec<ClaudeSession> {
-    let entries = match fs::read_dir(dir) {
+    let dir = sessions_dir();
+    cleanup_stale_sessions(&dir);
+    let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
     };
@@ -271,6 +266,59 @@ fn cwd_to_slug(cwd: &str) -> String {
         return "-".to_string();
     }
     trimmed.replace('/', "-")
+}
+
+/// Remove session JSON files for dead PIDs whose files are older than 24 hours.
+/// This prevents stale files from previous runs accumulating in ~/.claude/sessions/.
+fn cleanup_stale_sessions(dir: &std::path::Path) {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+    let now = std::time::SystemTime::now();
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(pid) = stem.parse::<u32>() else {
+            continue;
+        };
+
+        if pid_alive(pid) {
+            continue;
+        }
+
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+
+        if age > MAX_AGE {
+            crate::logger::log(
+                "DEBUG",
+                &format!(
+                    "cleaning stale session file: {} (PID {pid})",
+                    path.display()
+                ),
+            );
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+fn pid_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 #[cfg(test)]

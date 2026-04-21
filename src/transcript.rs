@@ -17,8 +17,16 @@ pub struct TranscriptUsage {
 #[derive(Debug, Clone)]
 pub enum TranscriptBlock {
     Text(String),
-    ToolUse { name: String, input: Value },
-    ToolResult { content: String, is_error: bool },
+    ToolUse {
+        id: Option<String>,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: Option<String>,
+        content: String,
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +200,7 @@ fn parse_block(block: &Value) -> Option<TranscriptBlock> {
             .and_then(|v| v.as_str())
             .map(|s| TranscriptBlock::Text(s.to_string())),
         "tool_use" => Some(TranscriptBlock::ToolUse {
+            id: block.get("id").and_then(|v| v.as_str()).map(str::to_string),
             name: block
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -200,6 +209,10 @@ fn parse_block(block: &Value) -> Option<TranscriptBlock> {
             input: block.get("input").cloned().unwrap_or(Value::Null),
         }),
         "tool_result" => Some(TranscriptBlock::ToolResult {
+            tool_use_id: block
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             content: block
                 .get("content")
                 .and_then(extract_text_content)

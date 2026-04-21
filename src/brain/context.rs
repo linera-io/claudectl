@@ -287,7 +287,7 @@ fn format_entry_full(entry: &TranscriptEntry) -> String {
                 };
                 parts.push(truncated);
             }
-            TranscriptBlock::ToolUse { name, input } => {
+            TranscriptBlock::ToolUse { name, input, .. } => {
                 let input_str = if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
                     let truncated = if cmd.len() > 200 {
                         format!("{}...", session::truncate_str(cmd, 200))
@@ -300,7 +300,9 @@ fn format_entry_full(entry: &TranscriptEntry) -> String {
                 };
                 parts.push(format!("[tool_use: {name}{input_str}]"));
             }
-            TranscriptBlock::ToolResult { content, is_error } => {
+            TranscriptBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 let prefix = if *is_error { "ERROR: " } else { "" };
                 let truncated = if content.len() > 300 {
                     format!("{}...", session::truncate_str(content, 300))

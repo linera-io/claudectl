@@ -412,7 +412,7 @@ fn parse_events(line: &str) -> Vec<SessionEvent> {
                     events.push(SessionEvent::AssistantText(trimmed.to_string()));
                 }
             }
-            TranscriptBlock::ToolUse { name, input }
+            TranscriptBlock::ToolUse { name, input, .. }
                 if message.role == TranscriptRole::Assistant =>
             {
                 let summary = summarize_tool_use(&name, Some(&input));
@@ -423,9 +423,9 @@ fn parse_events(line: &str) -> Vec<SessionEvent> {
                     diff,
                 });
             }
-            TranscriptBlock::ToolResult { content, is_error }
-                if message.role == TranscriptRole::User && !content.is_empty() =>
-            {
+            TranscriptBlock::ToolResult {
+                content, is_error, ..
+            } if message.role == TranscriptRole::User && !content.is_empty() => {
                 events.push(SessionEvent::ToolResult {
                     output: content,
                     is_error,

@@ -171,9 +171,19 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                     session.model = shorten_model(&model);
                                 }
 
+                                // Resume-safety: filter pending_tool_uses tracking so we
+                                // don't flag `NeedsInput` based on tool_uses that were
+                                // written to the JSONL by a PREVIOUS session process.
+                                // A `claude --resume` reopens an old JSONL but doesn't
+                                // re-display those historical permission prompts.
+                                let is_current_session_msg = message
+                                    .timestamp_ms
+                                    .map(|ts| ts >= session.started_at)
+                                    .unwrap_or(true);
+
                                 for block in message.content {
                                     match &block {
-                                        TranscriptBlock::ToolUse { name, input } => {
+                                        TranscriptBlock::ToolUse { id, name, input } => {
                                             record_tool_usage(name, input, session);
                                             // Track pending tool for rule-based auto-actions
                                             session.pending_tool_name = Some(name.clone());
@@ -193,9 +203,20 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                             } else {
                                                 None
                                             };
+                                            // Parallel-tool tracking: record every in-flight
+                                            // tool_use by id so we can retire them individually
+                                            // when their tool_results arrive — but only for
+                                            // events from the CURRENT session process.
+                                            if let (Some(id), true) = (id, is_current_session_msg) {
+                                                session
+                                                    .pending_tool_uses
+                                                    .insert(id.clone(), name.clone());
+                                            }
                                         }
                                         TranscriptBlock::ToolResult {
-                                            is_error, content, ..
+                                            tool_use_id,
+                                            is_error,
+                                            content,
                                         } => {
                                             session.last_tool_error = *is_error;
                                             if *is_error {
@@ -227,10 +248,20 @@ pub fn update_tokens(session: &mut ClaudeSession) {
                                             } else {
                                                 session.last_error_message = None;
                                             }
-                                            // Tool was executed — no longer pending
-                                            session.pending_tool_name = None;
-                                            session.pending_tool_input = None;
-                                            session.pending_file_path = None;
+                                            // Retire this specific tool_use by id so
+                                            // sibling parallel calls stay tracked.
+                                            if let Some(id) = tool_use_id {
+                                                session.pending_tool_uses.remove(id);
+                                            }
+                                            // Only clear the scalar "most-recent" trackers
+                                            // once ALL tool_uses are retired; otherwise
+                                            // rule-based actions lose context while a
+                                            // parallel sibling is still in flight.
+                                            if session.pending_tool_uses.is_empty() {
+                                                session.pending_tool_name = None;
+                                                session.pending_tool_input = None;
+                                                session.pending_file_path = None;
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -332,14 +363,26 @@ pub fn infer_status(
     is_waiting_for_task: bool,
 ) {
     // CPU is the strongest real-time signal — if the process is burning CPU,
-    // it's processing regardless of what the JSONL says (JSONL can lag).
+    // it's processing regardless of what the JSONL says (JSONL can lag, and
+    // stale waiting_for_task progress events can persist across a few ticks).
     if session.cpu_percent > 5.0 {
         session.status = SessionStatus::Processing;
         return;
     }
 
-    // NeedsInput: JSONL says waiting_for_task and CPU is low (confirmed idle)
+    // NeedsInput: JSONL says waiting_for_task and CPU is low (confirmed idle).
     if is_waiting_for_task {
+        session.status = SessionStatus::NeedsInput;
+        return;
+    }
+
+    // Parallel-tool signal: any unmatched tool_use (no corresponding tool_result
+    // arrived yet) with low CPU means we're blocked on a permission prompt for
+    // at least one call. Covers cases the `last_msg_type == "assistant" &&
+    // last_stop_reason == "tool_use"` branch below can't see — e.g. after a
+    // sibling tool_result has already been written (last_msg_type flips to
+    // "user") while another tool_use is still outstanding.
+    if !session.pending_tool_uses.is_empty() {
         session.status = SessionStatus::NeedsInput;
         return;
     }
@@ -397,7 +440,13 @@ pub fn infer_status(
     }
 
     if last_msg_type == "user" {
-        // User sent a message, Claude hasn't finished responding
+        // User-role messages are either a genuine prompt OR a tool_result (claude
+        // writes tool_results as role=user). After a tool_result, claude is
+        // expected to start processing its next assistant turn; if CPU is
+        // totally idle AND the session's tail has been quiet for a while, it's
+        // more likely blocked on something (next permission prompt whose
+        // tool_use is already tracked in `pending_tool_uses`, or API stall)
+        // than actively thinking.
         if session.cpu_percent > 1.0 {
             session.status = SessionStatus::Processing;
         } else {

@@ -847,6 +847,7 @@ mod tests {
             pending_tool_input: None,
             pending_file_path: None,
             has_file_conflict: false,
+            pending_tool_uses: HashMap::new(),
             last_tool_error: true,
             last_error_message: Some("command failed".into()),
             recent_errors: vec![crate::session::ErrorEntry {

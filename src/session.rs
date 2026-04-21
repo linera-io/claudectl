@@ -153,6 +153,12 @@ pub struct ClaudeSession {
     pub pending_tool_input: Option<String>, // Extracted command string (for Bash)
     pub pending_file_path: Option<String>,  // File path for pending Edit/Write/NotebookEdit
     pub has_file_conflict: bool,            // Pending file edit conflicts with another session
+    /// All in-flight tool calls keyed by `tool_use_id` with their names. An entry
+    /// is added when a ToolUse block is parsed and removed when the matching
+    /// ToolResult arrives. Supports parallel tool calls — `pending_tool_name`
+    /// above only tracks the most recent, so this map is the source of truth
+    /// for "is any tool still pending".
+    pub pending_tool_uses: HashMap<String, String>,
     pub last_tool_error: bool,
     pub last_error_message: Option<String>,
     pub recent_errors: Vec<ErrorEntry>, // Last 5 errors (ring buffer)
@@ -354,6 +360,7 @@ impl ClaudeSession {
             pending_tool_input: None,
             pending_file_path: None,
             has_file_conflict: false,
+            pending_tool_uses: HashMap::new(),
             last_tool_error: false,
             last_error_message: None,
             recent_errors: Vec::new(),

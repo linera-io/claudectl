@@ -342,8 +342,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let footer = Line::from(footer_spans);
 
-    // Title with weekly summary + recording indicator
-    let ws = &app.weekly_summary;
+    // Title with usage throughput + recording indicator
     let rec_indicator = if !app.session_recordings.is_empty() {
         let count = app.session_recordings.len();
         if count == 1 {
@@ -369,37 +368,29 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
-    if ws.cost_usd > 0.0 {
-        let week_cost = if ws.cost_usd < 1.0 {
-            format!("${:.2}", ws.cost_usd)
-        } else {
-            format!("${:.1}", ws.cost_usd)
-        };
-        let today_cost = if ws.today_cost_usd < 1.0 {
-            format!("${:.2}", ws.today_cost_usd)
-        } else {
-            format!("${:.1}", ws.today_cost_usd)
-        };
-        let week_tokens = format_token_count(ws.total_tokens);
+    // Always-visible throughput panel sourced from the usage ledger
+    // (JSONL-backed, independent of session-close detection). Suppressed only
+    // until the first scan has populated the ledger.
+    let week = &app.ledger_week;
+    let month = &app.ledger_month;
+    if week.msg_count > 0 || month.msg_count > 0 {
+        let week_tokens = format_token_count_nonempty(week.total_tokens());
+        let month_tokens = format_token_count_nonempty(month.total_tokens());
+        let week_cost = format_cost(week.cost_usd);
+        let month_cost = format_cost(month.cost_usd);
         let eta_str = match app.budget_eta() {
             Some((spent, limit, eta, _urgency)) => {
-                let spent_str = if spent < 1.0 {
-                    format!("${spent:.2}")
-                } else {
-                    format!("${spent:.1}")
-                };
-                let limit_str = if limit < 1.0 {
-                    format!("${limit:.2}")
-                } else {
-                    format!("${limit:.1}")
-                };
-                format!(" \u{2502} {spent_str}/{limit_str} (ETA: {eta})")
+                format!(
+                    " \u{2502} {}/{} (ETA: {eta})",
+                    format_cost(spent),
+                    format_cost(limit),
+                )
             }
             None => String::new(),
         };
         title_spans.push(Span::styled(
             format!(
-                "\u{2502} week: {week_cost} ({week_tokens}) \u{2502} today: {today_cost}{eta_str} "
+                "\u{2502} week: {week_tokens} (~{week_cost}) \u{2502} month: {month_tokens} (~{month_cost}){eta_str} "
             ),
             Style::default().fg(t.footer),
         ));
@@ -732,12 +723,35 @@ fn format_token_count(n: u64) -> String {
     if n == 0 {
         return String::new();
     }
-    if n >= 1_000_000 {
+    if n >= 1_000_000_000_000 {
+        format!("{:.1}T tok", n as f64 / 1_000_000_000_000.0)
+    } else if n >= 1_000_000_000 {
+        format!("{:.1}B tok", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
         format!("{:.1}M tok", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
         format!("{:.0}k tok", n as f64 / 1_000.0)
     } else {
         format!("{n} tok")
+    }
+}
+
+/// Title-bar variant that always renders a token count (including `0 tok`),
+/// so the `week: <n> | month: <m>` panel doesn't get a lopsided empty slot
+/// when one window is populated and the other isn't.
+fn format_token_count_nonempty(n: u64) -> String {
+    if n == 0 {
+        "0 tok".to_string()
+    } else {
+        format_token_count(n)
+    }
+}
+
+fn format_cost(v: f64) -> String {
+    if v < 1.0 {
+        format!("${v:.2}")
+    } else {
+        format!("${v:.1}")
     }
 }
 
@@ -886,5 +900,17 @@ mod tests {
             format_last_user_age(now_ms.saturating_sub(2 * 86_400_000)),
             "2d"
         );
+    }
+
+    #[test]
+    fn format_token_count_bucket_tiers() {
+        assert_eq!(format_token_count(0), "");
+        assert_eq!(format_token_count(42), "42 tok");
+        assert_eq!(format_token_count(1_500), "2k tok");
+        assert_eq!(format_token_count(47_300_000), "47.3M tok");
+        assert_eq!(format_token_count(2_612_000_000), "2.6B tok");
+        assert_eq!(format_token_count(169_100_000_000), "169.1B tok");
+        assert_eq!(format_token_count(1_500_000_000_000), "1.5T tok");
+        assert_eq!(format_token_count(42_000_000_000_000), "42.0T tok");
     }
 }

@@ -31,6 +31,7 @@ mod terminals;
 mod theme;
 mod transcript;
 mod ui;
+mod usage_ledger;
 
 use std::io;
 use std::time::{Duration, Instant};

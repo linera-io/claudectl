@@ -30,3 +30,4 @@ pub mod terminals;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
+pub mod usage_ledger;

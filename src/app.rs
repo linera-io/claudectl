@@ -377,6 +377,10 @@ pub struct App {
     pub theme: Theme,
     pub weekly_summary: crate::history::WeeklySummary,
     pub weekly_summary_tick: u32, // Refresh every N ticks
+    // JSONL-sourced usage aggregates. Independent of session-exit detection,
+    // so they stay accurate even for sessions closed via terminal-close.
+    pub ledger_week: crate::usage_ledger::UsageSummary,
+    pub ledger_month: crate::usage_ledger::UsageSummary,
     pub hooks: HookRegistry,
     pub daily_limit: Option<f64>,
     pub weekly_limit: Option<f64>,
@@ -495,6 +499,8 @@ impl App {
             theme: Theme::from_mode(crate::theme::ThemeMode::Dark),
             weekly_summary: crate::history::weekly_summary(),
             weekly_summary_tick: 0,
+            ledger_week: crate::usage_ledger::UsageSummary::default(),
+            ledger_month: crate::usage_ledger::UsageSummary::default(),
             hooks: HookRegistry::new(),
             daily_limit: None,
             weekly_limit: None,
@@ -526,6 +532,9 @@ impl App {
             idle_report: Vec::new(),
         };
         app.refresh();
+        // Seed the ledger up front so the title bar has week/month totals on
+        // the first render; subsequent scans are incremental and cheap.
+        app.refresh_ledger_summaries();
         if app.visible_session_count() > 0 {
             app.table_state.select(Some(0));
         }
@@ -1205,7 +1214,20 @@ impl App {
             self.weekly_summary_tick = 0;
             self.weekly_summary = crate::history::weekly_summary();
             self.check_aggregate_budgets();
+            self.refresh_ledger_summaries();
         }
+    }
+
+    /// Walk new JSONL bytes into the append-only ledger, then recompute the
+    /// 7-day / 30-day rollups rendered in the title bar. Runs on the same
+    /// cadence as `weekly_summary` so both are refreshed together.
+    fn refresh_ledger_summaries(&mut self) {
+        crate::usage_ledger::scan_and_append();
+        let now = crate::usage_ledger::now_ms();
+        let week_cutoff = now.saturating_sub(7 * 86_400_000);
+        let month_cutoff = now.saturating_sub(30 * 86_400_000);
+        self.ledger_week = crate::usage_ledger::load_summary(week_cutoff);
+        self.ledger_month = crate::usage_ledger::load_summary(month_cutoff);
     }
 
     /// Get how long a session has been waiting for input, if applicable.

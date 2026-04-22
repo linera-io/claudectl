@@ -375,10 +375,10 @@ pub struct App {
     pub budget_warned: HashSet<u32>, // PIDs that have been warned at 80%
     pub budget_killed: HashSet<u32>, // PIDs that have been killed
     pub theme: Theme,
-    pub weekly_summary: crate::history::WeeklySummary,
-    pub weekly_summary_tick: u32, // Refresh every N ticks
+    pub ledger_refresh_tick: u32, // Refresh every N ticks
     // JSONL-sourced usage aggregates. Independent of session-exit detection,
     // so they stay accurate even for sessions closed via terminal-close.
+    pub ledger_today: crate::usage_ledger::UsageSummary,
     pub ledger_week: crate::usage_ledger::UsageSummary,
     pub ledger_month: crate::usage_ledger::UsageSummary,
     pub hooks: HookRegistry,
@@ -497,8 +497,8 @@ impl App {
             budget_warned: HashSet::new(),
             budget_killed: HashSet::new(),
             theme: Theme::from_mode(crate::theme::ThemeMode::Dark),
-            weekly_summary: crate::history::weekly_summary(),
-            weekly_summary_tick: 0,
+            ledger_refresh_tick: 0,
+            ledger_today: crate::usage_ledger::UsageSummary::default(),
             ledger_week: crate::usage_ledger::UsageSummary::default(),
             ledger_month: crate::usage_ledger::UsageSummary::default(),
             hooks: HookRegistry::new(),
@@ -1208,24 +1208,26 @@ impl App {
         // Check idle mode transition
         self.check_idle_mode();
 
-        // Refresh weekly summary every ~30s (15 ticks at 2s interval)
-        self.weekly_summary_tick += 1;
-        if self.weekly_summary_tick >= 15 {
-            self.weekly_summary_tick = 0;
-            self.weekly_summary = crate::history::weekly_summary();
-            self.check_aggregate_budgets();
+        // Refresh ledger rollups every ~30s (15 ticks at 2s interval).
+        self.ledger_refresh_tick += 1;
+        if self.ledger_refresh_tick >= 15 {
+            self.ledger_refresh_tick = 0;
             self.refresh_ledger_summaries();
+            self.check_aggregate_budgets();
         }
     }
 
     /// Walk new JSONL bytes into the append-only ledger, then recompute the
-    /// 7-day / 30-day rollups rendered in the title bar. Runs on the same
-    /// cadence as `weekly_summary` so both are refreshed together.
+    /// rolling 24-hour / 7-day / 30-day rollups. These drive the title-bar
+    /// throughput panel AND the daily/weekly budget enforcement in
+    /// `check_aggregate_budgets` / `budget_eta`.
     fn refresh_ledger_summaries(&mut self) {
         crate::usage_ledger::scan_and_append();
         let now = crate::usage_ledger::now_ms();
+        let day_cutoff = now.saturating_sub(86_400_000);
         let week_cutoff = now.saturating_sub(7 * 86_400_000);
         let month_cutoff = now.saturating_sub(30 * 86_400_000);
+        self.ledger_today = crate::usage_ledger::load_summary(day_cutoff);
         self.ledger_week = crate::usage_ledger::load_summary(week_cutoff);
         self.ledger_month = crate::usage_ledger::load_summary(month_cutoff);
     }
@@ -1256,7 +1258,7 @@ impl App {
 
         // Prefer daily limit, fall back to per-session budget
         let (spent, limit) = if let Some(daily) = self.daily_limit {
-            (self.weekly_summary.today_cost_usd + live_cost, daily)
+            (self.ledger_today.cost_usd + live_cost, daily)
         } else if let Some(budget) = self.budget_usd {
             // For per-session budget, show the session closest to limit
             if let Some(session) = self.sessions.iter().max_by(|a, b| {
@@ -1299,14 +1301,14 @@ impl App {
     }
 
     fn check_aggregate_budgets(&mut self) {
-        let ws = &self.weekly_summary;
-
-        // Also include cost from currently live sessions (not yet in history)
+        // Also include cost from currently live sessions. The ledger only
+        // captures messages that have already been written to JSONL; a
+        // mid-flight streaming response isn't there yet.
         let live_cost: f64 = self.sessions.iter().map(|s| s.cost_usd).sum();
 
         // Daily limit check
         if let Some(daily_limit) = self.daily_limit {
-            let today_total = ws.today_cost_usd + live_cost;
+            let today_total = self.ledger_today.cost_usd + live_cost;
             let pct = today_total / daily_limit * 100.0;
 
             if pct >= 80.0 && !self.daily_alert_fired {
@@ -1330,7 +1332,7 @@ impl App {
 
         // Weekly limit check
         if let Some(weekly_limit) = self.weekly_limit {
-            let week_total = ws.cost_usd + live_cost;
+            let week_total = self.ledger_week.cost_usd + live_cost;
             let pct = week_total / weekly_limit * 100.0;
 
             if pct >= 80.0 && !self.weekly_alert_fired {

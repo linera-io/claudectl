@@ -319,31 +319,6 @@ pub fn print_stats(since: &str) {
     }
 }
 
-/// Weekly usage summary. Consumed by `App::budget_eta` for daily-limit
-/// enforcement; the throughput panel now reads from the usage ledger
-/// instead, so `total_tokens` is no longer tracked here.
-#[derive(Debug, Clone, Default)]
-pub struct WeeklySummary {
-    pub cost_usd: f64,
-    #[allow(dead_code)]
-    pub session_count: usize,
-    pub today_cost_usd: f64,
-}
-
-/// Compute weekly/daily cost summary from `history.csv`.
-pub fn weekly_summary() -> WeeklySummary {
-    let week_secs = 7 * 86400;
-    let day_secs = 86400;
-    let week_records = load_history(Some(week_secs));
-    let day_records = load_history(Some(day_secs));
-
-    WeeklySummary {
-        cost_usd: week_records.iter().map(|r| r.cost_usd).sum(),
-        session_count: week_records.len(),
-        today_cost_usd: day_records.iter().map(|r| r.cost_usd).sum(),
-    }
-}
-
 /// Parse a duration string like "24h", "30m", "7d" into seconds.
 pub fn parse_duration(s: &str) -> Option<u64> {
     let s = s.trim();

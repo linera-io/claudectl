@@ -1208,9 +1208,12 @@ impl App {
         // Check idle mode transition
         self.check_idle_mode();
 
-        // Refresh ledger rollups every ~30s (15 ticks at 2s interval).
+        // Refresh ledger rollups every ~6s (3 ticks at the 2s default
+        // interval). Scan cost is trivial — incremental JSONL reads plus a
+        // ~100k-row CSV aggregation, both sub-millisecond — so the faster
+        // cadence is just a UX choice: the title bar feels live.
         self.ledger_refresh_tick += 1;
-        if self.ledger_refresh_tick >= 15 {
+        if self.ledger_refresh_tick >= 3 {
             self.ledger_refresh_tick = 0;
             self.refresh_ledger_summaries();
             self.check_aggregate_budgets();

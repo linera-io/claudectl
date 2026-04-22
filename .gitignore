@@ -7,6 +7,7 @@ Cargo.lock
 *.gif
 GROWTH.md
 .claudectl-runs/
+.serena/
 social/
 
 # Added by cargo

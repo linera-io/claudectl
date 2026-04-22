@@ -100,6 +100,7 @@ pub fn merge_discovered_sessions(
 pub enum StatusFilter {
     All,
     NeedsInput,
+    Compacting,
     Processing,
     WaitingInput,
     Unknown,
@@ -111,7 +112,8 @@ impl StatusFilter {
     pub fn next(self) -> Self {
         match self {
             Self::All => Self::NeedsInput,
-            Self::NeedsInput => Self::Processing,
+            Self::NeedsInput => Self::Compacting,
+            Self::Compacting => Self::Processing,
             Self::Processing => Self::WaitingInput,
             Self::WaitingInput => Self::Unknown,
             Self::Unknown => Self::Idle,
@@ -124,6 +126,7 @@ impl StatusFilter {
         match value.trim().to_ascii_lowercase().as_str() {
             "all" => Some(Self::All),
             "needsinput" | "needs-input" => Some(Self::NeedsInput),
+            "compacting" => Some(Self::Compacting),
             "processing" => Some(Self::Processing),
             "waiting" | "waitinginput" | "waiting-input" => Some(Self::WaitingInput),
             "unknown" => Some(Self::Unknown),
@@ -137,6 +140,7 @@ impl StatusFilter {
         match self {
             Self::All => "All",
             Self::NeedsInput => "Needs Input",
+            Self::Compacting => "Compacting",
             Self::Processing => "Processing",
             Self::WaitingInput => "Waiting",
             Self::Unknown => "Unknown",
@@ -149,6 +153,7 @@ impl StatusFilter {
         match self {
             Self::All => true,
             Self::NeedsInput => status == SessionStatus::NeedsInput,
+            Self::Compacting => status == SessionStatus::Compacting,
             Self::Processing => status == SessionStatus::Processing,
             Self::WaitingInput => status == SessionStatus::WaitingInput,
             Self::Unknown => status == SessionStatus::Unknown,
@@ -2233,6 +2238,9 @@ impl App {
                 SessionStatus::NeedsInput => {
                     self.status_msg =
                         "Cannot compact — session is waiting for permission approval".into();
+                }
+                SessionStatus::Compacting => {
+                    self.status_msg = "Already compacting".into();
                 }
                 SessionStatus::Processing => {
                     self.status_msg =

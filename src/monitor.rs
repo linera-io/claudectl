@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
 use serde_json::Value;
 
+use crate::hook_state::{self, HookState};
 use crate::models;
 use crate::session::{ClaudeSession, SessionStatus, SubagentRollup, TelemetryStatus};
 use crate::transcript::{TranscriptBlock, TranscriptEvent, TranscriptRole, parse_line};
@@ -362,28 +363,86 @@ pub fn infer_status(
     last_stop_reason: &str,
     is_waiting_for_task: bool,
 ) {
-    // CPU is the strongest real-time signal — if the process is burning CPU,
-    // it's processing regardless of what the JSONL says (JSONL can lag, and
-    // stale waiting_for_task progress events can persist across a few ticks).
+    // Deterministic path: if Claude Code's hooks have fired for this session,
+    // they tell us exactly what state it's in — no CPU/age guessing needed.
+    if !session.session_id.is_empty() {
+        if let Some(state) = HookState::load(&session.session_id) {
+            if let Some(status) = status_from_hook_state(&state, session) {
+                session.status = status;
+                return;
+            }
+        }
+    }
+
+    // Heuristic fallback for sessions whose hooks haven't fired yet (started
+    // before claudectl auto-init ran, or never received a tracked event).
+    infer_status_heuristic(
+        session,
+        last_msg_type,
+        last_stop_reason,
+        is_waiting_for_task,
+    );
+}
+
+/// Map a populated hook state to the appropriate status, or `None` when the
+/// state is empty / inconclusive (in which case we fall back to heuristics).
+///
+/// Precedence: `Compacting > NeedsInput > Processing > WaitingInput`. Idle
+/// is never produced from hook state — a session that has fired any hook
+/// recently is by definition not idle, and a session that hasn't fired any
+/// hook is handled by the heuristic fallback.
+///
+/// Pure deterministic status. Every check is a comparison of hook
+/// timestamps — no CPU, no JSONL parsing, no age guessing. The hook
+/// helpers in `hook_state` already handle staleness via "most-recent-event"
+/// comparisons.
+///
+/// Precedence (highest to lowest): Compacting > NeedsInput > Processing >
+/// WaitingInput. NeedsInput beats Processing because a session with a
+/// pending permission prompt is technically "responding" but the relevant
+/// state for the user is "blocked on me."
+fn status_from_hook_state(state: &HookState, _session: &ClaudeSession) -> Option<SessionStatus> {
+    if hook_state::is_compacting(state) {
+        return Some(SessionStatus::Compacting);
+    }
+    if hook_state::is_at_permission_prompt(state) {
+        return Some(SessionStatus::NeedsInput);
+    }
+    if hook_state::is_responding(state) {
+        return Some(SessionStatus::Processing);
+    }
+    if hook_state::is_waiting_for_user(state) {
+        // Age out long-quiet WaitingInput → Idle. The user has clearly
+        // walked away; surfacing it as Waiting forever crowds the bucket.
+        // Compacting / NeedsInput / Processing never age out — those are
+        // real "needs attention" or "actively doing something" states.
+        let age_secs = age_secs_since(state.last_stop_ts_ms);
+        return Some(if age_secs > 10 * 60 {
+            SessionStatus::Idle
+        } else {
+            SessionStatus::WaitingInput
+        });
+    }
+    None
+}
+
+/// Heuristic fallback when the deterministic hook state path returned None.
+///
+/// **The heuristic NEVER produces `NeedsInput`.** Every previous attempt to
+/// guess "this session needs the user's attention" from JSONL + CPU + age
+/// was wrong in at least one common case (parked sessions, auto-compacting
+/// sessions, fast-tool sessions, transient JSONL states). NeedsInput is the
+/// exclusive domain of the deterministic `Notification` hook; if the marker
+/// isn't set, we don't claim it. Fall back to Processing / WaitingInput /
+/// Idle / Unknown only.
+fn infer_status_heuristic(
+    session: &mut ClaudeSession,
+    last_msg_type: &str,
+    last_stop_reason: &str,
+    _is_waiting_for_task: bool,
+) {
     if session.cpu_percent > 5.0 {
         session.status = SessionStatus::Processing;
-        return;
-    }
-
-    // NeedsInput: JSONL says waiting_for_task and CPU is low (confirmed idle).
-    if is_waiting_for_task {
-        session.status = SessionStatus::NeedsInput;
-        return;
-    }
-
-    // Parallel-tool signal: any unmatched tool_use (no corresponding tool_result
-    // arrived yet) with low CPU means we're blocked on a permission prompt for
-    // at least one call. Covers cases the `last_msg_type == "assistant" &&
-    // last_stop_reason == "tool_use"` branch below can't see — e.g. after a
-    // sibling tool_result has already been written (last_msg_type flips to
-    // "user") while another tool_use is still outstanding.
-    if !session.pending_tool_uses.is_empty() {
-        session.status = SessionStatus::NeedsInput;
         return;
     }
 
@@ -392,81 +451,55 @@ pub fn infer_status(
         return;
     }
 
-    // Claude finished its turn — waiting for user input. Covers both a clean
-    // `end_turn` AND `stop_sequence` (emitted when the user interrupts
-    // mid-response). Marked Idle instead of Waiting if the user has been
-    // away for a while.
     if last_msg_type == "assistant"
         && (last_stop_reason == "end_turn" || last_stop_reason == "stop_sequence")
     {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let age_mins = (now_ms.saturating_sub(session.last_message_ts)) / 60_000;
-
-        if age_mins > 10 {
-            session.status = SessionStatus::Idle;
+        // Stop-equivalent state from JSONL alone (for sessions whose Stop
+        // hook hasn't fired). Age out to Idle after 10 quiet minutes.
+        session.status = if age_secs_since(session.last_message_ts) > 10 * 60 {
+            SessionStatus::Idle
         } else {
-            session.status = SessionStatus::WaitingInput;
-        }
+            SessionStatus::WaitingInput
+        };
         return;
     }
 
     if last_msg_type == "assistant" && last_stop_reason == "tool_use" {
-        // Claude called a tool. If CPU is low, it's likely waiting for user to
-        // approve/deny the tool (permission prompt). The permission prompt doesn't
-        // emit waiting_for_task — detect via CPU + pending tool state or age.
-        //
-        // Primary signal: if pending_tool_name is set (ToolUse parsed but no ToolResult
-        // yet), the session is blocked on a permission prompt regardless of timing.
-        // Fallback: low CPU + age > 5s for cases where the tool was auto-approved
-        // but JSONL hasn't caught up yet.
-        let has_pending_tool = session.pending_tool_name.is_some();
-
-        if session.cpu_percent < 2.0 && has_pending_tool {
-            session.status = SessionStatus::NeedsInput;
-        } else if session.cpu_percent < 2.0 {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let age_secs = (now_ms.saturating_sub(session.last_message_ts)) / 1000;
-            if age_secs > 5 {
-                session.status = SessionStatus::NeedsInput;
-            } else {
-                session.status = SessionStatus::Processing;
-            }
+        // Claude emitted a tool_use. Without a deterministic permission-prompt
+        // signal we cannot tell if this is "running" or "waiting on the
+        // human", so default to Processing while recent and Idle once long
+        // quiet. The deterministic path catches the real waiting-on-human
+        // case via the Notification hook.
+        session.status = if age_secs_since(session.last_message_ts) > 10 * 60 {
+            SessionStatus::Idle
         } else {
-            session.status = SessionStatus::Processing;
-        }
+            SessionStatus::Processing
+        };
         return;
     }
 
     if last_msg_type == "user" {
-        // User-role messages are either a genuine prompt OR a tool_result
-        // (claude writes tool_results as role=user). After either, claude is
-        // expected to respond; short-term that's Processing. But if the tail
-        // has been silent for a long stretch with no CPU, the session is
-        // effectively abandoned (claude crashed, API stall the user gave up
-        // on, or a resumed session that never got further input). Age out to
-        // Idle using the same 10-minute rule as the end_turn branch so the
-        // TUI surfaces it as low-priority.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let age_mins = (now_ms.saturating_sub(session.last_message_ts)) / 60_000;
-
-        if age_mins > 10 {
-            session.status = SessionStatus::Idle;
+        // User message tail (genuine prompt or tool_result). Same shape as
+        // the assistant + tool_use branch — recent ⇒ Processing, long
+        // quiet ⇒ Idle. NeedsInput only if the deterministic Notification
+        // hook says so.
+        session.status = if age_secs_since(session.last_message_ts) > 10 * 60 {
+            SessionStatus::Idle
         } else {
-            session.status = SessionStatus::Processing;
-        }
+            SessionStatus::Processing
+        };
         return;
     }
 
     session.status = SessionStatus::Idle;
+}
+
+fn age_secs_since(ts_ms: u64) -> u64 {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    now_ms.saturating_sub(ts_ms) / 1000
 }
 
 /// Estimate USD cost based on token usage and model.

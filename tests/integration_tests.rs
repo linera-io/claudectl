@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::sync::Once;
 use std::time::Duration;
 
 use claudectl::discovery;
@@ -6,8 +7,25 @@ use claudectl::models;
 use claudectl::monitor;
 use claudectl::session::{ClaudeSession, RawSession, SessionStatus, TelemetryStatus};
 
+/// Point hook_state at a per-process tempdir before any test reads it. Without
+/// this, infer_status would pick up real `~/.claudectl/state/*.json` files
+/// from a developer's machine and tests would be non-hermetic.
+fn isolate_hook_state_dir() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let dir =
+            std::env::temp_dir().join(format!("claudectl-itest-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: set_var is unsafe in 2024 edition; tests are single-process
+        // and this is set once before any other thread reads it.
+        unsafe { std::env::set_var("CLAUDECTL_STATE_DIR", &dir) };
+    });
+}
+
 /// Helper: create a minimal session for testing status inference.
 fn make_session(cpu: f32, last_message_age_secs: u64) -> ClaudeSession {
+    isolate_hook_state_dir();
     let raw = RawSession {
         pid: 1,
         session_id: "test-session".into(),
@@ -55,10 +73,14 @@ fn status_high_cpu_overrides_end_turn() {
 }
 
 #[test]
-fn status_waiting_for_task_needs_input() {
+fn status_waiting_for_task_no_longer_promotes_needs_input() {
+    // The legacy `is_waiting_for_task` JSONL signal is no longer trusted as
+    // a NeedsInput indicator — too many false positives. NeedsInput is
+    // exclusively driven by the deterministic Notification hook now.
+    // Heuristic still falls back to a sensible non-attention-grabbing state.
     let mut s = make_session(0.5, 10);
     monitor::infer_status(&mut s, "", "", true);
-    assert_eq!(s.status, SessionStatus::NeedsInput);
+    assert_ne!(s.status, SessionStatus::NeedsInput);
 }
 
 #[test]
@@ -70,34 +92,32 @@ fn status_end_turn_recent_waiting_input() {
 }
 
 #[test]
-fn status_end_turn_old_idle() {
-    // Assistant said end_turn, 15 minutes ago → Idle
+fn status_end_turn_old_idle_in_heuristic_path() {
+    // Heuristic-only path (no hook state). After 15 quiet minutes a stop_reason
+    // of end_turn/stop_sequence is genuinely abandoned — show Idle so the user
+    // can sort/filter past it. The deterministic Stop hook handles still-active
+    // post-turn sessions before we reach this branch.
     let mut s = make_session(0.5, 15 * 60);
     monitor::infer_status(&mut s, "assistant", "end_turn", false);
     assert_eq!(s.status, SessionStatus::Idle);
 }
 
 #[test]
-fn status_end_turn_exactly_10min_still_waiting() {
-    // 10 minutes = boundary, should still be WaitingInput (>10 is Idle)
+fn status_end_turn_recent_waiting_input_still_works() {
     let mut s = make_session(0.5, 10 * 60);
     monitor::infer_status(&mut s, "assistant", "end_turn", false);
     assert_eq!(s.status, SessionStatus::WaitingInput);
 }
 
 #[test]
-fn status_end_turn_11min_idle() {
-    let mut s = make_session(0.5, 11 * 60);
-    monitor::infer_status(&mut s, "assistant", "end_turn", false);
-    assert_eq!(s.status, SessionStatus::Idle);
-}
-
-#[test]
-fn status_tool_use_low_cpu_old_needs_input() {
-    // tool_use + low CPU + >5s ago = permission prompt
+fn status_tool_use_low_cpu_no_longer_promotes_needs_input() {
+    // assistant + tool_use + idle CPU used to be guessed as a permission
+    // prompt — that was the central source of "Needs Input" false positives
+    // (parked sessions, sessions with stale tool_use tail, etc.). NeedsInput
+    // is now exclusively the Notification hook's call.
     let mut s = make_session(0.5, 30);
     monitor::infer_status(&mut s, "assistant", "tool_use", false);
-    assert_eq!(s.status, SessionStatus::NeedsInput);
+    assert_ne!(s.status, SessionStatus::NeedsInput);
 }
 
 #[test]
@@ -117,18 +137,41 @@ fn status_tool_use_high_cpu_processing() {
 }
 
 #[test]
-fn status_user_message_pending_processing() {
-    let mut s = make_session(3.0, 5);
+fn status_user_message_active_cpu_processing() {
+    // CPU > 2.0 → Claude is actually thinking, regardless of age.
+    let mut s = make_session(3.0, 30);
     monitor::infer_status(&mut s, "user", "", false);
     assert_eq!(s.status, SessionStatus::Processing);
 }
 
 #[test]
-fn status_user_message_low_cpu_still_processing() {
-    // User sent message, CPU low — could be waiting for API
-    let mut s = make_session(0.5, 5);
+fn status_user_message_recent_low_cpu_processing() {
+    // Fresh user message + low CPU = still warming up; stay Processing.
+    let mut s = make_session(0.5, 1);
     monitor::infer_status(&mut s, "user", "", false);
     assert_eq!(s.status, SessionStatus::Processing);
+}
+
+#[test]
+fn status_user_message_quiet_low_cpu_stays_processing() {
+    // Heuristic fallback can't tell apart "permission prompt for an unflushed
+    // tool_use" from "session was parked mid-conversation" — both look the
+    // same. Stay Processing while still recent so we don't bury an actually-
+    // active session, but age out to Idle eventually (covered separately).
+    let mut s = make_session(0.5, 30);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::Processing);
+}
+
+#[test]
+fn status_user_message_long_quiet_idle_in_heuristic_path() {
+    // After 15 quiet minutes with no hook state, treat user-tail JSONL as
+    // genuinely abandoned. The deterministic Notification hook would have
+    // already flipped it to NeedsInput before reaching this branch if the
+    // session was actually waiting on a permission prompt.
+    let mut s = make_session(0.5, 15 * 60);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::Idle);
 }
 
 #[test]
@@ -141,9 +184,10 @@ fn status_no_signals_idle() {
 
 #[test]
 fn status_no_telemetry_unknown() {
+    isolate_hook_state_dir();
     let raw = RawSession {
         pid: 1,
-        session_id: "test-session".into(),
+        session_id: "test-session-no-telemetry".into(),
         cwd: "/tmp/test-project".into(),
         started_at: 0,
         name: None,
@@ -151,6 +195,247 @@ fn status_no_telemetry_unknown() {
     let mut s = ClaudeSession::from_raw(raw);
     monitor::infer_status(&mut s, "", "", false);
     assert_eq!(s.status, SessionStatus::Unknown);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Deterministic hook-state path
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Build a session with a unique `session_id` so each test owns its own
+/// state file and can't be polluted by sibling tests.
+fn session_with_id(id: &str, cpu: f32) -> ClaudeSession {
+    isolate_hook_state_dir();
+    let raw = RawSession {
+        pid: 1,
+        session_id: id.into(),
+        cwd: "/tmp/test-project".into(),
+        started_at: 0,
+        name: None,
+    };
+    let mut s = ClaudeSession::from_raw(raw);
+    s.cpu_percent = cpu;
+    s.telemetry_status = TelemetryStatus::Available;
+    s.usage_metrics_available = true;
+    s.last_message_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    s
+}
+
+#[test]
+fn hook_permission_prompt_marks_needs_input() {
+    let sid = "hook-test-permission";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": sid,
+        "notification_type": "permission_prompt",
+    }))
+    .unwrap();
+
+    // Backdate the notification past the 750ms grace period so the
+    // suppression doesn't hide it during this test.
+    let mut state = claudectl::hook_state::HookState::load(sid).unwrap();
+    state.last_notification_ts_ms = state.last_notification_ts_ms.saturating_sub(2_000);
+    let path = claudectl::hook_state::state_dir().join(format!("{sid}.json"));
+    std::fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
+
+    // Low CPU + permission_prompt marker (now older than grace) + JSONL has
+    // NOT grown past the notification → NeedsInput (deterministic path).
+    let mut s = session_with_id(sid, 0.5);
+    s.last_message_ts = state.last_notification_ts_ms.saturating_sub(1000);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::NeedsInput);
+}
+
+#[test]
+fn hook_pretooluse_clears_permission_prompt() {
+    let sid = "hook-test-approval";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": sid,
+        "notification_type": "permission_prompt",
+    }))
+    .unwrap();
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": sid,
+        "tool_name": "Bash",
+    }))
+    .unwrap();
+
+    // Approval flipped the marker; we should now report Processing (a tool
+    // is actively running, no PostToolUse yet).
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "tool_use", false);
+    assert_eq!(s.status, SessionStatus::Processing);
+}
+
+#[test]
+fn hook_precompact_marks_compacting() {
+    let sid = "hook-test-compacting";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PreCompact",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::Compacting);
+}
+
+#[test]
+fn hook_stop_marks_waiting_input() {
+    let sid = "hook-test-stop";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "end_turn", false);
+    assert_eq!(s.status, SessionStatus::WaitingInput);
+}
+
+#[test]
+fn hook_userpromptsubmit_after_stop_marks_responding() {
+    let sid = "hook-test-followup";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": sid,
+    }))
+    .unwrap();
+    // User typed a follow-up — is_responding fires immediately, deterministic.
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::Processing);
+}
+
+#[test]
+fn hook_waiting_input_ages_out_to_idle() {
+    let sid = "hook-test-waiting-ages-out";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    // Backdate the Stop ts to >10 min ago so the age-out fires.
+    let mut state = claudectl::hook_state::HookState::load(sid).unwrap();
+    state.last_stop_ts_ms = state.last_stop_ts_ms.saturating_sub(11 * 60 * 1000);
+    let path = claudectl::hook_state::state_dir().join(format!("{sid}.json"));
+    std::fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "end_turn", false);
+    assert_eq!(s.status, SessionStatus::Idle);
+}
+
+#[test]
+fn hook_waiting_input_recent_stays_waiting() {
+    let sid = "hook-test-waiting-recent";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "end_turn", false);
+    assert_eq!(s.status, SessionStatus::WaitingInput);
+}
+
+#[test]
+fn hook_responding_stable_across_tool_boundaries() {
+    // The whole point of the is_responding check: tools coming and going
+    // inside one turn don't flicker the status. UserPromptSubmit was the
+    // most-recent-event when the turn started; PreToolUse/PostToolUse
+    // happen during the response; status stays Processing the whole time.
+    let sid = "hook-test-stable";
+    for ev in [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PreToolUse",
+    ] {
+        claudectl::hook_state::record_hook_event(&serde_json::json!({
+            "hook_event_name": ev,
+            "session_id": sid,
+            "tool_name": "Bash",
+        }))
+        .unwrap();
+    }
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "tool_use", false);
+    assert_eq!(s.status, SessionStatus::Processing);
+
+    // Stop fires → flips to WaitingInput, also stable.
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": sid,
+    }))
+    .unwrap();
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "end_turn", false);
+    assert_eq!(s.status, SessionStatus::WaitingInput);
+}
+
+#[test]
+fn hook_permission_prompt_cleared_by_subsequent_event() {
+    // After Notification, ANY later state-changing event clears the prompt
+    // regardless of which one. PreToolUse means approved; PostToolUse means
+    // a tool finished (could be a denial result); UserPromptSubmit means
+    // user typed past the dialog; Stop means turn ended. Whichever fires
+    // first removes NeedsInput.
+    let sid = "hook-test-cleared-by-pretooluse";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": sid,
+        "notification_type": "permission_prompt",
+    }))
+    .unwrap();
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": sid,
+        "tool_name": "Bash",
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "tool_use", false);
+    assert_ne!(s.status, SessionStatus::NeedsInput);
+}
+
+#[test]
+fn hook_compacting_outranks_permission_prompt() {
+    // Edge case: both signals happen to be set. Compacting wins because
+    // the model literally cannot respond to a permission prompt while
+    // auto-compact is running.
+    let sid = "hook-test-precedence";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": sid,
+        "notification_type": "permission_prompt",
+    }))
+    .unwrap();
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PreCompact",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::Compacting);
 }
 
 #[test]
@@ -168,46 +453,43 @@ fn status_cpu_threshold_boundary() {
 
 #[test]
 fn status_persisted_tool_use_survives_empty_tick() {
-    // Reproduces the bug: session blocked on permission prompt ("Do you want to
-    // proceed?"), first tick correctly detects NeedsInput via tool_use + low CPU,
-    // but second tick has no new JSONL data (empty signals) and must NOT fall
-    // through to Idle.
+    // Tool_use tail is no longer guessed as NeedsInput in the heuristic
+    // path (Notification hook owns that signal). What we still want to
+    // verify is that the persisted tool_use signal stays stable across
+    // empty ticks — i.e., status doesn't drop to Idle the moment JSONL
+    // stops growing.
     let mut s = make_session(0.5, 30);
 
-    // Tick 1: new JSONL data — tool_use detected
     monitor::infer_status(&mut s, "assistant", "tool_use", false);
-    assert_eq!(s.status, SessionStatus::NeedsInput);
+    let first_tick = s.status;
+    assert_ne!(first_tick, SessionStatus::Idle);
 
-    // Simulate what update_tokens() now does: persist the signals
     s.last_msg_type = "assistant".into();
     s.last_stop_reason = "tool_use".into();
     s.is_waiting_for_task = false;
 
-    // Tick 2: no new JSONL data — signals come from persisted fields
     let msg_type = s.last_msg_type.clone();
     let stop_reason = s.last_stop_reason.clone();
     let waiting = s.is_waiting_for_task;
     monitor::infer_status(&mut s, &msg_type, &stop_reason, waiting);
-    assert_eq!(s.status, SessionStatus::NeedsInput);
+    assert_eq!(s.status, first_tick);
 }
 
 #[test]
-fn status_null_stop_reason_with_tool_use_infers_needs_input() {
+fn status_null_stop_reason_with_tool_use_inferred_from_content() {
     // Claude Code writes stop_reason: null for tool calls awaiting approval.
-    // The content still has a tool_use block — infer tool_use from content so
-    // that the session shows NeedsInput instead of Idle.
+    // We still infer "tool_use" from content so the JSONL parser is correct.
+    // The session no longer auto-promotes to NeedsInput from this signal —
+    // that's the Notification hook's exclusive call.
     let jsonl = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","stop_reason":null,"content":[{"type":"tool_use","id":"toolu_01X","name":"Bash","input":{"command":"echo hi"}}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
 
     let (mut s, _file) = make_session_with_jsonl(jsonl);
     s.cpu_percent = 0.5;
     monitor::update_tokens(&mut s);
 
-    // stop_reason was null in JSONL but must be inferred from tool_use content
     assert_eq!(s.last_stop_reason, "tool_use");
-    // pending_tool_name is set (ToolUse parsed, no ToolResult yet) so low CPU
-    // immediately infers NeedsInput — no need to wait for the 5s age threshold.
     assert_eq!(s.pending_tool_name, Some("Bash".into()));
-    assert_eq!(s.status, SessionStatus::NeedsInput);
+    assert_ne!(s.status, SessionStatus::NeedsInput);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -511,7 +793,11 @@ fn jsonl_corrupted_lines_skipped() {
 }
 
 #[test]
-fn jsonl_waiting_for_task_detection() {
+fn jsonl_waiting_for_task_no_longer_promotes_needs_input() {
+    // The legacy `waiting_for_task` JSONL progress signal is parsed but no
+    // longer promotes the session to NeedsInput — too unreliable. The
+    // Notification hook owns NeedsInput now; this just confirms the heuristic
+    // doesn't claim it.
     let jsonl = concat!(
         r#"{"type":"assistant","message":{"model":"claude-opus-4-6-20260401","stop_reason":"end_turn","usage":{"input_tokens":1000,"output_tokens":500,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
         "\n",
@@ -519,11 +805,10 @@ fn jsonl_waiting_for_task_detection() {
     );
 
     let (mut s, _file) = make_session_with_jsonl(jsonl);
-    s.cpu_percent = 0.5; // Low CPU
+    s.cpu_percent = 0.5;
     monitor::update_tokens(&mut s);
 
-    // Status should be NeedsInput (waiting_for_task + low CPU)
-    assert_eq!(s.status, SessionStatus::NeedsInput);
+    assert_ne!(s.status, SessionStatus::NeedsInput);
 }
 
 #[test]

@@ -8,6 +8,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SessionStatus {
     NeedsInput,   // Blocked — waiting for user to approve/confirm (permission prompt)
+    Compacting,   // Auto-compact in progress (PreCompact fired, no Stop yet)
     Processing,   // Actively generating or executing tools
     WaitingInput, // Done responding, waiting for user's next prompt
     Unknown,      // Process is alive, but transcript telemetry is unavailable
@@ -19,6 +20,7 @@ impl fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NeedsInput => write!(f, "Needs Input"),
+            Self::Compacting => write!(f, "Compacting"),
             Self::Processing => write!(f, "Processing"),
             Self::WaitingInput => write!(f, "Waiting"),
             Self::Unknown => write!(f, "Unknown"),
@@ -32,11 +34,12 @@ impl SessionStatus {
     pub fn sort_key(&self) -> u8 {
         match self {
             Self::NeedsInput => 0,
-            Self::Processing => 1,
-            Self::WaitingInput => 2,
-            Self::Unknown => 3,
-            Self::Idle => 4,
-            Self::Finished => 5,
+            Self::Compacting => 1,
+            Self::Processing => 2,
+            Self::WaitingInput => 3,
+            Self::Unknown => 4,
+            Self::Idle => 5,
+            Self::Finished => 6,
         }
     }
 }
@@ -382,6 +385,7 @@ impl ClaudeSession {
     pub fn record_activity(&mut self) {
         let level = match self.status {
             SessionStatus::Processing => 7,
+            SessionStatus::Compacting => 5,
             SessionStatus::NeedsInput => 4,
             SessionStatus::WaitingInput => 2,
             SessionStatus::Unknown => 2,

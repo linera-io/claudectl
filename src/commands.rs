@@ -447,6 +447,7 @@ pub(crate) fn print_summary(since: &str) -> io::Result<()> {
     for s in &app.sessions {
         let status_color = match s.status {
             session::SessionStatus::Processing => "\x1b[32m",
+            session::SessionStatus::Compacting => "\x1b[36m",
             session::SessionStatus::NeedsInput => "\x1b[35m",
             session::SessionStatus::WaitingInput => "\x1b[33m",
             session::SessionStatus::Unknown => "\x1b[34m",

@@ -194,6 +194,7 @@ pub fn generate_sessions(tick: u32) -> Vec<ClaudeSession> {
                 let past_status = seq[(past_tick as usize) % seq.len()];
                 let level = match past_status {
                     SessionStatus::Processing => 7,
+                    SessionStatus::Compacting => 5,
                     SessionStatus::NeedsInput => 4,
                     SessionStatus::WaitingInput => 2,
                     SessionStatus::Unknown => 2,

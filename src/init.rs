@@ -3,37 +3,99 @@ use std::path::{Path, PathBuf};
 
 /// The hooks we install into Claude Code's settings.json.
 ///
-/// We use `PostToolUse` with a wildcard matcher so claudectl sees every tool
-/// completion, and `Stop` to catch session endings. The commands call
-/// `claudectl --json` which is a lightweight, non-TUI snapshot that the
-/// brain / hooks system can consume.
+/// Every entry maps to a deterministic state transition for the matching
+/// session — see `hook_state.rs` for the receiver. The hook command is the
+/// same `claudectl` binary; main detects the JSON payload on stdin and routes
+/// to the state-update path before any other dispatch.
 ///
-/// We also wire up `PreToolUse` for Bash commands so claudectl's rule engine
-/// can evaluate deny rules before execution.
-struct HookSpec {
-    event: &'static str,
-    matcher: &'static str,
-    command: &'static str,
-    timeout: u32,
+/// `Notification` matcher `permission_prompt` is the load-bearing one for the
+/// "Needs Input" status. The rest cover compaction, tool runs, prompt submits,
+/// session lifecycle, and subagent activity.
+pub struct HookSpec {
+    pub event: &'static str,
+    pub matcher: &'static str,
+    pub command: &'static str,
+    pub timeout: u32,
 }
 
-const HOOKS: &[HookSpec] = &[
+impl HookSpec {
+    pub fn label(&self) -> String {
+        if self.matcher.is_empty() {
+            self.event.to_string()
+        } else {
+            format!("{} ({})", self.event, self.matcher)
+        }
+    }
+}
+
+const HOOK_CMD: &str = "claudectl 2>/dev/null || true";
+
+pub const HOOKS: &[HookSpec] = &[
+    // Permission prompts — the deterministic "Needs Input" signal.
+    HookSpec {
+        event: "Notification",
+        matcher: "permission_prompt",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    // Idle prompts (Claude Code's own "are you still there?") — recorded but
+    // not surfaced as a status change today.
+    HookSpec {
+        event: "Notification",
+        matcher: "idle_prompt",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    // Tool lifecycle.
     HookSpec {
         event: "PreToolUse",
-        matcher: "Bash",
-        command: "claudectl --json 2>/dev/null || true",
+        matcher: "*",
+        command: HOOK_CMD,
         timeout: 5,
     },
     HookSpec {
         event: "PostToolUse",
         matcher: "*",
-        command: "claudectl --json 2>/dev/null || true",
+        command: HOOK_CMD,
         timeout: 5,
     },
+    // Turn lifecycle.
     HookSpec {
         event: "Stop",
         matcher: "",
-        command: "claudectl --json 2>/dev/null || true",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    HookSpec {
+        event: "UserPromptSubmit",
+        matcher: "",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    // Session lifecycle.
+    HookSpec {
+        event: "SessionStart",
+        matcher: "",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    HookSpec {
+        event: "SessionEnd",
+        matcher: "",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    HookSpec {
+        event: "SubagentStop",
+        matcher: "",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    // Auto-compact — drives the new Compacting status.
+    HookSpec {
+        event: "PreCompact",
+        matcher: "",
+        command: HOOK_CMD,
         timeout: 5,
     },
 ];
@@ -49,6 +111,7 @@ fn settings_path(project: bool) -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn build_hooks_value() -> serde_json::Value {
     let mut hooks_map = serde_json::Map::new();
 
@@ -75,27 +138,28 @@ fn build_hooks_value() -> serde_json::Value {
     serde_json::Value::Object(hooks_map)
 }
 
-/// Check if claudectl hooks are already present in existing settings.
+/// Check if at least one claudectl hook is registered (used to decide
+/// whether `--init` reports "already configured"). Drift detection lives in
+/// `find_missing_hooks`.
 fn has_claudectl_hooks(existing: &serde_json::Value) -> bool {
-    if let Some(hooks) = existing.get("hooks") {
-        if let Some(obj) = hooks.as_object() {
-            for (_event, matchers) in obj {
-                if let Some(arr) = matchers.as_array() {
-                    for matcher_entry in arr {
-                        if let Some(inner_hooks) = matcher_entry.get("hooks") {
-                            if let Some(inner_arr) = inner_hooks.as_array() {
-                                for hook in inner_arr {
-                                    if let Some(cmd) = hook.get("command") {
-                                        if let Some(s) = cmd.as_str() {
-                                            if s.contains("claudectl") {
-                                                return true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+    let Some(hooks) = existing.get("hooks").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    for matchers in hooks.values() {
+        let Some(arr) = matchers.as_array() else {
+            continue;
+        };
+        for matcher_entry in arr {
+            let Some(inner) = matcher_entry.get("hooks").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for hook in inner {
+                if hook
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|s| s.contains("claudectl"))
+                {
+                    return true;
                 }
             }
         }
@@ -103,30 +167,77 @@ fn has_claudectl_hooks(existing: &serde_json::Value) -> bool {
     false
 }
 
-/// Merge claudectl hooks into existing settings, preserving all other keys
-/// and any non-claudectl hooks already defined.
-fn merge_hooks(existing: &mut serde_json::Value) {
-    let new_hooks = build_hooks_value();
+/// Returns the spec entries that are not yet installed in `existing`. A spec
+/// counts as installed when there's a matcher entry with the same `matcher`
+/// string and at least one inner hook whose command mentions `claudectl`.
+pub fn find_missing_hooks(existing: &serde_json::Value) -> Vec<&'static HookSpec> {
+    let hooks = existing.get("hooks").and_then(|v| v.as_object());
+    HOOKS
+        .iter()
+        .filter(|spec| !is_spec_installed(hooks, spec))
+        .collect()
+}
 
+fn is_spec_installed(
+    hooks: Option<&serde_json::Map<String, serde_json::Value>>,
+    spec: &HookSpec,
+) -> bool {
+    let Some(hooks) = hooks else { return false };
+    let Some(matchers) = hooks.get(spec.event).and_then(|v| v.as_array()) else {
+        return false;
+    };
+    matchers.iter().any(|entry| {
+        let matcher_matches =
+            entry.get("matcher").and_then(|v| v.as_str()).unwrap_or("") == spec.matcher;
+        if !matcher_matches {
+            return false;
+        }
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .is_some_and(|inner| {
+                inner.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|s| s.contains("claudectl"))
+                })
+            })
+    })
+}
+
+/// Merge the given specs into existing settings, preserving every other key
+/// and every non-claudectl hook already defined.
+fn merge_specs(existing: &mut serde_json::Value, specs: &[&HookSpec]) {
     let hooks_obj = existing
         .as_object_mut()
         .expect("settings must be an object")
         .entry("hooks")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(hooks_obj) = hooks_obj.as_object_mut() else {
+        return;
+    };
 
-    if let (Some(target), Some(source)) = (hooks_obj.as_object_mut(), new_hooks.as_object()) {
-        for (event, new_matchers) in source {
-            let event_arr = target
-                .entry(event)
-                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-            if let (Some(arr), Some(new_arr)) = (event_arr.as_array_mut(), new_matchers.as_array())
-            {
-                for new_matcher in new_arr {
-                    arr.push(new_matcher.clone());
-                }
-            }
+    for spec in specs {
+        let event_arr = hooks_obj
+            .entry(spec.event)
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let Some(arr) = event_arr.as_array_mut() {
+            arr.push(serde_json::json!({
+                "matcher": spec.matcher,
+                "hooks": [{
+                    "type": "command",
+                    "command": spec.command,
+                    "timeout": spec.timeout,
+                }],
+            }));
         }
     }
+}
+
+#[cfg(test)]
+fn merge_hooks(existing: &mut serde_json::Value) {
+    let all: Vec<&HookSpec> = HOOKS.iter().collect();
+    merge_specs(existing, &all);
 }
 
 /// Remove claudectl hooks from a matcher entry's inner hooks array.
@@ -241,68 +352,107 @@ pub fn run_uninit(project: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Run the init command: write Claude Code hooks into settings.json.
-pub fn run_init(project: bool) -> io::Result<()> {
-    let path = settings_path(project);
-
-    // Read existing settings or start fresh
-    let mut settings = if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(v) if v.is_object() => v,
-            Ok(_) => {
-                eprintln!(
-                    "Error: {} exists but is not a JSON object — refusing to overwrite.",
-                    path.display()
-                );
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!(
-                    "Error: {} contains invalid JSON: {} — refusing to overwrite.",
-                    path.display(),
-                    e
-                );
-                std::process::exit(1);
-            }
+/// Read settings.json (returning `{}` if missing). Bails the process on
+/// invalid JSON to avoid silently overwriting user content.
+fn load_settings(path: &Path) -> io::Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = std::fs::read_to_string(path)?;
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) if v.is_object() => Ok(v),
+        Ok(_) => {
+            eprintln!(
+                "Error: {} exists but is not a JSON object — refusing to overwrite.",
+                path.display()
+            );
+            std::process::exit(1);
         }
-    } else {
-        serde_json::json!({})
-    };
+        Err(e) => {
+            eprintln!(
+                "Error: {} contains invalid JSON: {} — refusing to overwrite.",
+                path.display(),
+                e
+            );
+            std::process::exit(1);
+        }
+    }
+}
 
-    // Check for existing claudectl hooks
-    if has_claudectl_hooks(&settings) {
-        println!("claudectl hooks already configured in {}", path.display());
-        println!("To re-initialize, run `claudectl init --remove` first.");
-        return Ok(());
+/// Install any missing claudectl hooks. Returns the specs that were added
+/// (empty when settings were already up to date).
+pub fn ensure_hooks_installed(project: bool) -> io::Result<Vec<&'static HookSpec>> {
+    let path = settings_path(project);
+    let mut settings = load_settings(&path)?;
+
+    let missing = find_missing_hooks(&settings);
+    if missing.is_empty() {
+        return Ok(Vec::new());
     }
 
-    // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-
-    // Merge and write
-    merge_hooks(&mut settings);
+    merge_specs(&mut settings, &missing);
     let json = serde_json::to_string_pretty(&settings)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     std::fs::write(&path, format!("{json}\n"))?;
+    Ok(missing)
+}
 
-    print_success(&path);
+/// `--init`: explicit, loud install. Always reports the destination file plus
+/// each hook added; reports "already up to date" when there's no work.
+pub fn run_init(project: bool) -> io::Result<()> {
+    let path = settings_path(project);
+    let installed = ensure_hooks_installed(project)?;
 
+    if installed.is_empty() {
+        println!("claudectl hooks already up to date in {}", path.display());
+        return Ok(());
+    }
+
+    println!("claudectl: hooks updated in {}", path.display());
+    for spec in &installed {
+        println!("  + installed {}", spec.label());
+    }
+    let total = HOOKS.len();
+    let already = total - installed.len();
+    if already > 0 {
+        println!("  ({already} already up to date)");
+    }
+    println!();
+    println!("Claude Code will now notify claudectl on these events.");
+    println!("Run `claudectl` to start the dashboard.");
     Ok(())
 }
 
-fn print_success(path: &Path) {
-    println!("Initialized claudectl hooks in {}", path.display());
-    println!();
-    println!("Hooks installed:");
-    println!("  PreToolUse (Bash)  — lets claudectl observe commands before execution");
-    println!("  PostToolUse (*)    — notifies claudectl after every tool completion");
-    println!("  Stop               — notifies claudectl when a session ends");
-    println!();
-    println!("Claude Code will now notify claudectl on each tool use.");
-    println!("Run `claudectl` to start the dashboard.");
+/// Called from interactive entry points (TUI / watch / list / doctor) before
+/// dispatch. Prints the same loud summary as `--init` whenever it adds
+/// anything; silent when settings were already complete. Also opportunistically
+/// prunes stale per-session state files (older than 14 days).
+pub fn auto_init_loud(project: bool) {
+    crate::hook_state::cleanup_stale(14 * 24 * 60 * 60);
+
+    let path = settings_path(project);
+    match ensure_hooks_installed(project) {
+        Ok(installed) if installed.is_empty() => {}
+        Ok(installed) => {
+            println!("claudectl: hooks updated in {}", path.display());
+            for spec in &installed {
+                println!("  + installed {}", spec.label());
+            }
+            let already = HOOKS.len() - installed.len();
+            if already > 0 {
+                println!("  ({already} already up to date)");
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "claudectl: warning — could not update hooks in {}: {e}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -380,9 +530,43 @@ mod tests {
 
         assert!(settings.get("hooks").is_some());
         let hooks = settings["hooks"].as_object().unwrap();
-        assert!(hooks.contains_key("PreToolUse"));
-        assert!(hooks.contains_key("PostToolUse"));
-        assert!(hooks.contains_key("Stop"));
+        for spec in HOOKS {
+            assert!(
+                hooks.contains_key(spec.event),
+                "expected event {} after merge",
+                spec.event
+            );
+        }
+    }
+
+    #[test]
+    fn find_missing_hooks_on_empty_returns_all_specs() {
+        let settings = serde_json::json!({});
+        let missing = find_missing_hooks(&settings);
+        assert_eq!(missing.len(), HOOKS.len());
+    }
+
+    #[test]
+    fn find_missing_hooks_returns_only_drift() {
+        let mut settings = serde_json::json!({});
+        merge_hooks(&mut settings);
+        // Manually drop one event to simulate drift.
+        settings["hooks"]
+            .as_object_mut()
+            .unwrap()
+            .remove("Notification");
+        let missing = find_missing_hooks(&settings);
+        // Two Notification specs (permission_prompt, idle_prompt) are now missing.
+        assert_eq!(missing.len(), 2);
+        assert!(missing.iter().all(|s| s.event == "Notification"));
+    }
+
+    #[test]
+    fn find_missing_hooks_returns_nothing_when_complete() {
+        let mut settings = serde_json::json!({});
+        merge_hooks(&mut settings);
+        let missing = find_missing_hooks(&settings);
+        assert!(missing.is_empty());
     }
 
     #[test]
@@ -409,15 +593,20 @@ mod tests {
             serde_json::json!(["Bash", "Read"])
         );
 
-        // Existing PreToolUse Write hook preserved
+        // Existing PreToolUse Write hook preserved alongside the new wildcard one
         let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2); // original Write + new Bash
+        assert_eq!(pre.len(), 2); // original Write + new "*"
         assert_eq!(pre[0]["matcher"], "Write");
-        assert_eq!(pre[1]["matcher"], "Bash");
+        assert_eq!(pre[1]["matcher"], "*");
 
-        // New hooks added
-        assert!(settings["hooks"]["PostToolUse"].is_array());
-        assert!(settings["hooks"]["Stop"].is_array());
+        // Every spec from HOOKS shows up
+        for spec in HOOKS {
+            assert!(
+                settings["hooks"][spec.event].is_array(),
+                "expected event {} to be installed",
+                spec.event
+            );
+        }
     }
 
     #[test]
@@ -463,7 +652,7 @@ mod tests {
         assert!(has_claudectl_hooks(&settings));
 
         let removed = remove_claudectl_hooks(&mut settings);
-        assert_eq!(removed, 3); // PreToolUse, PostToolUse, Stop
+        assert_eq!(removed, HOOKS.len());
         assert!(!has_claudectl_hooks(&settings));
         // hooks key removed entirely when empty
         assert!(settings.get("hooks").is_none());

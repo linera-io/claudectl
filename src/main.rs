@@ -14,6 +14,7 @@ mod discovery;
 mod health;
 mod helpers;
 mod history;
+mod hook_state;
 mod hooks;
 mod init;
 mod launch;
@@ -296,6 +297,17 @@ pub(crate) struct Cli {
 }
 
 fn main() -> io::Result<()> {
+    // Hook fast-path: when invoked from a Claude Code hook, stdin carries a
+    // JSON payload that closes immediately. `try_read_hook_payload` is
+    // designed to be safe to call unconditionally — it returns None instantly
+    // for tty / empty / no-data-within-50ms stdin, so it never blocks a
+    // normal interactive launch. The fast-path exits silently on stdout to
+    // avoid corrupting callers that capture --json output.
+    if let Ok(Some(payload)) = hook_state::try_read_hook_payload() {
+        let _ = hook_state::record_hook_event(&payload);
+        return Ok(());
+    }
+
     let cli = Cli::parse();
     run_main(cli)
 }
@@ -379,6 +391,7 @@ fn run_main(cli: Cli) -> io::Result<()> {
     }
 
     if cli.doctor {
+        init::auto_init_loud(cli.scope == "project");
         return commands::print_doctor();
     }
 
@@ -499,10 +512,16 @@ fn run_main(cli: Cli) -> io::Result<()> {
     }
 
     if cli.list {
+        init::auto_init_loud(cli.scope == "project");
         return commands::print_list(cli.demo, &filters);
     }
 
     if cli.watch {
+        // Skip auto-init when --watch is paired with --json (the consumer is
+        // parsing stdout). Plain --watch is interactive — print loud.
+        if !cli.json {
+            init::auto_init_loud(cli.scope == "project");
+        }
         return commands::run_watch(
             Duration::from_millis(cfg.interval),
             cli.json,
@@ -510,6 +529,24 @@ fn run_main(cli: Cli) -> io::Result<()> {
             &filters,
         );
     }
+
+    // Default: TUI dashboard. Plain stdout println (as the other modes use)
+    // gets wiped by `EnterAlternateScreen` before the user can read it, so we
+    // capture what auto-init did and surface it as the initial status_msg
+    // inside the TUI instead.
+    let project_scope = cli.scope == "project";
+    let auto_init_summary = match init::ensure_hooks_installed(project_scope) {
+        Ok(installed) if installed.is_empty() => None,
+        Ok(installed) => {
+            let labels = installed
+                .iter()
+                .map(|s| s.label())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!("Installed {} hook(s): {labels}", installed.len()))
+        }
+        Err(e) => Some(format!("Auto-init warning: {e}")),
+    };
 
     let tick_rate = Duration::from_millis(cfg.interval);
     let theme_mode = theme::ThemeMode::detect(cli.theme.as_deref());
@@ -539,6 +576,7 @@ fn run_main(cli: Cli) -> io::Result<()> {
             cli.demo,
             &filters,
             max_dur,
+            auto_init_summary.clone(),
         );
 
         disable_raw_mode()?;
@@ -575,6 +613,7 @@ fn run_main(cli: Cli) -> io::Result<()> {
             cli.demo,
             &filters,
             max_dur,
+            auto_init_summary.clone(),
         );
 
         disable_raw_mode()?;
@@ -595,6 +634,7 @@ fn run_tui<W: io::Write>(
     demo_mode: bool,
     filters: &ViewFilters,
     max_duration: Option<Duration>,
+    auto_init_summary: Option<String>,
 ) -> io::Result<()> {
     let mut app = App::new();
     app.notify = cfg.notify;
@@ -630,6 +670,12 @@ fn run_tui<W: io::Write>(
                 );
             }
         }
+    }
+    // Auto-init summary takes the status bar last — it's the most recent
+    // user-relevant info. Brain status (set above) gets superseded only if
+    // we actually installed something on this launch; otherwise it stays.
+    if let Some(msg) = auto_init_summary {
+        app.status_msg = msg;
     }
     app.demo_mode = demo_mode;
     commands::apply_filters(&mut app, filters);

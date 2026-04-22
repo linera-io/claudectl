@@ -37,6 +37,7 @@ pub struct Theme {
 
     // Status colors
     pub status_needs_input: Color,
+    pub status_compacting: Color,
     pub status_processing: Color,
     pub status_waiting: Color,
     pub status_unknown: Color,
@@ -80,6 +81,7 @@ impl Theme {
         Self {
             mode: ThemeMode::Dark,
             status_needs_input: Color::Magenta,
+            status_compacting: Color::Cyan,
             status_processing: Color::Green,
             status_waiting: Color::Yellow,
             status_unknown: Color::Blue,
@@ -111,6 +113,7 @@ impl Theme {
         Self {
             mode: ThemeMode::Light,
             status_needs_input: Color::Magenta,
+            status_compacting: Color::Cyan,
             status_processing: Color::Blue,
             status_waiting: Color::Rgb(180, 140, 0), // Dark yellow
             status_unknown: Color::Gray,
@@ -143,6 +146,7 @@ impl Theme {
         Self {
             mode: ThemeMode::None,
             status_needs_input: Color::Reset,
+            status_compacting: Color::Reset,
             status_processing: Color::Reset,
             status_waiting: Color::Reset,
             status_unknown: Color::Reset,
@@ -175,6 +179,7 @@ impl Theme {
         use crate::session::SessionStatus;
         match status {
             SessionStatus::NeedsInput => self.status_needs_input,
+            SessionStatus::Compacting => self.status_compacting,
             SessionStatus::Processing => self.status_processing,
             SessionStatus::WaitingInput => self.status_waiting,
             SessionStatus::Unknown => self.status_unknown,

@@ -8,9 +8,14 @@ use std::path::{Path, PathBuf};
 /// same `claudectl` binary; main detects the JSON payload on stdin and routes
 /// to the state-update path before any other dispatch.
 ///
-/// `Notification` matcher `permission_prompt` is the load-bearing one for the
-/// "Needs Input" status. The rest cover compaction, tool runs, prompt submits,
-/// session lifecycle, and subagent activity.
+/// `Notification` matchers `permission_prompt` and `worker_permission_prompt`
+/// are the load-bearing ones for the "Needs Input" status — main-agent and
+/// subagent approval dialogs respectively. Claude Code's matcher engine
+/// pipe-splits alphanumeric matchers and exact-matches each alternative
+/// against `notification_type`, so the two are registered as a single
+/// `"permission_prompt|worker_permission_prompt"` entry. The rest cover
+/// compaction, tool runs, prompt submits, session lifecycle, and subagent
+/// activity.
 pub struct HookSpec {
     pub event: &'static str,
     pub matcher: &'static str,
@@ -31,10 +36,12 @@ impl HookSpec {
 const HOOK_CMD: &str = "claudectl 2>/dev/null || true";
 
 pub const HOOKS: &[HookSpec] = &[
-    // Permission prompts — the deterministic "Needs Input" signal.
+    // Permission prompts — the deterministic "Needs Input" signal. Covers
+    // both main-agent (`permission_prompt`) and subagent
+    // (`worker_permission_prompt`) approval dialogs.
     HookSpec {
         event: "Notification",
-        matcher: "permission_prompt",
+        matcher: "permission_prompt|worker_permission_prompt",
         command: HOOK_CMD,
         timeout: 5,
     },
@@ -379,14 +386,72 @@ fn load_settings(path: &Path) -> io::Result<serde_json::Value> {
     }
 }
 
+/// Remove claudectl-owned matcher entries whose `(event, matcher)` tuple is
+/// no longer in `HOOKS`. Handles the case where a matcher string changes
+/// between releases (e.g. `"permission_prompt"` → `"permission_prompt|
+/// worker_permission_prompt"`) so upgrading users don't end up with a stale
+/// duplicate entry firing claudectl twice. Returns the number of entries
+/// removed.
+fn drop_stale_claudectl_hooks(settings: &mut serde_json::Value) -> usize {
+    let Some(hooks_obj) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
+        return 0;
+    };
+    let mut removed = 0;
+    let mut empty_events = Vec::new();
+    for (event, matchers) in hooks_obj.iter_mut() {
+        let Some(arr) = matchers.as_array_mut() else {
+            continue;
+        };
+        arr.retain_mut(|entry| {
+            let matcher_str = entry
+                .get("matcher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let known_spec = HOOKS
+                .iter()
+                .any(|spec| spec.event == event && spec.matcher == matcher_str);
+            if known_spec {
+                return true;
+            }
+            // Unknown (event, matcher) — strip only claudectl's own hook
+            // command. Any non-claudectl hooks in the same matcher entry
+            // are preserved.
+            let still_has_hooks = filter_claudectl_hooks(entry);
+            let stripped = entry
+                .get("hooks")
+                .and_then(|v| v.as_array())
+                .is_none_or(|inner| inner.is_empty());
+            if stripped {
+                removed += 1;
+                return false;
+            }
+            still_has_hooks
+        });
+        if arr.is_empty() {
+            empty_events.push(event.clone());
+        }
+    }
+    for event in empty_events {
+        hooks_obj.remove(&event);
+    }
+    if hooks_obj.is_empty() {
+        if let Some(obj) = settings.as_object_mut() {
+            obj.remove("hooks");
+        }
+    }
+    removed
+}
+
 /// Install any missing claudectl hooks. Returns the specs that were added
 /// (empty when settings were already up to date).
 pub fn ensure_hooks_installed(project: bool) -> io::Result<Vec<&'static HookSpec>> {
     let path = settings_path(project);
     let mut settings = load_settings(&path)?;
 
+    let stale_removed = drop_stale_claudectl_hooks(&mut settings);
     let missing = find_missing_hooks(&settings);
-    if missing.is_empty() {
+    if missing.is_empty() && stale_removed == 0 {
         return Ok(Vec::new());
     }
 
@@ -738,6 +803,84 @@ mod tests {
         assert!(settings.get("hooks").is_none());
         // Other keys preserved
         assert!(settings.get("permissions").is_some());
+    }
+
+    #[test]
+    fn drop_stale_claudectl_hooks_replaces_old_permission_prompt_matcher() {
+        // Simulate an upgrade from a pre-worker-permission-prompt release:
+        // the old `"permission_prompt"` matcher entry (claudectl-owned) should
+        // be removed so `merge_specs` can install the new combined matcher
+        // without leaving a duplicate.
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Notification": [
+                    {
+                        "matcher": "permission_prompt",
+                        "hooks": [{
+                            "type": "command",
+                            "command": HOOK_CMD,
+                            "timeout": 5,
+                        }]
+                    },
+                    {
+                        "matcher": "idle_prompt",
+                        "hooks": [{
+                            "type": "command",
+                            "command": HOOK_CMD,
+                            "timeout": 5,
+                        }]
+                    }
+                ]
+            }
+        });
+
+        let removed = drop_stale_claudectl_hooks(&mut settings);
+        assert_eq!(removed, 1);
+
+        let notif = settings["hooks"]["Notification"].as_array().unwrap();
+        assert_eq!(notif.len(), 1);
+        assert_eq!(notif[0]["matcher"], "idle_prompt");
+    }
+
+    #[test]
+    fn drop_stale_claudectl_hooks_preserves_foreign_entries() {
+        // A non-claudectl hook riding the same stale matcher must survive.
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Notification": [{
+                    "matcher": "permission_prompt",
+                    "hooks": [
+                        { "type": "command", "command": HOOK_CMD, "timeout": 5 },
+                        { "type": "command", "command": "my-own-hook.sh", "timeout": 5 }
+                    ]
+                }]
+            }
+        });
+
+        let removed = drop_stale_claudectl_hooks(&mut settings);
+        assert_eq!(removed, 0);
+
+        let inner = settings["hooks"]["Notification"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0]["command"], "my-own-hook.sh");
+    }
+
+    #[test]
+    fn drop_stale_claudectl_hooks_leaves_current_specs_alone() {
+        let mut settings = serde_json::json!({});
+        merge_hooks(&mut settings);
+
+        let removed = drop_stale_claudectl_hooks(&mut settings);
+        assert_eq!(removed, 0);
+        for spec in HOOKS {
+            assert!(
+                settings["hooks"][spec.event].is_array(),
+                "event {} should remain after stale cleanup",
+                spec.event
+            );
+        }
     }
 
     #[test]

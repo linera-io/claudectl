@@ -30,7 +30,8 @@ pub struct HookState {
     #[serde(default)]
     pub last_notification_ts_ms: u64,
     /// `notification_type` from the last Notification payload — e.g.
-    /// `"permission_prompt"`, `"idle_prompt"`, `"auth_success"`.
+    /// `"permission_prompt"` (main agent), `"worker_permission_prompt"`
+    /// (subagent), `"idle_prompt"`, `"auth_success"`.
     #[serde(default)]
     pub notification_kind: Option<String>,
     #[serde(default)]
@@ -213,7 +214,7 @@ pub fn record_hook_event(payload: &serde_json::Value) -> io::Result<()> {
             // PreToolUse means the prompt resolved (approved). Clear the
             // permission_prompt notification so infer_status doesn't keep
             // reporting NeedsInput.
-            if state.notification_kind.as_deref() == Some("permission_prompt") {
+            if is_permission_prompt_kind(state.notification_kind.as_deref()) {
                 state.notification_kind = None;
             }
         }
@@ -224,7 +225,7 @@ pub fn record_hook_event(payload: &serde_json::Value) -> io::Result<()> {
             // some flows route through PostToolUse (synthetic denial result)
             // without firing PreToolUse. Clear here too so a stale marker
             // doesn't get stuck.
-            if state.notification_kind.as_deref() == Some("permission_prompt") {
+            if is_permission_prompt_kind(state.notification_kind.as_deref()) {
                 state.notification_kind = None;
             }
         }
@@ -254,20 +255,29 @@ pub fn record_hook_event(payload: &serde_json::Value) -> io::Result<()> {
     state.save()
 }
 
+/// Whether a `notification_type` value from Claude Code represents an open
+/// permission prompt. Covers both the main-agent dialog (`permission_prompt`)
+/// and the subagent dialog (`worker_permission_prompt`) — both block the user
+/// the same way, and claudectl classifies both as `NeedsInput`.
+pub fn is_permission_prompt_kind(kind: Option<&str>) -> bool {
+    matches!(kind, Some("permission_prompt" | "worker_permission_prompt"))
+}
+
 /// Whether the session is currently sitting on a permission prompt.
 ///
-/// Pure deterministic check: the `Notification (permission_prompt)` event
-/// must be the most recent state-changing event for this session. Any later
-/// PreToolUse / PostToolUse / Stop / UserPromptSubmit ⇒ the prompt was
-/// resolved (approved, denied, or pivoted to a new prompt). No CPU or JSONL
-/// second-guessing — those introduced the false-negatives we just had.
+/// Pure deterministic check: the `Notification (permission_prompt)` or
+/// `Notification (worker_permission_prompt)` event must be the most recent
+/// state-changing event for this session. Any later PreToolUse / PostToolUse
+/// / Stop / UserPromptSubmit ⇒ the prompt was resolved (approved, denied, or
+/// pivoted to a new prompt). No CPU or JSONL second-guessing — those
+/// introduced the false-negatives we just had.
 ///
 /// 750ms grace period: auto-approved prompts (acceptEdits, allowlisted)
 /// fire Notification + near-instant PreToolUse; the dialog never opens
 /// visibly. Suppressing the marker for the first 750ms filters those out.
 /// Real prompts sit far longer, so this costs them nothing.
 pub fn is_at_permission_prompt(state: &HookState) -> bool {
-    if state.notification_kind.as_deref() != Some("permission_prompt") {
+    if !is_permission_prompt_kind(state.notification_kind.as_deref()) {
         return false;
     }
     let notif = state.last_notification_ts_ms;
@@ -362,6 +372,23 @@ mod tests {
         s.last_pretooluse_ts_ms = 2000;
         s.notification_kind = None;
         assert!(!is_at_permission_prompt(&s));
+    }
+
+    #[test]
+    fn worker_permission_prompt_also_counts_as_needs_input() {
+        let mut s = fresh_state("sid");
+        // Backdate past the 750ms grace so the helper considers it open.
+        s.last_notification_ts_ms = now_ms().saturating_sub(2_000);
+        s.notification_kind = Some("worker_permission_prompt".into());
+        assert!(is_at_permission_prompt(&s));
+
+        // PreToolUse from a sibling or the approved tool clears the marker
+        // via record_hook_event — verify the helper treats both kinds
+        // uniformly.
+        assert!(is_permission_prompt_kind(Some("permission_prompt")));
+        assert!(is_permission_prompt_kind(Some("worker_permission_prompt")));
+        assert!(!is_permission_prompt_kind(Some("idle_prompt")));
+        assert!(!is_permission_prompt_kind(None));
     }
 
     #[test]

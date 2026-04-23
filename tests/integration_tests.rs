@@ -416,6 +416,54 @@ fn hook_permission_prompt_cleared_by_subsequent_event() {
 }
 
 #[test]
+fn hook_worker_permission_prompt_marks_needs_input() {
+    // Subagents fire `notification_type = "worker_permission_prompt"` instead
+    // of `"permission_prompt"` (verified against Claude Code 2.1.117 binary).
+    // Both must classify the session as NeedsInput.
+    let sid = "hook-test-worker-permission";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": sid,
+        "notification_type": "worker_permission_prompt",
+    }))
+    .unwrap();
+
+    // Backdate past the 750ms grace period.
+    let mut state = claudectl::hook_state::HookState::load(sid).unwrap();
+    state.last_notification_ts_ms = state.last_notification_ts_ms.saturating_sub(2_000);
+    let path = claudectl::hook_state::state_dir().join(format!("{sid}.json"));
+    std::fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    s.last_message_ts = state.last_notification_ts_ms.saturating_sub(1000);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::NeedsInput);
+}
+
+#[test]
+fn hook_worker_pretooluse_clears_permission_prompt() {
+    // Approval of a subagent's prompt fires PreToolUse with the approved
+    // tool — same semantic as the main-agent case.
+    let sid = "hook-test-worker-approval";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": sid,
+        "notification_type": "worker_permission_prompt",
+    }))
+    .unwrap();
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": sid,
+        "tool_name": "Bash",
+    }))
+    .unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "assistant", "tool_use", false);
+    assert_ne!(s.status, SessionStatus::NeedsInput);
+}
+
+#[test]
 fn hook_compacting_outranks_permission_prompt() {
     // Edge case: both signals happen to be set. Compacting wins because
     // the model literally cannot respond to a permission prompt while

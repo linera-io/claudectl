@@ -387,26 +387,27 @@ pub fn infer_status(
 /// Map a populated hook state to the appropriate status, or `None` when the
 /// state is empty / inconclusive (in which case we fall back to heuristics).
 ///
-/// Precedence: `Compacting > NeedsInput > Processing > WaitingInput`. Idle
-/// is never produced from hook state — a session that has fired any hook
-/// recently is by definition not idle, and a session that hasn't fired any
-/// hook is handled by the heuristic fallback.
-///
 /// Pure deterministic status. Every check is a comparison of hook
 /// timestamps — no CPU, no JSONL parsing, no age guessing. The hook
 /// helpers in `hook_state` already handle staleness via "most-recent-event"
 /// comparisons.
 ///
-/// Precedence (highest to lowest): Compacting > NeedsInput > Processing >
-/// WaitingInput. NeedsInput beats Processing because a session with a
-/// pending permission prompt is technically "responding" but the relevant
-/// state for the user is "blocked on me."
+/// Precedence (highest to lowest): NeedsInput > Compacting > Processing >
+/// WaitingInput. NeedsInput wins over everything because a pending
+/// permission prompt is always the most actionable state for the user —
+/// we've seen Compacting get stuck when Stop never fires, and without this
+/// ordering it would silently mask every real prompt. NeedsInput beats
+/// Processing for the same reason: a session with a pending permission
+/// prompt is technically "responding" but the relevant state for the user
+/// is "blocked on me." Idle is never produced from hook state — a session
+/// that has fired any hook recently is by definition not idle, and a
+/// session that hasn't fired any hook is handled by the heuristic fallback.
 fn status_from_hook_state(state: &HookState, _session: &ClaudeSession) -> Option<SessionStatus> {
-    if hook_state::is_compacting(state) {
-        return Some(SessionStatus::Compacting);
-    }
     if hook_state::is_at_permission_prompt(state) {
         return Some(SessionStatus::NeedsInput);
+    }
+    if hook_state::is_compacting(state) {
+        return Some(SessionStatus::Compacting);
     }
     if hook_state::is_responding(state) {
         return Some(SessionStatus::Processing);

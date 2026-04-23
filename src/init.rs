@@ -98,9 +98,21 @@ pub const HOOKS: &[HookSpec] = &[
         command: HOOK_CMD,
         timeout: 5,
     },
-    // Auto-compact — drives the new Compacting status.
+    // Auto-compact — drives the Compacting status. `PreCompact` opens the
+    // state, `PostCompact` closes it directly. The historic design relied on
+    // `Stop` to mark "compaction done" (via the post-compact assistant turn
+    // ending), but Stop has been observed to never fire on sessions whose
+    // first turn triggered an auto-compact — leaving them stuck in Compacting
+    // indefinitely. Installing PostCompact gives us the deterministic
+    // close-signal.
     HookSpec {
         event: "PreCompact",
+        matcher: "",
+        command: HOOK_CMD,
+        timeout: 5,
+    },
+    HookSpec {
+        event: "PostCompact",
         matcher: "",
         command: HOOK_CMD,
         timeout: 5,

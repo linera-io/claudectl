@@ -44,6 +44,12 @@ pub struct HookState {
     pub last_promptsubmit_ts_ms: u64,
     #[serde(default)]
     pub last_precompact_ts_ms: u64,
+    /// `PostCompact` fires directly when auto-compact finishes — a more
+    /// reliable "compaction done" signal than relying on `Stop`, which has
+    /// been observed to never fire for sessions whose first turn triggers an
+    /// auto-compact.
+    #[serde(default)]
+    pub last_postcompact_ts_ms: u64,
     #[serde(default)]
     pub last_subagentstop_ts_ms: u64,
     #[serde(default)]
@@ -243,6 +249,9 @@ pub fn record_hook_event(payload: &serde_json::Value) -> io::Result<()> {
         "PreCompact" => {
             state.last_precompact_ts_ms = ts;
         }
+        "PostCompact" => {
+            state.last_postcompact_ts_ms = ts;
+        }
         "SubagentStop" => {
             state.last_subagentstop_ts_ms = ts;
         }
@@ -294,10 +303,30 @@ pub fn is_at_permission_prompt(state: &HookState) -> bool {
     now_ms().saturating_sub(notif) > 750
 }
 
-/// Whether the session is currently auto-compacting. PreCompact has fired and
-/// no `Stop` (which marks the post-compact assistant turn) has come in since.
+/// How long a session is allowed to sit in "compacting" before we give up and
+/// stop reporting the status, even without a clear end-of-compact signal.
+/// Auto-compact is a single model call over the transcript summary — it
+/// should complete in seconds to a couple of minutes at the outside. If we're
+/// still "compacting" five minutes later, something ate the resolution event
+/// (we've seen `Stop` never fire for sessions whose first turn is an
+/// auto-compact) and we're better off falling through to the real status.
+const COMPACTING_MAX_AGE_MS: u64 = 5 * 60 * 1000;
+
+/// Whether the session is currently auto-compacting. PreCompact has fired
+/// and no resolution signal (`PostCompact` — the direct signal — or `Stop` —
+/// the fallback signal for the post-compact assistant turn) has come in
+/// since, AND the PreCompact is recent enough that compaction could
+/// plausibly still be running.
 pub fn is_compacting(state: &HookState) -> bool {
-    state.last_precompact_ts_ms > 0 && state.last_precompact_ts_ms > state.last_stop_ts_ms
+    let pre = state.last_precompact_ts_ms;
+    if pre == 0 {
+        return false;
+    }
+    let ended = state.last_postcompact_ts_ms.max(state.last_stop_ts_ms);
+    if ended >= pre {
+        return false;
+    }
+    now_ms().saturating_sub(pre) < COMPACTING_MAX_AGE_MS
 }
 
 /// Whether Claude is currently responding to a prompt.
@@ -392,12 +421,33 @@ mod tests {
     }
 
     #[test]
-    fn compacting_lasts_until_stop() {
+    fn compacting_lasts_until_stop_or_postcompact() {
         let mut s = fresh_state("sid");
-        s.last_precompact_ts_ms = 1000;
+        // Use recent timestamps so the age-out check doesn't short-circuit.
+        let now = now_ms();
+        s.last_precompact_ts_ms = now.saturating_sub(1_000);
         assert!(is_compacting(&s));
 
-        s.last_stop_ts_ms = 2000;
+        // `Stop` clears it (legacy signal).
+        s.last_stop_ts_ms = now;
+        assert!(!is_compacting(&s));
+
+        // Reset Stop, confirm `PostCompact` ALSO clears it (direct signal,
+        // the reliable one — doesn't depend on Stop firing).
+        s.last_stop_ts_ms = 0;
+        assert!(is_compacting(&s));
+        s.last_postcompact_ts_ms = now;
+        assert!(!is_compacting(&s));
+    }
+
+    #[test]
+    fn compacting_ages_out_without_resolution_signal() {
+        // Defense against the observed case where `Stop` never fires for
+        // sessions whose first turn is an auto-compact. Without the age-out
+        // such sessions would stay `Compacting` forever and mask every real
+        // `NeedsInput` that follows.
+        let mut s = fresh_state("sid");
+        s.last_precompact_ts_ms = now_ms().saturating_sub(COMPACTING_MAX_AGE_MS + 1_000);
         assert!(!is_compacting(&s));
     }
 

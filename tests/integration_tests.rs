@@ -464,10 +464,11 @@ fn hook_worker_pretooluse_clears_permission_prompt() {
 }
 
 #[test]
-fn hook_compacting_outranks_permission_prompt() {
-    // Edge case: both signals happen to be set. Compacting wins because
-    // the model literally cannot respond to a permission prompt while
-    // auto-compact is running.
+fn hook_permission_prompt_outranks_compacting() {
+    // Edge case: both signals are set. NeedsInput wins because a pending
+    // permission prompt is the most actionable state and because Compacting
+    // has been observed to get stuck on sessions where Stop never fires —
+    // without this precedence a real prompt would be silently masked.
     let sid = "hook-test-precedence";
     claudectl::hook_state::record_hook_event(&serde_json::json!({
         "hook_event_name": "Notification",
@@ -481,9 +482,43 @@ fn hook_compacting_outranks_permission_prompt() {
     }))
     .unwrap();
 
+    // Backdate the notification past the 750ms grace period.
+    let mut state = claudectl::hook_state::HookState::load(sid).unwrap();
+    state.last_notification_ts_ms = state.last_notification_ts_ms.saturating_sub(2_000);
+    let path = claudectl::hook_state::state_dir().join(format!("{sid}.json"));
+    std::fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
+
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_eq!(s.status, SessionStatus::NeedsInput);
+}
+
+#[test]
+fn hook_postcompact_clears_compacting_without_stop() {
+    // Auto-compact paths where Stop never fires: PostCompact is the direct
+    // "compaction done" signal and must clear the Compacting status on its
+    // own.
+    let sid = "hook-test-postcompact";
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PreCompact",
+        "session_id": sid,
+    }))
+    .unwrap();
+
+    // Mid-compact: Compacting is the correct status.
     let mut s = session_with_id(sid, 0.5);
     monitor::infer_status(&mut s, "user", "", false);
     assert_eq!(s.status, SessionStatus::Compacting);
+
+    // PostCompact arrives. Stop never fires.
+    claudectl::hook_state::record_hook_event(&serde_json::json!({
+        "hook_event_name": "PostCompact",
+        "session_id": sid,
+    }))
+    .unwrap();
+    let mut s = session_with_id(sid, 0.5);
+    monitor::infer_status(&mut s, "user", "", false);
+    assert_ne!(s.status, SessionStatus::Compacting);
 }
 
 #[test]

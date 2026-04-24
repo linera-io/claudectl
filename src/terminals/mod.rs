@@ -882,26 +882,57 @@ fn doctor_report_for(terminal: Terminal) -> DoctorReport {
         }
         #[cfg(not(target_os = "macos"))]
         Terminal::Ghostty | Terminal::Warp | Terminal::ITerm2 | Terminal::Apple => {
+            // On Linux (the agent-sandbox microVM), AppleScript-driven control
+            // hooks work by forwarding scripts to the host via the
+            // sandbox-osa-bridge LaunchAgent. Probe for its bridge dir to decide
+            // whether the host side is wired up.
+            let bridge_dir = std::env::var("HOME")
+                .ok()
+                .map(|home| std::path::PathBuf::from(home).join(".cache/sandbox-osa-bridge"));
+            let bridge_ready = bridge_dir.as_ref().map(|p| p.is_dir()).unwrap_or(false);
+
+            let (status, detail, fix) = if bridge_ready {
+                (
+                    DoctorStatus::Ready,
+                    format!(
+                        "{} control hooks forward AppleScript to the host via sandbox-osa-bridge.",
+                        terminal_name(&terminal)
+                    ),
+                    None,
+                )
+            } else {
+                let bridge_display = bridge_dir
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "~/.cache/sandbox-osa-bridge/".to_string());
+                (
+                    DoctorStatus::Blocked,
+                    format!(
+                        "{} control hooks require the sandbox-osa-bridge LaunchAgent on the host; {} is not present.",
+                        terminal_name(&terminal),
+                        bridge_display,
+                    ),
+                    Some(
+                        "Run linera-infra/tools/agent-sandbox/install.sh on the host to install the LaunchAgent, then rerun `claudectl --doctor`."
+                            .to_string(),
+                    ),
+                )
+            };
+
             for action in [
                 TerminalAction::Launch,
                 TerminalAction::Switch,
                 TerminalAction::Input,
                 TerminalAction::Approve,
             ] {
-                actions.push(action_check(
-                    action,
-                    DoctorStatus::Unsupported,
-                    format!(
-                        "{} control hooks are currently only implemented on macOS.",
-                        terminal_name(&terminal)
-                    ),
-                    None::<String>,
-                ));
+                actions.push(action_check(action, status, detail.clone(), fix.clone()));
             }
-            notes.push(
-                "Monitoring still works in unsupported terminals, but control actions stay manual."
-                    .to_string(),
-            );
+            if !bridge_ready {
+                notes.push(
+                    "Monitoring still works without the bridge, but control actions stay manual."
+                        .to_string(),
+                );
+            }
         }
     }
 

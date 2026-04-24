@@ -1,13 +1,9 @@
-#[cfg(target_os = "macos")]
 mod apple;
-#[cfg(target_os = "macos")]
 mod ghostty;
 mod gnome_terminal;
-#[cfg(target_os = "macos")]
 mod iterm2;
 mod kitty;
 mod tmux;
-#[cfg(target_os = "macos")]
 mod warp;
 mod wezterm;
 mod windows_terminal;
@@ -246,15 +242,12 @@ fn supported_actions(terminal: &Terminal) -> Vec<TerminalAction> {
             TerminalAction::Approve,
         ],
         Terminal::WezTerm => vec![TerminalAction::Launch, TerminalAction::Switch],
-        #[cfg(target_os = "macos")]
         Terminal::Ghostty | Terminal::Warp | Terminal::ITerm2 | Terminal::Apple => vec![
             TerminalAction::Switch,
             TerminalAction::Input,
             TerminalAction::Approve,
         ],
         Terminal::Unknown(_) => Vec::new(),
-        #[cfg(not(target_os = "macos"))]
-        _ => Vec::new(),
     }
 }
 
@@ -1022,26 +1015,19 @@ pub fn switch_to_terminal(session: &ClaudeSession) -> Result<(), String> {
             "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for session switching."
                 .into(),
         ),
-        #[cfg(target_os = "macos")]
         Terminal::Ghostty => ghostty::switch(session),
-        #[cfg(target_os = "macos")]
         Terminal::Warp => warp::switch(session),
-        #[cfg(target_os = "macos")]
         Terminal::ITerm2 => iterm2::switch(session),
-        #[cfg(target_os = "macos")]
         Terminal::Apple => apple::switch(session),
         Terminal::Unknown(name) => Err(format!(
             "Unsupported terminal: {name}. Supported: GNOME Terminal, Windows Terminal on WSL (launch only), Ghostty, Warp, iTerm2, Kitty, WezTerm, Terminal.app, tmux. Run `claudectl --doctor` for details."
         )),
-        #[cfg(not(target_os = "macos"))]
-        _ => Err("Terminal switching not supported on this platform. Run `claudectl --doctor` for details.".into()),
     }
 }
 
 pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
     match detect_terminal() {
         Terminal::Gnome => gnome_terminal::send_input(session, text),
-        #[cfg(target_os = "macos")]
         Terminal::Ghostty => ghostty::send_input(session, text),
         Terminal::Kitty => kitty::send_input(session, text),
         Terminal::Tmux => tmux::send_input(session, text),
@@ -1049,11 +1035,9 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
             "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for session input automation."
                 .into(),
         ),
-        #[cfg(target_os = "macos")]
         Terminal::Warp => warp::send_input(session, text),
-        #[cfg(target_os = "macos")]
-        _ => {
-            // iTerm2, Apple Terminal, etc: switch + System Events keystroke
+        Terminal::ITerm2 | Terminal::Apple => {
+            // iTerm2, Apple Terminal: switch + System Events keystroke
             switch_to_terminal(session)?;
             std::thread::sleep(std::time::Duration::from_millis(300));
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1061,15 +1045,17 @@ pub fn send_input(session: &ClaudeSession, text: &str) -> Result<(), String> {
                 r#"tell application "System Events" to keystroke "{escaped}""#,
             ))
         }
-        #[cfg(not(target_os = "macos"))]
-        _ => Err("Input injection not supported for this terminal. Run `claudectl --doctor` for details.".into()),
+        Terminal::WezTerm => Err(
+            "WezTerm input injection is not implemented yet. Run `claudectl --doctor` for details."
+                .into(),
+        ),
+        Terminal::Unknown(_) => Err("Input injection not supported for this terminal. Run `claudectl --doctor` for details.".into()),
     }
 }
 
 pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
     match detect_terminal() {
         Terminal::Gnome => gnome_terminal::approve(session),
-        #[cfg(target_os = "macos")]
         Terminal::Ghostty => ghostty::approve(session),
         Terminal::Kitty => kitty::approve(session),
         Terminal::Tmux => tmux::send_input(session, "\r"),
@@ -1077,20 +1063,32 @@ pub fn approve_session(session: &ClaudeSession) -> Result<(), String> {
             "Windows Terminal currently supports WSL launch only. Use tmux or Kitty inside WSL for approval automation."
                 .into(),
         ),
-        #[cfg(target_os = "macos")]
         Terminal::Warp => warp::approve(session),
-        #[cfg(target_os = "macos")]
-        _ => {
-            // iTerm2, Apple Terminal, etc: switch + press Enter
+        Terminal::ITerm2 | Terminal::Apple => {
+            // iTerm2, Apple Terminal: switch + press Enter
             switch_to_terminal(session)?;
             std::thread::sleep(std::time::Duration::from_millis(300));
             run_osascript(r#"tell application "System Events" to key code 36"#)
         }
-        #[cfg(not(target_os = "macos"))]
-        _ => Err("Input injection not supported for this terminal. Run `claudectl --doctor` for details.".into()),
+        Terminal::WezTerm => Err(
+            "WezTerm approve is not implemented yet. Run `claudectl --doctor` for details.".into(),
+        ),
+        Terminal::Unknown(_) => Err("Input injection not supported for this terminal. Run `claudectl --doctor` for details.".into()),
     }
 }
 
+/// Run an AppleScript snippet. On macOS, execs `osascript` directly. On Linux
+/// (the agent-sandbox microVM) forwards the script via a shared filesystem
+/// bridge to the host; the host-side daemon runs `osascript -e <script>` and
+/// writes the result back.
+///
+/// Bridge protocol (under $HOME/.cache/sandbox-osa-bridge/):
+///   requests/<uuid>.osa  — AppleScript body (written by us, consumed by host)
+///   responses/<uuid>.out — "<exit-code>\n<stderr>" (written by host, read by us)
+///
+/// The host daemon is shipped with the agent-sandbox setup (install.sh
+/// installs a LaunchAgent that watches the requests dir). Without the daemon,
+/// this call times out after a few seconds and returns an error.
 #[cfg(target_os = "macos")]
 pub fn run_osascript(script: &str) -> Result<(), String> {
     let output = std::process::Command::new("osascript")
@@ -1103,6 +1101,80 @@ pub fn run_osascript(script: &str) -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("AppleScript error: {}", stderr.trim()))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn run_osascript(script: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME not set; cannot locate sandbox-osa-bridge".to_string())?;
+    let bridge = std::path::PathBuf::from(home).join(".cache/sandbox-osa-bridge");
+    let requests_dir = bridge.join("requests");
+    let responses_dir = bridge.join("responses");
+    if !requests_dir.is_dir() {
+        return Err(format!(
+            "sandbox-osa-bridge not found at {}. Install the host-side LaunchAgent (see tools/agent-sandbox/install.sh) and retry.",
+            bridge.display()
+        ));
+    }
+
+    // Generate a request id. Nanos since epoch + pid is unique enough for
+    // serialized writes from the single claudectl process; no need for a
+    // full UUID crate.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let id = format!("{}-{}", std::process::id(), nanos);
+
+    let req_path = requests_dir.join(format!("{id}.osa"));
+    let resp_path = responses_dir.join(format!("{id}.out"));
+
+    // Atomic-write the request file: write to .tmp, then rename, so the
+    // daemon never sees a partial read.
+    let tmp_path = requests_dir.join(format!("{id}.osa.tmp"));
+    {
+        let mut f = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("Failed to write request to bridge: {e}"))?;
+        f.write_all(script.as_bytes())
+            .map_err(|e| format!("Failed to write request to bridge: {e}"))?;
+    }
+    std::fs::rename(&tmp_path, &req_path)
+        .map_err(|e| format!("Failed to finalize bridge request: {e}"))?;
+
+    // Poll for the response. Daemon writes atomically via rename, so seeing
+    // the file means it's complete.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if resp_path.is_file() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = std::fs::remove_file(&req_path);
+            return Err(
+                "sandbox-osa-bridge timed out (3s). Is the host LaunchAgent running?".into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let body = std::fs::read_to_string(&resp_path)
+        .map_err(|e| format!("Failed to read bridge response: {e}"))?;
+    let _ = std::fs::remove_file(&resp_path);
+
+    // Response format: first line is exit code, remainder is stderr.
+    let (exit_line, stderr_tail) = body.split_once('\n').unwrap_or((body.as_str(), ""));
+    let exit_code: i32 = exit_line.trim().parse().unwrap_or(-1);
+    if exit_code == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "AppleScript (via host bridge) error: {}",
+            stderr_tail.trim()
+        ))
     }
 }
 

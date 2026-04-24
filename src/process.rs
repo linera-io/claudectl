@@ -60,6 +60,19 @@ pub fn fetch_and_enrich(sessions: &mut [ClaudeSession]) {
         for session in sessions.iter_mut() {
             if session.pid == pid {
                 session.tty = tty.clone();
+                // If this is a sandboxed claude (running inside the linera
+                // agent sandbox microVM), override with the HOST TTY recorded
+                // at startup by sandbox-bootstrap-inner. The sandbox's own
+                // pseudo-TTY (/dev/pts/N inside the VM) is invisible to the
+                // host's AppleScript, so iTerm2/Warp/Apple-Terminal matchers
+                // that iterate `tty of s` on host would never match. The
+                // sidecar file is missing for non-sandbox sessions, so this
+                // is a no-op there.
+                let sidecar = read_terminal_sidecar(pid);
+                if let Some(host_tty) = sidecar.as_ref().and_then(|s| s.host_tty.clone()) {
+                    session.tty = host_tty;
+                }
+                session.terminal_id = sidecar.and_then(|s| s.terminal_id);
                 session.mem_mb = mem_mb;
 
                 // CPU smoothing: track last 3 readings, use average
@@ -93,6 +106,39 @@ pub fn fetch_and_enrich(sessions: &mut [ClaudeSession]) {
             session.cpu_percent = 0.0;
         }
     }
+}
+
+struct TerminalSidecar {
+    host_tty: Option<String>,
+    terminal_id: Option<String>,
+}
+
+/// Read the per-session terminal sidecar written by the agent sandbox's
+/// bootstrap (see tools/agent-sandbox/sbx-template/sandbox-bootstrap-inner).
+/// Returns the HOST-side TTY + terminal-application id if present.
+///
+/// The sidecar lives at $HOME/.claude/sessions/<pid>.terminal.json. Only the
+/// agent sandbox writes it; for non-sandbox claude sessions (host-native) the
+/// file is absent and this returns None — the regular `ps` TTY stands.
+fn read_terminal_sidecar(pid: u32) -> Option<TerminalSidecar> {
+    let home = std::env::var_os("HOME")?;
+    let path = std::path::PathBuf::from(home)
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{pid}.terminal.json"));
+    let body = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let trim = |v: &serde_json::Value, key: &str| -> Option<String> {
+        v.get(key)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    Some(TerminalSidecar {
+        host_tty: trim(&value, "host_tty"),
+        terminal_id: trim(&value, "terminal_id"),
+    })
 }
 
 fn extract_session_meta(cmd: &[&str], session: &mut ClaudeSession) {

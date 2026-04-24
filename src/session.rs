@@ -104,6 +104,12 @@ pub struct ClaudeSession {
     pub started_at: u64,
     pub elapsed: Duration,
     pub tty: String,
+    /// Host-side terminal-application id (currently only populated for
+    /// Ghostty via the agent-sandbox terminal sidecar). When set, terminal
+    /// matchers should prefer it over CWD/title heuristics. None for
+    /// host-native claude sessions and terminals that don't expose a stable
+    /// id (iTerm2/Apple/Warp rely on `tty` instead).
+    pub terminal_id: Option<String>,
     pub status: SessionStatus,
     pub cpu_percent: f32,
     pub cpu_history: Vec<f32>, // Last N CPU readings for smoothing
@@ -316,6 +322,7 @@ impl ClaudeSession {
             started_at: raw.started_at,
             elapsed,
             tty: String::new(),
+            terminal_id: None,
             status: SessionStatus::Idle,
             cpu_percent: 0.0,
             cpu_history: Vec::new(),

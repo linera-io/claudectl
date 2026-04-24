@@ -8,8 +8,25 @@ fn applescript_escape(s: &str) -> String {
 
 /// Find the best matching Ghostty terminal for a session.
 /// Ghostty's AppleScript API exposes: id, name, working directory (no tty/pid).
-/// Strategy: match by CWD, disambiguate by session name in terminal title.
+///
+/// Matching priority:
+///   1. session.terminal_id — present when the agent-sandbox wrapper captured
+///      the host Ghostty tab's AppleScript id at launch time. Unambiguous.
+///   2. CWD match + title-contains-session-name disambiguator — fallback for
+///      host-native sessions and for sandbox sessions launched before the
+///      wrapper could probe Ghostty. Breaks down when multiple unnamed claudes
+///      share a CWD.
 fn find_terminal_script(session: &ClaudeSession) -> String {
+    if let Some(ref id) = session.terminal_id {
+        let escaped = applescript_escape(id);
+        return format!(
+            r#"
+            set matches to every terminal whose id is "{escaped}"
+            if (count of matches) = 0 then error "No Ghostty terminal with id {escaped}"
+            set t to item 1 of matches
+            "#,
+        );
+    }
     let cwd = applescript_escape(&session.cwd);
     let session_name = applescript_escape(&session.session_name);
 

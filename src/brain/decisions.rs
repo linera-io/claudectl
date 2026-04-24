@@ -800,6 +800,7 @@ mod tests {
             started_at: 0,
             elapsed: Duration::from_secs(120),
             tty: "/dev/pts/0".into(),
+            terminal_id: None,
             status: SessionStatus::Processing,
             cpu_percent: 50.0,
             cpu_history: vec![],
